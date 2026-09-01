@@ -1,0 +1,11 @@
+# 手元と CI で同じ Rust を使うための固定。
+#
+# rustup がこのファイルを読み、必要なら該当のツールチェインを入れてくれる。
+# GitHub Actions のランナーにも rustup が入っているので、CI 側に
+# ツールチェインを入れる Action は要らない。
+#
+# 版を上げるときは意図して上げる（新しい clippy の lint で CI が突然赤くなる
+# のを避けるため、自動更新の対象にしていない）。
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "koduchi",
-  "version": "0.1.0",
+  "version": "../package.json",
   "identifier": "ninja.taiga533.koduchi",
   "build": {
     "beforeDevCommand": "bun run dev",

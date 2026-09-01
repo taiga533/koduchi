@@ -1,0 +1,100 @@
+# v* タグを push すると、Apple Silicon 向けの dmg を作って
+# GitHub の下書きリリースに添付する。公開ボタンは人間が押す。
+#
+# ここは tauri-apps/tauri-action で置き換えられる。今は使っていない。
+# 理由と移行の見取り図は adr/0011-cicdとリリース配布.md にある。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# 下書きリリースの作成とアセットの添付に要る。
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: dmg を作って下書きリリースに添付する
+    # 配布物を作る環境は意図して固定している（ランナーが上がると
+    # Xcode と SDK が変わり、dmg の対応 OS が動きうるため）。
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      # タグの検査に main の履歴が要るので、全履歴を取る。
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      # イミュータブルリリースは公開したら差し替えられない。
+      # ビルドを始める前にここで止める。
+      - name: リリースタグを検査する
+        run: ./scripts/check-release-tag.sh "${GITHUB_REF_NAME}"
+
+      # 半端なアセットが混ざった下書きをそのまま公開してしまわないよう、
+      # 同じタグの下書きが残っていたら消してから作り直す。
+      # 公開済みのリリースがある場合は触らず落とす（イミュータブルリリース）。
+      - name: 同じタグの下書きが残っていたら消す
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! state="$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            echo "同じタグのリリースは無い"
+            exit 0
+          fi
+          if [ "${state}" != 'true' ]; then
+            echo "::error::${GITHUB_REF_NAME} は既に公開されている。作り直せない。" >&2
+            exit 1
+          fi
+          echo "残っていた下書きを消す"
+          gh release delete "${GITHUB_REF_NAME}" --yes
+
+      # oven-sh/setup-bun@v2.2.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.11
+
+      - name: 依存関係をロックファイルどおりに入れる
+        run: bun install --frozen-lockfile
+
+      # Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: src-tauri
+
+      # 署名しない（ADR 0011）。Developer ID を用意したときは、
+      # ここに APPLE_SIGNING_IDENTITY などの環境変数を足す。
+      - name: dmg をビルドする
+        run: bun run tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: 作られた dmg のパスを控える
+        id: dmg
+        run: |
+          set -euo pipefail
+          dmg="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg \
+            -maxdepth 1 -name '*.dmg' | head -n 1)"
+          [ -n "${dmg}" ] || { echo 'dmg が見つからない' >&2; exit 1; }
+          echo "path=${dmg}" >>"${GITHUB_OUTPUT}"
+          echo "作られた dmg: ${dmg}"
+
+      - name: 下書きリリースを作る
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+      - name: dmg を添付する
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DMG_PATH: ${{ steps.dmg.outputs.path }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${DMG_PATH}"
+
+      - name: 次にすることを表示する
+        run: |
+          echo "下書きリリース ${GITHUB_REF_NAME} に dmg を添付した。"
+          echo "dmg を開けることを確かめてから、GitHub 上で公開すること。"
