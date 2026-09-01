@@ -65,8 +65,18 @@ fn 接続情報を解析する(raw: &str) -> Option<ConnectionParams> {
 /// * `size` - プールが持つ接続の本数
 /// * `chunk_size` - 一度に取り出す行数
 fn プールを開く(read_only: bool, size: usize, chunk_size: usize) -> Option<ConnectionPool> {
-    let mut params = 接続情報を読む()?;
+    let mut params = 接続に使う情報()?;
     params.read_only = read_only;
+
+    Some(ConnectionPool::open(&params, size, chunk_size).unwrap())
+}
+
+/// Instant Client を初期化し、統合テスト用の接続情報を返す。
+///
+/// Instant Client が無い場合や環境変数が未設定の場合は `None` を返し、
+/// 呼び出し側のテストは何も検証せずに終わる。
+fn 接続に使う情報() -> Option<ConnectionParams> {
+    let params = 接続情報を読む()?;
 
     let candidates =
         instant_client::find_candidate_lib_dirs(&instant_client::default_search_roots());
@@ -76,7 +86,7 @@ fn プールを開く(read_only: bool, size: usize, chunk_size: usize) -> Option
         return None;
     }
 
-    Some(ConnectionPool::open(&params, size, chunk_size).unwrap())
+    Some(params)
 }
 
 /// 既定の設定でプールを開く。
@@ -620,4 +630,39 @@ fn 実行計画を取った後も読み取り専用は保たれる() {
         "実際: {}",
         error.message
     );
+}
+
+#[test]
+#[serial]
+fn テスト接続は繋いだ先のバージョンを返す() {
+    // Arrange
+    let Some(params) = 接続に使う情報() else {
+        return;
+    };
+
+    // Act
+    let version = koduchi_lib::db::check_connection(&params).unwrap();
+
+    // Assert
+    assert_eq!(
+        version.split('.').count(),
+        5,
+        "5 つの数字を並べた形になるはず: {version}"
+    );
+}
+
+#[test]
+#[serial]
+fn テスト接続は誤ったパスワードを接続のエラーとして返す() {
+    // Arrange
+    let Some(mut params) = 接続に使う情報() else {
+        return;
+    };
+    params.password = String::from("誤ったパスワード");
+
+    // Act
+    let error = koduchi_lib::db::check_connection(&params).unwrap_err();
+
+    // Assert
+    assert_eq!(error.kind, DbErrorKind::Connect);
 }

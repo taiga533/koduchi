@@ -82,7 +82,7 @@ describe('App', () => {
     expect(screen.getByDisplayValue('/opt/homebrew/lib')).toBeInTheDocument()
   })
 
-  it('未接続のときは接続を作成する画面を出す', async () => {
+  it('未接続のときはまず接続を選ぶ画面を出す', async () => {
     // Arrange
     const { api } = createFakeDbApi()
     setDbApi(api)
@@ -91,8 +91,38 @@ describe('App', () => {
     render(<App />)
 
     // Assert
-    expect(await screen.findByText('接続を作成')).toBeInTheDocument()
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
     expect(screen.getByText('1つの接続が1つのウィンドウになります')).toBeInTheDocument()
+  })
+
+  it('選ぶ画面の新しい接続から作成画面へ進む', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    render(<App />)
+    await screen.findByText('接続を選ぶ')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '新しい接続' }))
+
+    // Assert
+    expect(await screen.findByText('接続を作成')).toBeInTheDocument()
+  })
+
+  it('作成画面から戻ると選ぶ画面に返る', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    render(<App />)
+    await screen.findByText('接続を選ぶ')
+    await userEvent.click(screen.getByRole('button', { name: '新しい接続' }))
+    await screen.findByText('接続を作成')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '戻る' }))
+
+    // Assert
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
   })
 
   it('必須項目が埋まるまで接続ボタンは押せない', async () => {
@@ -100,10 +130,12 @@ describe('App', () => {
     const { api } = createFakeDbApi()
     setDbApi(api)
     render(<App />)
+    await screen.findByText('接続を選ぶ')
+    await userEvent.click(screen.getByRole('button', { name: '新しい接続' }))
     await screen.findByText('接続を作成')
 
     // Act
-    const button = screen.getByRole('button', { name: '接続' })
+    const button = screen.getByRole('button', { name: '保存して接続' })
 
     // Assert
     expect(button).toBeDisabled()
@@ -114,14 +146,16 @@ describe('App', () => {
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
     render(<App />)
-    await screen.findByText('接続を作成')
+    await screen.findByText('接続を選ぶ')
     const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '新しい接続' }))
+    await screen.findByText('接続を作成')
 
     // Act
     await user.type(screen.getByLabelText('名前'), 'dev')
     await user.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
     await user.type(screen.getByLabelText('ユーザー'), 'koduchi')
-    await user.click(screen.getByRole('button', { name: '接続' }))
+    await user.click(screen.getByRole('button', { name: '保存して接続' }))
 
     // Assert
     await waitFor(() => expect(calls.connect).toHaveLength(1))
@@ -141,14 +175,16 @@ describe('App', () => {
     })
     setDbApi(api)
     render(<App />)
-    await screen.findByText('接続を作成')
+    await screen.findByText('接続を選ぶ')
     const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '新しい接続' }))
+    await screen.findByText('接続を作成')
 
     // Act
     await user.type(screen.getByLabelText('名前'), 'dev')
     await user.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
     await user.type(screen.getByLabelText('ユーザー'), 'koduchi')
-    await user.click(screen.getByRole('button', { name: '接続' }))
+    await user.click(screen.getByRole('button', { name: '保存して接続' }))
 
     // Assert
     expect(await screen.findByText('ORA-12541: TNS:no listener')).toBeInTheDocument()

@@ -4,7 +4,7 @@
  * デザイン 3a の 3 パネル構成を組み立て、状態に応じて次の 3 つを出し分ける。
  *
  * 1. Instant Client が読めない（ADR 0001） … 案内画面
- * 2. 未接続（デザイン 5g） … 接続を作成する画面
+ * 2. 未接続（デザイン 5g） … 保存した接続を選ぶ画面と、接続を作成する画面
  * 3. 接続中 … エディタと結果ペイン
  *
  * キーバインドのうち、エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌘.` は
@@ -20,6 +20,7 @@ import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plu
 import { getDbApi } from './api/db'
 import { InstantClientNotice } from './components/connection/InstantClientNotice'
 import { ConnectionForm } from './components/connection/ConnectionForm'
+import { ConnectionPicker } from './components/connection/ConnectionPicker'
 import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
 import { RunButton } from './components/editor/RunButton'
@@ -39,7 +40,7 @@ import { buildCompletionSchema, useSchemaStore } from './stores/schema'
 import { selectActiveTab, selectSession, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
 import { currentWindowLabel } from './window'
-import type { ClientStatus, SchemaFilter, TableColumn } from './types/db'
+import type { ClientStatus, SavedConnection, SchemaFilter, TableColumn } from './types/db'
 
 /** カーソルの初期位置。エディタから通知が来るまでの値。 */
 const INITIAL_POSITION: EditorPosition = {
@@ -58,8 +59,17 @@ const SQL_FILTERS = [{ name: 'SQL', extensions: ['sql'] }]
 /** 列がまだ読み込まれていないときに渡す表。参照を固定して再計算を避ける。 */
 const NO_COLUMNS: Record<string, TableColumn[]> = {}
 
+/**
+ * 未接続のときに出す画面。
+ *
+ * 保存した接続を選ぶ画面が手前に立ち、そこから新規作成と編集へ進む。
+ * `connection` が編集対象で、`null` なら新規作成である。
+ */
+type ConnectionView = { mode: 'picker' } | { mode: 'form'; connection: SavedConnection | null }
+
 export function App() {
   const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
+  const [connectionView, setConnectionView] = useState<ConnectionView>({ mode: 'picker' })
   const [csvOpen, setCsvOpen] = useState(false)
   const [csvProgress, setCsvProgress] = useState<CsvExportState | null>(null)
   const csvCancelled = useRef(false)
@@ -488,7 +498,19 @@ export function App() {
     return (
       <Shell onOpenSettings={openSettings} overlay={settings}>
         <CenteredPanel>
-          <ConnectionForm onConnected={onConnected} />
+          {connectionView.mode === 'picker' ? (
+            <ConnectionPicker
+              onConnected={onConnected}
+              onCreate={() => setConnectionView({ mode: 'form', connection: null })}
+              onEdit={(saved) => setConnectionView({ mode: 'form', connection: saved })}
+            />
+          ) : (
+            <ConnectionForm
+              initial={connectionView.connection}
+              onConnected={onConnected}
+              onBack={() => setConnectionView({ mode: 'picker' })}
+            />
+          )}
         </CenteredPanel>
       </Shell>
     )

@@ -93,6 +93,17 @@ impl OracleDriver {
         Ok(driver)
     }
 
+    /// 繋いだ先のデータベースのバージョンを返す。
+    ///
+    /// ODPI-C が接続時に受け取った値を読むだけであり、問い合わせを投げない。
+    /// `V$VERSION` は参照権限を要するため、テスト接続の確認には使えない。
+    pub fn server_version(&self) -> DbResult<String> {
+        self.connection
+            .server_version()
+            .map(|(version, _banner)| instant_client::format_version(&version))
+            .map_err(|error| DbError::connect(format!("バージョンを取得できませんでした: {error}")))
+    }
+
     /// `DBMS_OUTPUT` を有効にする。
     ///
     /// バッファ長に `NULL` を渡すと上限なしになる。

@@ -36,6 +36,7 @@ pub fn run() {
             commands::instant_client::save_instant_client_lib_dir,
             commands::instant_client::find_instant_client_candidates,
             commands::connection::connect,
+            commands::connection::test_connection,
             commands::connection::execute,
             commands::connection::fetch_more,
             commands::connection::release_tab,

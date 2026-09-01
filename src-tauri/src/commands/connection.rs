@@ -46,6 +46,19 @@ pub async fn connect(
     Ok(())
 }
 
+/// 接続を試すだけの確認（接続を作成する画面の「テスト接続」）。
+///
+/// 接続表には載せないため、成功しても以後 `id` で参照できるようにはならない。
+/// 繋いだ結果をその場で捨てるのは、試した接続がプールを占有し続けないためである。
+///
+/// # 引数
+///
+/// * `params` - 接続先とユーザー、読み取り専用の指定
+#[tauri::command]
+pub async fn test_connection(params: ConnectionParams) -> DbResult<String> {
+    run_blocking(move || crate::db::check_connection(&params)).await
+}
+
 /// SQL を 1 文実行する。
 ///
 /// 問い合わせの場合は最初のかたまりだけを返し、カーソルは開いたままにする。

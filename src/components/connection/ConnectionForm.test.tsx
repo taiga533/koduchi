@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
 import type { SavedConnection } from '../../types/db'
 import { useConnectionStore } from '../../stores/connection'
-import { ConnectionForm } from './ConnectionForm'
+import { ConnectionForm, type ConnectionFormProps } from './ConnectionForm'
 
 const 保存済み: SavedConnection = {
   id: 'saved-1',
@@ -27,11 +27,11 @@ const tnsnames = {
 let calls: FakeCalls
 
 /** 窓口を差し替えてフォームを描く。 */
-function 描く(options: FakeDbApiOptions = {}) {
+function 描く(options: FakeDbApiOptions = {}, props: Partial<ConnectionFormProps> = {}) {
   const fake = createFakeDbApi(options)
   calls = fake.calls
   setDbApi(fake.api)
-  render(<ConnectionForm />)
+  render(<ConnectionForm {...props} />)
 }
 
 beforeEach(() => {
@@ -102,47 +102,110 @@ describe('ConnectionForm', () => {
     ).toBeInTheDocument()
   })
 
-  it('保存済みの接続が一覧に並ぶ', async () => {
+  it('初期値を渡すと編集画面として欄が埋まる', async () => {
     // Arrange
-    描く({ savedConnections: [保存済み] })
+    描く({ passwords: { 'saved-1': 'koduchi_dev' } }, { initial: 保存済み })
 
     // Act
-    const 行 = await screen.findByText('開発')
+    const 名前 = screen.getByLabelText('名前')
 
     // Assert
-    expect(行).toBeInTheDocument()
-    expect(screen.getByText('localhost:1521/FREEPDB1')).toBeInTheDocument()
-  })
-
-  it('保存済みの接続を押すと欄が埋まる', async () => {
-    // Arrange
-    描く({ savedConnections: [保存済み] })
-    const 行 = await screen.findByText('開発')
-
-    // Act
-    await userEvent.click(行)
-
-    // Assert
-    await waitFor(() => {
-      expect(screen.getByLabelText('名前')).toHaveValue('開発')
-    })
+    expect(screen.getByText('接続を編集')).toBeInTheDocument()
+    expect(名前).toHaveValue('開発')
     expect(screen.getByLabelText('サービス名')).toHaveValue('FREEPDB1')
     expect(screen.getByLabelText('ユーザー')).toHaveValue('koduchi')
+    await waitFor(() => {
+      expect(screen.getByLabelText('パスワード')).toHaveValue('koduchi_dev')
+    })
   })
 
-  it('保存済みの接続を削除できる', async () => {
+  it('戻るを渡さなければ戻るボタンは出ない', () => {
     // Arrange
-    描く({ savedConnections: [保存済み] })
-    await screen.findByText('開発')
+    描く()
 
     // Act
-    await userEvent.click(screen.getByRole('button', { name: '開発 を削除' }))
+    const 戻る = screen.queryByRole('button', { name: '戻る' })
 
     // Assert
-    expect(calls.deleteConnection).toEqual(['saved-1'])
-    await waitFor(() => {
-      expect(screen.queryByText('localhost:1521/FREEPDB1')).not.toBeInTheDocument()
-    })
+    expect(戻る).not.toBeInTheDocument()
+  })
+
+  it('戻るを押すと選ぶ画面へ返す', async () => {
+    // Arrange
+    const onBack = vi.fn()
+    描く({}, { onBack })
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '戻る' }))
+
+    // Assert
+    expect(onBack).toHaveBeenCalledTimes(1)
+  })
+
+  it('テスト接続は入力した内容で試して繋がったことを伝える', async () => {
+    // Arrange
+    描く({ testVersion: '23.9.0.0.0' })
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+    await userEvent.type(screen.getByLabelText('パスワード'), 'koduchi_dev')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'テスト接続' }))
+
+    // Assert
+    expect(calls.testConnection).toEqual([
+      {
+        username: 'koduchi',
+        password: 'koduchi_dev',
+        target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
+        readOnly: false,
+      },
+    ])
+    expect(
+      await screen.findByText('接続できました · Oracle Database 23.9.0.0.0'),
+    ).toBeInTheDocument()
+    expect(calls.connect).toHaveLength(0)
+  })
+
+  it('テスト接続に失敗すると理由を出す', async () => {
+    // Arrange
+    描く({ testError: { kind: 'connect', message: 'ORA-01017: invalid credential' } })
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'テスト接続' }))
+
+    // Assert
+    expect(await screen.findByText('ORA-01017: invalid credential')).toBeInTheDocument()
+  })
+
+  it('テストの後に入力を変えると結果は消える', async () => {
+    // Arrange
+    描く()
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+    await userEvent.click(screen.getByRole('button', { name: 'テスト接続' }))
+    await screen.findByText('接続できました · Oracle Database 23.9.0.0.0')
+
+    // Act
+    await userEvent.type(screen.getByLabelText('ユーザー'), '2')
+
+    // Assert
+    expect(
+      screen.queryByText('接続できました · Oracle Database 23.9.0.0.0'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('接続先とユーザーが埋まるまでテスト接続は押せない', async () => {
+    // Arrange
+    描く()
+
+    // Act
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+
+    // Assert
+    expect(screen.getByRole('button', { name: 'テスト接続' })).toBeDisabled()
   })
 
   it('接続すると入力した内容がそのまま渡る', async () => {
@@ -154,7 +217,7 @@ describe('ConnectionForm', () => {
     await userEvent.type(screen.getByLabelText('パスワード'), 'koduchi_dev')
 
     // Act
-    await userEvent.click(screen.getByRole('button', { name: '接続' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
 
     // Assert
     await waitFor(() => expect(calls.connect).toHaveLength(1))
@@ -175,12 +238,24 @@ describe('ConnectionForm', () => {
     await userEvent.type(screen.getByLabelText('パスワード'), 'koduchi_dev')
 
     // Act
-    await userEvent.click(screen.getByRole('button', { name: '接続' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
 
     // Assert
     await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
     expect(calls.saveConnection[0].password).toBe('koduchi_dev')
     expect(calls.saveConnection[0].connection.name).toBe('開発')
+  })
+
+  it('保存のチェックを外すとボタンの文言が接続だけになる', async () => {
+    // Arrange
+    描く()
+
+    // Act
+    await userEvent.click(screen.getByLabelText('この接続を保存する（パスワードはキーチェーンへ）'))
+
+    // Assert
+    expect(screen.getByRole('button', { name: '接続' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '保存して接続' })).not.toBeInTheDocument()
   })
 
   it('保存のチェックを外すと保存しない', async () => {

@@ -37,6 +37,12 @@ export interface DbApi {
   findInstantClientCandidates(): Promise<string[]>
   /** データベースへ接続し、以後 `id` で参照できるようにする。 */
   connect(id: string, params: ConnectionParams): Promise<void>
+  /**
+   * 接続できるかだけを試し、繋いだ先のバージョンを返す。
+   *
+   * 接続は残らないため、成功しても以後 `id` では参照できない。
+   */
+  testConnection(params: ConnectionParams): Promise<string>
   /** SQL を 1 文実行する。問い合わせでは最初のかたまりだけが返る。 */
   execute(id: string, tabId: string, sql: string): Promise<ExecuteResponse>
   /** 開いている結果セットから続きを取り出す（ADR 0003）。 */
@@ -110,6 +116,7 @@ const tauriDbApi: DbApi = {
   saveInstantClientLibDir: (libDir) => invoke('save_instant_client_lib_dir', { libDir }),
   findInstantClientCandidates: () => invoke('find_instant_client_candidates'),
   connect: (id, params) => invoke('connect', { id, params }),
+  testConnection: (params) => invoke('test_connection', { params }),
   execute: (id, tabId, sql) => invoke('execute', { id, tabId, sql }),
   fetchMore: (id, tabId) => invoke('fetch_more', { id, tabId }),
   releaseTab: (id, tabId) => invoke('release_tab', { id, tabId }),

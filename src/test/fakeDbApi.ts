@@ -30,6 +30,7 @@ import { defaultCsvOptions } from '../types/db'
 /** 呼び出しの記録。テストから中身を確かめる。 */
 export interface FakeCalls {
   connect: { id: string; params: ConnectionParams }[]
+  testConnection: ConnectionParams[]
   execute: { id: string; tabId: string; sql: string }[]
   fetchMore: { id: string; tabId: string }[]
   releaseTab: { id: string; tabId: string }[]
@@ -45,6 +46,7 @@ export interface FakeCalls {
   explainPlan: { id: string; sql: string }[]
   actualPlan: { id: string; sql: string }[]
   saveConnection: { connection: SavedConnection; password: string | null }[]
+  loadConnectionPassword: string[]
   deleteConnection: string[]
   saveAppSettings: AppSettings[]
   writeTextFile: { path: string; content: string }[]
@@ -64,8 +66,14 @@ export interface FakeDbApiOptions {
   onFetchMore?: (tabId: string) => Chunk | Promise<Chunk>
   /** 接続時に投げるエラー。 */
   connectError?: unknown
+  /** テスト接続が返すバージョン。 */
+  testVersion?: string
+  /** テスト接続で投げるエラー。 */
+  testError?: unknown
   /** 保存済みの接続。 */
   savedConnections?: SavedConnection[]
+  /** 接続 ID ごとのキーチェーンのパスワード。無い ID は未保存として扱う。 */
+  passwords?: Record<string, string>
   /** 履歴の一覧。 */
   history?: HistoryEntry[]
   /** スキーマツリーの段階 1 の応答。 */
@@ -132,6 +140,7 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
 } {
   const calls: FakeCalls = {
     connect: [],
+    testConnection: [],
     execute: [],
     fetchMore: [],
     releaseTab: [],
@@ -147,6 +156,7 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     explainPlan: [],
     actualPlan: [],
     saveConnection: [],
+    loadConnectionPassword: [],
     deleteConnection: [],
     saveAppSettings: [],
     writeTextFile: [],
@@ -170,6 +180,14 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       if (options.connectError !== undefined) {
         throw options.connectError
       }
+    },
+
+    testConnection: async (params) => {
+      calls.testConnection.push(params)
+      if (options.testError !== undefined) {
+        throw options.testError
+      }
+      return options.testVersion ?? '23.9.0.0.0'
     },
 
     execute: async (id, tabId, sql) => {
@@ -204,7 +222,10 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       calls.deleteConnection.push(id)
     },
 
-    loadConnectionPassword: async () => null,
+    loadConnectionPassword: async (id) => {
+      calls.loadConnectionPassword.push(id)
+      return options.passwords?.[id] ?? null
+    },
 
     loadAppSettings: async () => options.appSettings ?? defaultAppSettings,
 

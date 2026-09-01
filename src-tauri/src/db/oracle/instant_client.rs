@@ -190,8 +190,14 @@ pub fn initialize(lib_dir: Option<&Path>) -> ClientStatus {
     }
 }
 
-/// Instant Client のバージョンを `23.9.0.25.7` の形に整える。
-fn format_version(version: &oracle::Version) -> String {
+/// Oracle のバージョンを `23.9.0.25.7` の形に整える。
+///
+/// Instant Client とデータベースサーバの双方に使う。
+///
+/// # 引数
+///
+/// * `version` - ODPI-C が返したバージョン
+pub fn format_version(version: &oracle::Version) -> String {
     format!(
         "{}.{}.{}.{}.{}",
         version.major(),
