@@ -15,7 +15,7 @@
  * 選択中のタブに依存させず、押された時点のタブをストアから読む。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { getDbApi } from './api/db'
 import { InstantClientNotice } from './components/connection/InstantClientNotice'
@@ -23,8 +23,9 @@ import { ConnectionForm } from './components/connection/ConnectionForm'
 import { ConnectionPicker } from './components/connection/ConnectionPicker'
 import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
+import { EditorPanel } from './components/editor/EditorPanel'
 import { RunButton } from './components/editor/RunButton'
-import { SqlEditor, type EditorPosition } from './components/editor/SqlEditor'
+import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
 import { ResultPane } from './components/results/ResultPane'
 import { SettingsPanel } from './components/settings/SettingsPanel'
@@ -36,11 +37,11 @@ import { isSelectStatement, statementAt } from './sql/statements'
 import { useConnectionStore } from './stores/connection'
 import { useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
-import { buildCompletionSchema, useSchemaStore } from './stores/schema'
+import { useSchemaStore } from './stores/schema'
 import { selectActiveTab, selectSession, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
 import { currentWindowLabel } from './window'
-import type { ClientStatus, SavedConnection, SchemaFilter, TableColumn } from './types/db'
+import type { ClientStatus, SavedConnection, SchemaFilter } from './types/db'
 
 /** カーソルの初期位置。エディタから通知が来るまでの値。 */
 const INITIAL_POSITION: EditorPosition = {
@@ -55,9 +56,6 @@ const SESSION_SAVE_DELAY = 600
 
 /** `.sql` ファイルを開く / 保存するときの絞り込み。 */
 const SQL_FILTERS = [{ name: 'SQL', extensions: ['sql'] }]
-
-/** 列がまだ読み込まれていないときに渡す表。参照を固定して再計算を避ける。 */
-const NO_COLUMNS: Record<string, TableColumn[]> = {}
 
 /**
  * 未接続のときに出す画面。
@@ -77,9 +75,10 @@ export function App() {
   const positionRef = useRef<EditorPosition>(INITIAL_POSITION)
 
   const connection = useConnectionStore((state) => state.connection)
-  const tabs = useTabStore((state) => state.tabs)
   const activeTabId = useTabStore((state) => state.activeTabId)
-  const activeTab = useTabStore(selectActiveTab)
+  // 名前だけを購読する。タブの配列そのものを見ると、打鍵のたびにここが
+  // 描き直り、サイドバーと結果ペインまで巻き添えになる。
+  const activeTabName = useTabStore((state) => selectActiveTab(state)?.name ?? '')
   const updateContent = useTabStore((state) => state.updateContent)
   const closeTab = useTabStore((state) => state.closeTab)
   const openNewTab = useTabStore((state) => state.openNewTab)
@@ -94,7 +93,6 @@ export function App() {
   const releaseTab = useExecutionStore((state) => state.releaseTab)
   const markExhausted = useExecutionStore((state) => state.markExhausted)
 
-  const sidebarSegment = useUiStore((state) => state.sidebarSegment)
   const selectSidebarSegment = useUiStore((state) => state.selectSidebarSegment)
   const selectResultTab = useUiStore((state) => state.selectResultTab)
   const setCursor = useUiStore((state) => state.setCursor)
@@ -105,23 +103,8 @@ export function App() {
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
 
-  const schemas = useSchemaStore((state) => state.schemas)
-  const schemaColumns = useSchemaStore((state) => state.columns)
-  const columnsReady = useSchemaStore((state) => state.columnStatus === 'ready')
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
-
-  /**
-   * 補完の元。
-   *
-   * 列は読み込み終えてから 1 度だけ渡す。段階 2 の途中で差し替え続けると、
-   * 候補が出ている最中に言語設定が作り直されてちらつく（ADR 0007）。
-   */
-  const readyColumns = columnsReady ? schemaColumns : NO_COLUMNS
-  const completionSchema = useMemo(
-    () => buildCompletionSchema(schemas, readyColumns),
-    [readyColumns, schemas],
-  )
 
   // 起動時に Instant Client を初期化する。接続を試す前に判定できるため、
   // 意味の分からないエラーで落ちる事態を避けられる（ADR 0001）。
@@ -158,18 +141,6 @@ export function App() {
       })
       .catch(() => {})
   }, [restoreTabs, selectSidebarSegment])
-
-  // タブの状態が落ち着いたら書き出す。1 打鍵ごとに書かないよう少し待つ。
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const session = selectSession({ tabs, activeTabId }, sidebarSegment)
-      void getDbApi()
-        .saveSession(currentWindowLabel(), session)
-        .catch(() => {})
-    }, SESSION_SAVE_DELAY)
-
-    return () => clearTimeout(timer)
-  }, [activeTabId, sidebarSegment, tabs])
 
   /** エディタからのカーソル通知。描画に関わる分だけストアへ渡す。 */
   const onCursorChange = useCallback(
@@ -549,20 +520,14 @@ export function App() {
       <div className="flex-1 min-w-0 flex flex-col gap-6px">
         <TabBar onCloseTab={closeTabAndRelease} />
         <div className="relative h-268px shrink-0 bg-panel rounded-10px border border-line overflow-hidden">
-          {activeTab ? (
-            <SqlEditor
-              key={activeTab.id}
-              value={activeTab.content}
-              schema={completionSchema}
-              onChange={(content) => updateContent(activeTab.id, content)}
-              onCursorChange={onCursorChange}
-              onRunStatement={runStatement}
-              onRunSelection={runSelection}
-              onCancel={cancelExecution}
-            />
-          ) : null}
+          <EditorPanel
+            onCursorChange={onCursorChange}
+            onRunStatement={runStatement}
+            onRunSelection={runSelection}
+            onCancel={cancelExecution}
+          />
           <RunControls
-            tabId={activeTab?.id ?? null}
+            tabId={activeTabId}
             onRun={runStatement}
             onRunSelection={runSelection}
             onExplain={() => void runPlan(false)}
@@ -572,8 +537,8 @@ export function App() {
           />
         </div>
         <ResultPane
-          tabId={activeTab?.id ?? null}
-          runningLabel={`${connection.name} · ${activeTab?.name ?? ''}`}
+          tabId={activeTabId}
+          runningLabel={`${connection.name} · ${activeTabName}`}
           onCancel={cancelExecution}
           onRequestMore={requestMore}
         />
@@ -625,12 +590,39 @@ function Shell({
 }) {
   return (
     <div className="relative h-full flex flex-col bg-bg">
+      <SessionSaver />
       <TitleBar />
       <div className="flex-1 min-h-0 flex gap-6px p-6px">{children}</div>
       <StatusBar onOpenSettings={onOpenSettings} />
       {overlay}
     </div>
   )
+}
+
+/**
+ * タブ構成の書き出し（ADR 0005）。
+ *
+ * 打鍵のたびに変わるタブの配列を、この何も描かない部品だけで購読する。
+ * ルートで購読すると画面全体が打鍵ごとに描き直る。
+ */
+function SessionSaver() {
+  const tabs = useTabStore((state) => state.tabs)
+  const activeTabId = useTabStore((state) => state.activeTabId)
+  const sidebarSegment = useUiStore((state) => state.sidebarSegment)
+
+  // タブの状態が落ち着いたら書き出す。1 打鍵ごとに書かないよう少し待つ。
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const session = selectSession({ tabs, activeTabId }, sidebarSegment)
+      void getDbApi()
+        .saveSession(currentWindowLabel(), session)
+        .catch(() => {})
+    }, SESSION_SAVE_DELAY)
+
+    return () => clearTimeout(timer)
+  }, [activeTabId, sidebarSegment, tabs])
+
+  return null
 }
 
 /** 本体いっぱいに広がる 1 枚のパネル。案内画面と接続作成に使う。 */
