@@ -1,9 +1,22 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { SchemaNode, TableColumn } from '../../types/db'
 import { useSchemaStore } from '../../stores/schema'
-import { SchemaTree } from './SchemaTree'
+import { flattenSchemas, SchemaTree } from './SchemaTree'
+
+/**
+ * jsdom は要素の寸法を持たない。仮想スクロールは `offsetHeight` で表示領域を
+ * 測るため、そのままだと領域が 0 と見なされて行が 1 つも描かれない。
+ *
+ * 補うのは寸法だけで、アプリの振る舞いは差し替えていない。
+ */
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    value: 600,
+  })
+})
 
 const スキーマ一覧: SchemaNode[] = [
   {
@@ -117,6 +130,68 @@ describe('SchemaTree', () => {
 
     // Assert
     expect(screen.getByText('ORA-00942')).toBeInTheDocument()
+  })
+})
+
+describe('flattenSchemas', () => {
+  it('畳んだスキーマは自身の 1 行だけになる', () => {
+    // Arrange
+    const expanded = {}
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
+
+    // Assert
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ kind: 'schema', name: 'KODUCHI', open: false })
+  })
+
+  it('展開したスキーマの下にオブジェクトが並ぶ', () => {
+    // Arrange
+    const expanded = { KODUCHI: true }
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
+
+    // Assert
+    expect(rows.map((row) => row.kind)).toEqual(['schema', 'object', 'object'])
+    expect(rows[2]).toMatchObject({ name: 'ORDER_TOTAL', expandable: false })
+  })
+
+  it('展開したテーブルの下に自分の列だけが並ぶ', () => {
+    // Arrange
+    const expanded = { KODUCHI: true, 'KODUCHI.USERS': true }
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
+
+    // Assert
+    expect(rows.filter((row) => row.kind === 'column').map((row) => row.name)).toEqual([
+      'USER_ID',
+      'EMAIL',
+    ])
+  })
+
+  it('列が未取得のテーブルには読み込み中の行が入る', () => {
+    // Arrange
+    const expanded = { KODUCHI: true, 'KODUCHI.USERS': true }
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, {}, expanded)
+
+    // Assert
+    expect(rows.map((row) => row.kind)).toEqual(['schema', 'object', 'columnsLoading', 'object'])
+  })
+
+  it('展開できない種類は開いた印を付けても展開されない', () => {
+    // Arrange
+    const expanded = { KODUCHI: true, 'KODUCHI.ORDER_TOTAL': true }
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
+
+    // Assert
+    expect(rows.map((row) => row.kind)).toEqual(['schema', 'object', 'object'])
   })
 })
 

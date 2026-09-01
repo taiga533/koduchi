@@ -121,7 +121,10 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto">
+      {/* スキーマツリーは仮想スクロールのため、自前のスクロール枠を持つ。 */}
+      <div
+        className={`flex-1 min-h-0 ${segment === 'schema' ? 'overflow-hidden' : 'overflow-auto'}`}
+      >
         {segment === 'schema' ? <SchemaTree /> : null}
         {segment === 'history' ? <HistoryList onUse={onUseHistory} /> : null}
         {segment === 'saved' ? (

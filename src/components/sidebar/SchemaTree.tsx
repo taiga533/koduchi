@@ -5,9 +5,15 @@
  * テーブルとビューはさらに展開でき、読み込み済みの列が型付きで並ぶ。
  *
  * テーブル定義ビューは器のみで開かない（ADR の機能スコープ）。
+ *
+ * 木のまま描くと、描き直しの手間が中身の量に比例する。Oracle のスキーマは
+ * オブジェクトが数千に達することがあり、列の読み込みが進むたびに全体を組み直すと
+ * 絞り込みの入力が目に見えて詰まる。そこで一度平らな行の並びに直し、見えている
+ * 分だけを描く（結果テーブルと同じ TanStack Virtual）。
  */
 
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   Boxes,
   ChevronDown,
@@ -37,6 +43,121 @@ const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
 /** 列を持ちうる種類。展開して列を出せるのはこれだけである。 */
 const EXPANDABLE: ObjectKind[] = ['table', 'view', 'materializedView']
 
+/** 平らにした 1 行。仮想スクロールに載せる単位である。 */
+export type TreeRow =
+  | { kind: 'schema'; key: string; name: string; objectCount: number; open: boolean }
+  | {
+      kind: 'object'
+      key: string
+      name: string
+      objectKind: ObjectKind
+      expandable: boolean
+      open: boolean
+    }
+  | { kind: 'column'; key: string; name: string; typeName: string }
+  | { kind: 'columnsLoading'; key: string }
+
+/**
+ * 行の高さの見積もり。
+ *
+ * 実寸は描いてから測るため、ここは初回の位置決めに使う概算でよい。
+ */
+const ESTIMATED_HEIGHTS: Record<TreeRow['kind'], number> = {
+  schema: 26,
+  object: 24,
+  column: 20,
+  columnsLoading: 20,
+}
+
+/**
+ * 列を所属オブジェクトごとに束ねる。
+ *
+ * 行ごとに `filter` すると、オブジェクト数 × 列数の手間がかかる。
+ *
+ * @param columns スキーマ 1 つ分の列
+ */
+function groupByObject(columns: TableColumn[]): Map<string, TableColumn[]> {
+  const grouped = new Map<string, TableColumn[]>()
+  for (const column of columns) {
+    const 束 = grouped.get(column.objectName)
+    if (束) {
+      束.push(column)
+    } else {
+      grouped.set(column.objectName, [column])
+    }
+  }
+  return grouped
+}
+
+/**
+ * 木を、開いている枝だけを含む平らな行の並びに直す。
+ *
+ * 畳んだ枝の中身は行にしない。閉じたものを描く手間はここで消える。
+ *
+ * @param schemas 絞り込み済みのスキーマ
+ * @param columns スキーマ名ごとの列
+ * @param expanded 展開している節の表
+ */
+export function flattenSchemas(
+  schemas: SchemaNode[],
+  columns: Record<string, TableColumn[]>,
+  expanded: Record<string, boolean>,
+): TreeRow[] {
+  const rows: TreeRow[] = []
+
+  for (const schema of schemas) {
+    const schemaKey = nodeKey(schema.name)
+    const schemaOpen = expanded[schemaKey] ?? false
+    rows.push({
+      kind: 'schema',
+      key: schemaKey,
+      name: schema.name,
+      objectCount: schema.objectCount,
+      open: schemaOpen,
+    })
+
+    if (!schemaOpen) {
+      continue
+    }
+
+    const 列の束 = groupByObject(columns[schema.name] ?? [])
+
+    for (const object of schema.objects) {
+      const objectKey = nodeKey(schema.name, object.name)
+      const expandable = EXPANDABLE.includes(object.kind)
+      const objectOpen = expandable && (expanded[objectKey] ?? false)
+      rows.push({
+        kind: 'object',
+        key: objectKey,
+        name: object.name,
+        objectKind: object.kind,
+        expandable,
+        open: objectOpen,
+      })
+
+      if (!objectOpen) {
+        continue
+      }
+
+      const 列 = 列の束.get(object.name) ?? []
+      if (列.length === 0) {
+        rows.push({ kind: 'columnsLoading', key: `${objectKey} loading` })
+        continue
+      }
+      for (const column of 列) {
+        rows.push({
+          kind: 'column',
+          key: `${objectKey} ${column.name}`,
+          name: column.name,
+          typeName: column.typeName,
+        })
+      }
+    }
+  }
+
+  return rows
+}
+
 export function SchemaTree() {
   const allSchemas = useSchemaStore((state) => state.schemas)
   const columns = useSchemaStore((state) => state.columns)
@@ -46,11 +167,24 @@ export function SchemaTree() {
   const status = useSchemaStore((state) => state.status)
   const error = useSchemaStore((state) => state.error)
 
+  const scrollRef = useRef<HTMLDivElement>(null)
+
   // 絞り込みは毎回新しい配列を作るため、ここで記憶しておく。
   const schemas = useMemo(
     () => filterSchemas(allSchemas, columns, search),
     [allSchemas, columns, search],
   )
+  const rows = useMemo(
+    () => flattenSchemas(schemas, columns, expanded),
+    [columns, expanded, schemas],
+  )
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => ESTIMATED_HEIGHTS[rows[index].kind],
+    overscan: 12,
+  })
 
   if (status === 'loading' && schemas.length === 0) {
     return <Notice>スキーマを読み込んでいます…</Notice>
@@ -65,95 +199,62 @@ export function SchemaTree() {
   }
 
   return (
-    <ul className="list-none m-0 p-0 flex flex-col">
-      {schemas.map((schema) => (
-        <SchemaRow
-          key={schema.name}
-          schema={schema}
-          columns={columns[schema.name] ?? []}
-          expanded={expanded}
-          onToggle={toggle}
-        />
-      ))}
-    </ul>
+    <div ref={scrollRef} className="h-full overflow-auto">
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        {virtualizer.getVirtualItems().map((item) => (
+          <div
+            key={rows[item.index].key}
+            data-index={item.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              transform: `translateY(${item.start}px)`,
+            }}
+          >
+            <Row row={rows[item.index]} onToggle={toggle} />
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
-interface SchemaRowProps {
-  schema: SchemaNode
-  columns: TableColumn[]
-  expanded: Record<string, boolean>
-  onToggle: (key: string) => void
-}
-
-/** スキーマ 1 行と、展開したときのオブジェクト。 */
-function SchemaRow({ schema, columns, expanded, onToggle }: SchemaRowProps) {
-  const key = nodeKey(schema.name)
-  const open = expanded[key] ?? false
-
-  return (
-    <li>
+/** 平らにした 1 行を、種類に応じて描き分ける。 */
+function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string) => void }) {
+  if (row.kind === 'schema') {
+    return (
       <button
         type="button"
-        onClick={() => onToggle(key)}
-        aria-expanded={open}
+        onClick={() => onToggle(row.key)}
+        aria-expanded={row.open}
         className="w-full flex items-center gap-7px px-10px py-5px bg-transparent border-none cursor-pointer font-inherit text-left text-12px text-fg hover:bg-fill"
       >
-        {open ? (
+        {row.open ? (
           <ChevronDown size={13} className="text-fg5 shrink-0" />
         ) : (
           <ChevronRight size={13} className="text-fg5 shrink-0" />
         )}
-        <span className="flex-1 truncate">{schema.name}</span>
-        <span className="text-10.5px text-fg5">{schema.objectCount}</span>
+        <span className="flex-1 truncate">{row.name}</span>
+        <span className="text-10.5px text-fg5">{row.objectCount}</span>
       </button>
+    )
+  }
 
-      {open ? (
-        <ul className="list-none m-0 p-0">
-          {schema.objects.map((object) => (
-            <ObjectRow
-              key={object.name}
-              schemaName={schema.name}
-              name={object.name}
-              kind={object.kind}
-              columns={columns.filter((column) => column.objectName === object.name)}
-              expanded={expanded}
-              onToggle={onToggle}
-            />
-          ))}
-        </ul>
-      ) : null}
-    </li>
-  )
-}
-
-interface ObjectRowProps {
-  schemaName: string
-  name: string
-  kind: ObjectKind
-  columns: TableColumn[]
-  expanded: Record<string, boolean>
-  onToggle: (key: string) => void
-}
-
-/** オブジェクト 1 行と、展開したときの列。 */
-function ObjectRow({ schemaName, name, kind, columns, expanded, onToggle }: ObjectRowProps) {
-  const key = nodeKey(schemaName, name)
-  const open = expanded[key] ?? false
-  const expandable = EXPANDABLE.includes(kind)
-  const Icon = KIND_ICONS[kind]
-
-  return (
-    <li>
+  if (row.kind === 'object') {
+    const Icon = KIND_ICONS[row.objectKind]
+    return (
       <button
         type="button"
-        onClick={() => (expandable ? onToggle(key) : undefined)}
-        aria-expanded={expandable ? open : undefined}
+        onClick={() => (row.expandable ? onToggle(row.key) : undefined)}
+        aria-expanded={row.expandable ? row.open : undefined}
         className="w-full flex items-center gap-6px pl-22px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
       >
         <span className="w-13px shrink-0 flex items-center">
-          {expandable ? (
-            open ? (
+          {row.expandable ? (
+            row.open ? (
               <ChevronDown size={12} className="text-fg5" />
             ) : (
               <ChevronRight size={12} className="text-fg5" />
@@ -161,8 +262,8 @@ function ObjectRow({ schemaName, name, kind, columns, expanded, onToggle }: Obje
           ) : null}
         </span>
         <Icon size={13} className="text-fg5 shrink-0" />
-        <span className="flex-1 truncate">{name}</span>
-        {expandable ? (
+        <span className="flex-1 truncate">{row.name}</span>
+        {row.expandable ? (
           // テーブル定義ビューは器だけで、開かない（ADR の機能スコープ）。
           <span
             aria-disabled="true"
@@ -173,25 +274,18 @@ function ObjectRow({ schemaName, name, kind, columns, expanded, onToggle }: Obje
           </span>
         ) : null}
       </button>
+    )
+  }
 
-      {open ? (
-        <ul className="list-none m-0 p-0">
-          {columns.length === 0 ? (
-            <li className="pl-48px pr-10px py-3px text-11px text-fg5">列情報を読み込み中…</li>
-          ) : (
-            columns.map((column) => (
-              <li
-                key={column.name}
-                className="flex items-center gap-8px pl-48px pr-10px py-3px text-11px"
-              >
-                <span className="flex-1 truncate text-fg3">{column.name}</span>
-                <span className="text-10.5px text-fg5 shrink-0">{column.typeName}</span>
-              </li>
-            ))
-          )}
-        </ul>
-      ) : null}
-    </li>
+  if (row.kind === 'columnsLoading') {
+    return <p className="m-0 pl-48px pr-10px py-3px text-11px text-fg5">列情報を読み込み中…</p>
+  }
+
+  return (
+    <div className="flex items-center gap-8px pl-48px pr-10px py-3px text-11px">
+      <span className="flex-1 truncate text-fg3">{row.name}</span>
+      <span className="text-10.5px text-fg5 shrink-0">{row.typeName}</span>
+    </div>
   )
 }
 
