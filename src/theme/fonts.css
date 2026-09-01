@@ -1,0 +1,44 @@
+/**
+ * 同梱書体の登録。
+ *
+ * PlemolJP v3.1.0（等幅版）を同梱する。IBM Plex Mono と IBM Plex Sans JP を
+ * 合成した等幅書体で、半角と全角の幅比が 1:2 に揃う。結果テーブルに日本語の
+ * データが並んでも桁がずれないため、データベースクライアントの表示に向く。
+ *
+ * データベースの内容は任意の文字を含みうるため、サブセット化はしていない。
+ * ライセンスは SIL Open Font License 1.1（`assets/fonts/LICENSE.txt`）。
+ *
+ * 収録するウェイトはデザインが使う 400 / 500 / 600 / 700 の 4 つに絞ってある。
+ */
+
+@font-face {
+  font-family: 'PlemolJP';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('../assets/fonts/PlemolJP-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'PlemolJP';
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url('../assets/fonts/PlemolJP-Medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'PlemolJP';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url('../assets/fonts/PlemolJP-SemiBold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'PlemolJP';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url('../assets/fonts/PlemolJP-Bold.woff2') format('woff2');
+}

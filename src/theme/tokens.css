@@ -1,0 +1,157 @@
+/**
+ * デザイントークン（ADR 0008）。
+ *
+ * 出典は Claude Design プロジェクトの `DB Client.dc.html` 末尾で定義されている
+ * `themeVars`。ライト / ダークの値をそのまま CSS 変数として持つ。
+ *
+ * テーマの決定規則:
+ *   - `data-theme` 属性なし … システム追従（`prefers-color-scheme`）
+ *   - `data-theme="light"` … ライト固定
+ *   - `data-theme="dark"`  … ダーク固定
+ *
+ * アクセント色はオリーブ `#6d7a35` に固定する（ADR 0008）。デザインが実行時に
+ * 計算していた値は、あらかじめ導出した定数として書き下してある。
+ *   - ダークの `--ac`     : 明度 1.62 倍にスケールした `#b1c656`
+ *   - `--acfg`            : アクセントの輝度が 0.62 を超えるかで白 / 黒を選ぶ
+ *                           （ライト 0.448 → 白、ダーク 0.727 → `#20200a`）
+ *   - `--acdiv`           : アクセントを 0.66 倍した値
+ */
+
+:root {
+  /* 面と罫線 */
+  --bg: #e9ecf1;
+  --panel: #ffffff;
+  --panel2: #fafbfc;
+  --fill: #f5f6f8;
+  --fill2: #f0f2f5;
+  --line: #dfe3e8;
+  --line2: #eceef2;
+
+  /* 文字 */
+  --fg: #16181d;
+  --fg2: #4b5058;
+  --fg3: #7c828c;
+  --fg4: #9aa0a9;
+  --fg5: #b3b9c2;
+  --fg6: #c4c9d1;
+
+  /* アクセント */
+  --ac: #6d7a35;
+  --acfg: #ffffff;
+  --acdiv: #485123;
+
+  /* SQL シンタックスハイライト */
+  --kw: oklch(0.48 0.12 265);
+  --str: oklch(0.47 0.1 150);
+  --num: oklch(0.5 0.11 40);
+  --fn: #16181d;
+  --cmt: #a2a7b0;
+  --err: #b23a2f;
+
+  /* 差分表示（Ask AI 用。本アプリでは未使用だが将来のために残す。ADR 0008） */
+  --dmb: #f7eceb;
+  --dmf: #8a4038;
+  --dpb: #eef2e4;
+  --dpf: #4b5a1f;
+
+  /* 結果テーブルの罫線色。`--gl` は表示設定で透明にも切り替わる */
+  --gl-color: #f1f3f6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #1f2228;
+    --panel: #23262c;
+    --panel2: #26292f;
+    --fill: #2a2e35;
+    --fill2: #31353d;
+    --line: #34383f;
+    --line2: #2c3037;
+
+    --fg: #e7e9ed;
+    --fg2: #b8bdc5;
+    --fg3: #8d949e;
+    --fg4: #7d838d;
+    --fg5: #676e78;
+    --fg6: #565d67;
+
+    --ac: #b1c656;
+    --acfg: #20200a;
+    --acdiv: #758339;
+
+    --kw: oklch(0.74 0.13 265);
+    --str: oklch(0.75 0.11 150);
+    --num: oklch(0.77 0.11 45);
+    --fn: #e7e9ed;
+    --cmt: #767d87;
+    --err: #f0897b;
+
+    --dmb: #3a2825;
+    --dmf: #e59a90;
+    --dpb: #2c331f;
+    --dpf: #bacd80;
+
+    --gl-color: #2b2f36;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #1f2228;
+  --panel: #23262c;
+  --panel2: #26292f;
+  --fill: #2a2e35;
+  --fill2: #31353d;
+  --line: #34383f;
+  --line2: #2c3037;
+
+  --fg: #e7e9ed;
+  --fg2: #b8bdc5;
+  --fg3: #8d949e;
+  --fg4: #7d838d;
+  --fg5: #676e78;
+  --fg6: #565d67;
+
+  --ac: #b1c656;
+  --acfg: #20200a;
+  --acdiv: #758339;
+
+  --kw: oklch(0.74 0.13 265);
+  --str: oklch(0.75 0.11 150);
+  --num: oklch(0.77 0.11 45);
+  --fn: #e7e9ed;
+  --cmt: #767d87;
+  --err: #f0897b;
+
+  --dmb: #3a2825;
+  --dmf: #e59a90;
+  --dpb: #2c331f;
+  --dpf: #bacd80;
+
+  --gl-color: #2b2f36;
+}
+
+/*
+ * 表示設定（ADR 0008）。テーマとは独立に切り替わるため、`data-theme` とは
+ * 別の属性で制御する。既定はデザインの初期値（罫線あり / 行は詰める）。
+ */
+:root {
+  --gl: var(--gl-color);
+  --rp: 4px 9px;
+}
+
+:root[data-grid-lines='off'] {
+  --gl: transparent;
+}
+
+:root[data-row-height='comfortable'] {
+  --rp: 8px 9px;
+}
+
+/*
+ * 書体。デザインは UI 全体を等幅で組んでおり、本アプリは日本語を含むデータを
+ * 桁を揃えて表示する必要があるため、同梱の PlemolJP（等幅版）を使う。
+ * 登録は `fonts.css` にある。
+ */
+:root {
+  --font-mono: 'PlemolJP', ui-monospace, 'SF Mono', Menlo, monospace;
+}

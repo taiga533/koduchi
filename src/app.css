@@ -1,0 +1,23 @@
+/**
+ * アプリ全体の土台。色や寸法は `theme/tokens.css` の CSS 変数を参照する。
+ */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  /* ネイティブの文字選択はエディタと結果テーブルでのみ有効にする */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+* {
+  box-sizing: border-box;
+}

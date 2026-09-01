@@ -1,0 +1,35 @@
+# 開発用 Oracle データベース（ADR 0010）。
+#
+# 統合テストと動作確認に使う。開発者が手動で起動する:
+#
+#   docker compose up -d
+#   export KODUCHI_TEST_ORACLE_URL='localhost:1521/FREEPDB1'
+#
+# 初回起動はスキーマ投入まで含めて数分かかる。2 回目以降はボリューム
+# `koduchi-oracle-data` を再利用するため速い。起動完了は healthcheck で判定できる。
+services:
+  oracle:
+    image: gvenzl/oracle-free:23.9-slim
+    container_name: koduchi-oracle
+    ports:
+      - '1521:1521'
+    environment:
+      # SYS / SYSTEM のパスワード。開発専用であり本番の値ではない。
+      ORACLE_PASSWORD: koduchi_dev
+      # 起動時に作られる PDB 上のアプリケーションユーザー。
+      APP_USER: koduchi
+      APP_USER_PASSWORD: koduchi_dev
+    volumes:
+      - koduchi-oracle-data:/opt/oracle/oradata
+      # `/container-entrypoint-initdb.d` 配下のスクリプトは、
+      # データベースが新規作成されたときに一度だけ実行される。
+      - ./dev/oracle/initdb:/container-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh']
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+volumes:
+  koduchi-oracle-data:

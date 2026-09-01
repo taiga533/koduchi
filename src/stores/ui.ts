@@ -1,0 +1,172 @@
+/**
+ * 画面の見た目に関する状態を持つストア。
+ *
+ * サイドバーの選択セグメントと外観設定（ADR 0008）、および設定画面と CSV 保存
+ * ダイアログの開閉を扱う。外観設定はルート要素の属性へ反映し、同時にファイルへ
+ * 保存する。CSV の書式も「次回のために保存する」対象である。
+ */
+
+import { create } from 'zustand'
+import { getDbApi } from '../api/db'
+import type { Appearance, RowHeight, ThemePreference } from '../theme/appearance'
+import { applyAppearance, defaultAppearance } from '../theme/appearance'
+import type { AppSettings, CsvOptions } from '../types/db'
+import { defaultCsvOptions } from '../types/db'
+
+/** サイドバーのセグメント。 */
+export type SidebarSegment = 'schema' | 'history' | 'saved'
+
+/** 結果ペインのタブ。 */
+export type ResultTab = 'result' | 'messages' | 'plan'
+
+/** エディタのカーソル位置。ステータスバーに出す。 */
+export interface CursorPosition {
+  /** 1 始まりの行番号。 */
+  line: number
+  /** 1 始まりの桁。 */
+  column: number
+}
+
+interface UiState {
+  sidebarSegment: SidebarSegment
+  resultTab: ResultTab
+  /**
+   * エディタのカーソル位置。
+   *
+   * ステータスバーと実行ボタンだけが見る。打鍵のたびにアプリ全体を描き直すと
+   * 結果テーブルまで巻き込まれるため、値をここへ逃がしてある。
+   */
+  cursor: CursorPosition
+  /** 選択範囲があるか。「選択範囲のみ実行」を押せるかの判定に使う。 */
+  hasSelection: boolean
+  appearance: Appearance
+  csvOptions: CsvOptions
+  /** 設定画面を開いているか。 */
+  settingsOpen: boolean
+
+  selectSidebarSegment: (segment: SidebarSegment) => void
+  selectResultTab: (tab: ResultTab) => void
+  /** カーソル位置を伝える。値が変わらなければ何もしない。 */
+  setCursor: (cursor: CursorPosition, hasSelection: boolean) => void
+  setTheme: (theme: ThemePreference) => void
+  setGridLines: (gridLines: boolean) => void
+  setRowHeight: (rowHeight: RowHeight) => void
+  setCsvOptions: (options: CsvOptions) => void
+  openSettings: () => void
+  closeSettings: () => void
+  /** 保存済みの設定を読み込んで反映する。起動時に 1 度呼ぶ。 */
+  loadSettings: () => Promise<void>
+}
+
+/**
+ * 外観設定をルート要素へ反映する。
+ *
+ * jsdom でも `document` は存在するため、テストでも同じ経路が使える。
+ */
+function reflect(appearance: Appearance): void {
+  applyAppearance(document.documentElement, appearance)
+}
+
+/**
+ * 保存する形へ変換する。
+ *
+ * `theme` と `rowHeight` は Rust 側では文字列として扱う。値の意味を知っているのは
+ * フロントエンドだけである。
+ */
+function toSettings(appearance: Appearance, csv: CsvOptions): AppSettings {
+  return {
+    appearance: {
+      theme: appearance.theme,
+      gridLines: appearance.gridLines,
+      rowHeight: appearance.rowHeight,
+    },
+    csv,
+  }
+}
+
+/**
+ * 設定をファイルへ書く。
+ *
+ * 書き込みに失敗しても画面の見た目は既に変わっている。設定の保存に失敗したことで
+ * 操作を巻き戻すほうが分かりにくいため、失敗は握りつぶす。
+ */
+function persist(appearance: Appearance, csv: CsvOptions): void {
+  void getDbApi()
+    .saveAppSettings(toSettings(appearance, csv))
+    .catch(() => {})
+}
+
+export const useUiStore = create<UiState>((set, get) => ({
+  sidebarSegment: 'schema',
+  resultTab: 'result',
+  cursor: { line: 1, column: 1 },
+  hasSelection: false,
+  appearance: defaultAppearance,
+  csvOptions: defaultCsvOptions,
+  settingsOpen: false,
+
+  selectSidebarSegment: (segment) => set({ sidebarSegment: segment }),
+  selectResultTab: (tab) => set({ resultTab: tab }),
+
+  setCursor: (cursor, hasSelection) =>
+    set((state) => {
+      // 同じ位置での再設定で購読側を描き直さない。
+      if (
+        state.cursor.line === cursor.line &&
+        state.cursor.column === cursor.column &&
+        state.hasSelection === hasSelection
+      ) {
+        return state
+      }
+      return { cursor, hasSelection }
+    }),
+
+  setTheme: (theme) =>
+    set((state) => {
+      const appearance = { ...state.appearance, theme }
+      reflect(appearance)
+      persist(appearance, state.csvOptions)
+      return { appearance }
+    }),
+
+  setGridLines: (gridLines) =>
+    set((state) => {
+      const appearance = { ...state.appearance, gridLines }
+      reflect(appearance)
+      persist(appearance, state.csvOptions)
+      return { appearance }
+    }),
+
+  setRowHeight: (rowHeight) =>
+    set((state) => {
+      const appearance = { ...state.appearance, rowHeight }
+      reflect(appearance)
+      persist(appearance, state.csvOptions)
+      return { appearance }
+    }),
+
+  setCsvOptions: (csvOptions) =>
+    set((state) => {
+      persist(state.appearance, csvOptions)
+      return { csvOptions }
+    }),
+
+  openSettings: () => set({ settingsOpen: true }),
+  closeSettings: () => set({ settingsOpen: false }),
+
+  loadSettings: async () => {
+    try {
+      const settings = await getDbApi().loadAppSettings()
+      const appearance: Appearance = {
+        theme: (settings.appearance.theme as ThemePreference) ?? defaultAppearance.theme,
+        gridLines: settings.appearance.gridLines,
+        rowHeight: (settings.appearance.rowHeight as RowHeight) ?? defaultAppearance.rowHeight,
+      }
+      reflect(appearance)
+      set({ appearance, csvOptions: settings.csv })
+    } catch {
+      // 設定が読めなくても既定値で動く。起動を止める理由にはしない。
+      reflect(get().appearance)
+    }
+  },
+}))

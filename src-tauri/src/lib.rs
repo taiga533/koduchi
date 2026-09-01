@@ -1,14 +1,71 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+//! 小槌（koduchi）— Oracle / PostgreSQL 対応の GUI データベースクライアント。
+//!
+//! このファイルはコマンドの登録だけを行う。実装は `commands` と `db` に置く。
 
+pub mod commands;
+pub mod config;
+pub mod csv;
+pub mod db;
+pub mod history;
+pub mod keychain;
+pub mod tnsnames;
+
+use commands::AppState;
+use history::HistoryStore;
+use tauri::Manager;
+
+/// 履歴とセッション復元の SQLite ファイル名（ADR 0005）。
+const HISTORY_FILE_NAME: &str = "history.sqlite3";
+
+/// Tauri アプリケーションを起動する。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .plugin(tauri_plugin_dialog::init())
+        // ウィンドウの位置とサイズの復元はプラグインに任せる（ADR 0009）。
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .manage(AppState::default())
+        .setup(|app| {
+            let path = app.path().app_config_dir()?.join(HISTORY_FILE_NAME);
+            app.manage(HistoryStore::open(&path)?);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::instant_client::instant_client_status,
+            commands::instant_client::save_instant_client_lib_dir,
+            commands::instant_client::find_instant_client_candidates,
+            commands::connection::connect,
+            commands::connection::execute,
+            commands::connection::fetch_more,
+            commands::connection::release_tab,
+            commands::connection::cancel,
+            commands::connection::disconnect,
+            commands::config::list_saved_connections,
+            commands::config::save_connection,
+            commands::config::delete_connection,
+            commands::config::load_connection_password,
+            commands::config::load_app_settings,
+            commands::config::save_app_settings,
+            commands::history::record_history,
+            commands::history::list_history,
+            commands::history::delete_history,
+            commands::history::clear_history,
+            commands::history::save_session,
+            commands::history::load_session,
+            commands::schema::schema_overview,
+            commands::schema::schema_columns,
+            commands::plan::explain_plan,
+            commands::plan::actual_plan,
+            commands::tns::read_tnsnames,
+            commands::files::read_text_file,
+            commands::files::write_text_file,
+            commands::csv::csv_start,
+            commands::csv::csv_append,
+            commands::csv::csv_finish,
+            commands::csv::csv_abort,
+            commands::window::open_connection_window,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

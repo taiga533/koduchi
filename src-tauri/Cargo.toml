@@ -1,11 +1,9 @@
 [package]
 name = "koduchi"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Oracle / PostgreSQL 対応の GUI データベースクライアント"
+authors = ["Taiga Kawasaki"]
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -15,11 +13,28 @@ name = "koduchi_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-opener = "2.5.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# ODPI-C を介した Oracle ドライバ（ADR 0001）。動作には Oracle Instant Client が要る。
+oracle = "0.6.3"
+thiserror = "2.0.20"
+toml = "0.9.8"
+# 履歴とセッション復元の保管庫（ADR 0005）。SQLite 本体を同梱してビルドする。
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# パスワードの保存先である macOS Keychain（ADR 0004）。
+keyring = { version = "4.2.0", default-features = false, features = ["v1"] }
+# CSV の Shift_JIS 出力に使う。
+encoding_rs = "0.8.35"
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-window-state = "2.4.1"
 
+[dev-dependencies]
+# InitParams::init() がプロセス 1 回きりであるため、
+# Instant Client を触るテストは直列に走らせる必要がある（ADR 0001）。
+serial_test = "3.5.0"
+tempfile = "3.24.0"
