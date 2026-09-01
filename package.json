@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "lint": "oxlint",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "worktree:sync": "./scripts/sync-worktree-ignored.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.3",
