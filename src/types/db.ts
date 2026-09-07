@@ -70,6 +70,14 @@ export type ExecuteResponse = ExecuteOutcome & {
   discardedTab: string | null
 }
 
+/**
+ * バインド変数 1 つ。名前と与える値の対（ADR の「バインド変数」節）。
+ *
+ * 値は型を選ばせずすべて文字列として渡し、Oracle 側では `VARCHAR2` として
+ * バインドする。`null` は NULL を意味する。名前に前置きの `:` は含めない。
+ */
+export type Bind = [name: string, value: string | null]
+
 /** 接続先の指定方法（ADR 0006）。 */
 export type ConnectTarget =
   | { method: 'ezConnect'; host: string; port: number; serviceName: string }

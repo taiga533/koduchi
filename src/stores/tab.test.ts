@@ -1,9 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { baseName, resetUntitledCounter, selectActiveTab, selectSession, useTabStore } from './tab'
+import {
+  baseName,
+  resetUntitledCounter,
+  selectActiveTab,
+  selectBindValues,
+  selectSession,
+  toBinds,
+  useTabStore,
+} from './tab'
 
 beforeEach(() => {
   resetUntitledCounter()
-  useTabStore.setState({ tabs: [], activeTabId: null })
+  useTabStore.setState({ tabs: [], activeTabId: null, bindValues: {} })
   useTabStore.getState().openNewTab()
 })
 
@@ -253,5 +261,131 @@ describe('selectSession', () => {
     // Assert
     expect(session.sidebarWidth).toBe(320)
     expect(session.editorHeight).toBe(400)
+  })
+})
+
+describe('バインド変数の記憶', () => {
+  it('タブごとにバインド変数の値を覚える', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+
+    // Act
+    useTabStore.getState().setBindValues(id, { userId: { text: '42', isNull: false } })
+
+    // Assert
+    expect(selectBindValues(useTabStore.getState(), id)).toEqual({
+      userId: { text: '42', isNull: false },
+    })
+  })
+
+  it('別のタブの値とは混ざらない', () => {
+    // Arrange
+    const 一枚目 = useTabStore.getState().tabs[0].id
+    useTabStore.getState().openNewTab()
+    const 二枚目 = useTabStore.getState().tabs[1].id
+
+    // Act
+    useTabStore.getState().setBindValues(一枚目, { id: { text: '1', isNull: false } })
+    useTabStore.getState().setBindValues(二枚目, { id: { text: '2', isNull: false } })
+
+    // Assert
+    expect(selectBindValues(useTabStore.getState(), 一枚目).id.text).toBe('1')
+    expect(selectBindValues(useTabStore.getState(), 二枚目).id.text).toBe('2')
+  })
+
+  it('タブを閉じるとその値は消える', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+    useTabStore.getState().openNewTab()
+    useTabStore.getState().setBindValues(id, { id: { text: '1', isNull: false } })
+
+    // Act
+    useTabStore.getState().closeTab(id)
+
+    // Assert
+    expect(useTabStore.getState().bindValues[id]).toBeUndefined()
+  })
+
+  it('セッションの書き出しにはバインド変数の値を含めない', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+    useTabStore.getState().setBindValues(id, { id: { text: '個人情報', isNull: false } })
+
+    // Act
+    const session = selectSession(useTabStore.getState(), {
+      sidebarSegment: 'schema',
+      sidebarWidth: 240,
+      editorHeight: 268,
+    })
+
+    // Assert
+    expect(JSON.stringify(session)).not.toContain('個人情報')
+  })
+
+  it('セッションから復元すると前のタブの値は持ち越さない', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+    useTabStore.getState().setBindValues(id, { id: { text: '1', isNull: false } })
+
+    // Act
+    useTabStore.getState().restore({
+      tabs: [{ id: 't1', name: '無題-1.sql', filePath: null, content: '', dirty: false }],
+      activeTabId: 't1',
+    })
+
+    // Assert
+    expect(useTabStore.getState().bindValues).toEqual({})
+  })
+
+  it('まだ入力していないタブでは空の表を返す', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+
+    // Act
+    const values = selectBindValues(useTabStore.getState(), id)
+
+    // Assert
+    expect(values).toEqual({})
+  })
+})
+
+describe('toBinds', () => {
+  it('尋ねた名前の順に名前と値の対へ変換する', () => {
+    // Arrange
+    const values = {
+      id: { text: '42', isNull: false },
+      name: { text: '小槌', isNull: false },
+    }
+
+    // Act
+    const binds = toBinds(['id', 'name'], values)
+
+    // Assert
+    expect(binds).toEqual([
+      ['id', '42'],
+      ['name', '小槌'],
+    ])
+  })
+
+  it('null のチェックが付いた変数の値は null になる', () => {
+    // Arrange
+    const values = { memo: { text: '入力しただけの値', isNull: true } }
+
+    // Act
+    const binds = toBinds(['memo'], values)
+
+    // Assert
+    expect(binds).toEqual([['memo', null]])
+  })
+
+  it('入力していない変数は空文字列として渡す', () => {
+    // Arrange
+    const values = {}
+
+    // Act
+    const binds = toBinds(['id'], values)
+
+    // Assert
+    expect(binds).toEqual([['id', '']])
   })
 })

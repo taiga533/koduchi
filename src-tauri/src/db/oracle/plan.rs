@@ -8,7 +8,9 @@
 //! 出力は `DBMS_XPLAN` が整形したテキストをそのまま渡す。ツリー UI への
 //! パースは行わない。
 
+use crate::db::driver::Bind;
 use crate::db::error::{DbError, DbResult};
+use crate::db::oracle::bind;
 use oracle::Connection;
 
 /// 実測を集めるためのヒント。
@@ -164,13 +166,24 @@ fn fetch_plan_text(connection: &Connection, sql: &str) -> DbResult<String> {
 /// `EXPLAIN PLAN` は `PLAN_TABLE` への書き込みを伴う。読み取り専用トランザクションの
 /// 最中は実行できないため、呼び出し側があらかじめ解除しておく必要がある。
 ///
+/// バインド変数を含む SQL でも計画は取れるが、値を与えないと `ORA-01008` になる。
+/// 与えられた値をそのまま渡す（ADR の「バインド変数」節）。
+///
 /// # 引数
 ///
 /// * `connection` - 使う接続
 /// * `sql` - 計画を見たい SQL
-pub fn explain(connection: &Connection, sql: &str) -> DbResult<String> {
-    connection
-        .execute(&format!("explain plan for {sql}"), &[])
+/// * `binds` - SQL 中のバインド変数へ与える値
+pub fn explain(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<String> {
+    let mut statement = connection
+        .statement(&format!("explain plan for {sql}"))
+        .build()
+        .map_err(|error| DbError::execute(format!("実行計画を作れませんでした: {error}")))?;
+
+    let bound = bind::bound_values(&statement, binds);
+
+    statement
+        .execute_named(&bind::params(&bound))
         .map_err(|error| DbError::execute(format!("実行計画を作れませんでした: {error}")))?;
 
     fetch_plan_text(
@@ -188,7 +201,8 @@ pub fn explain(connection: &Connection, sql: &str) -> DbResult<String> {
 ///
 /// * `connection` - 使う接続
 /// * `sql` - 計画を見たい SQL
-pub fn actual(connection: &Connection, sql: &str) -> DbResult<String> {
+/// * `binds` - SQL 中のバインド変数へ与える値
+pub fn actual(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<String> {
     let hinted = inject_gather_plan_statistics(sql);
 
     let mut statement = connection
@@ -196,17 +210,19 @@ pub fn actual(connection: &Connection, sql: &str) -> DbResult<String> {
         .build()
         .map_err(|error| DbError::execute(error.to_string()))?;
 
+    let bound = bind::bound_values(&statement, binds);
+
     if statement.is_query() {
         // 実測は最後まで実行しないと揃わない。行そのものは使わないので捨てる。
         let rows = statement
-            .into_result_set::<oracle::Row>(&[])
+            .into_result_set_named::<oracle::Row>(&bind::params(&bound))
             .map_err(|error| DbError::execute(error.to_string()))?;
         for row in rows {
             row.map_err(|error| DbError::execute(error.to_string()))?;
         }
     } else {
         statement
-            .execute(&[])
+            .execute_named(&bind::params(&bound))
             .map_err(|error| DbError::execute(error.to_string()))?;
     }
 

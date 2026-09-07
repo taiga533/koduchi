@@ -24,6 +24,7 @@ import { ConnectionPicker } from './components/connection/ConnectionPicker'
 import { DisconnectBlockedDialog } from './components/connection/DisconnectBlockedDialog'
 import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
+import { BindValuesDialog } from './components/editor/BindValuesDialog'
 import { EditorPanel } from './components/editor/EditorPanel'
 import { Splitter } from './components/layout/Splitter'
 import {
@@ -43,15 +44,22 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
 import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
-import { isSelectStatement, statementAt } from './sql/statements'
+import { collectBindVariables, isSelectStatement, statementAt } from './sql/statements'
 import { useConnectionStore } from './stores/connection'
 import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { useSchemaStore } from './stores/schema'
-import { selectActiveTab, selectSession, useTabStore } from './stores/tab'
+import type { BindInput } from './stores/tab'
+import {
+  selectActiveTab,
+  selectBindValues,
+  selectSession,
+  toBinds,
+  useTabStore,
+} from './stores/tab'
 import { useUiStore } from './stores/ui'
 import { currentWindowLabel } from './window'
-import type { ClientStatus, SavedConnection, SchemaFilter } from './types/db'
+import type { Bind, ClientStatus, SavedConnection, SchemaFilter } from './types/db'
 
 /** カーソルの初期位置。エディタから通知が来るまでの値。 */
 const INITIAL_POSITION: EditorPosition = {
@@ -75,10 +83,18 @@ const SQL_FILTERS = [{ name: 'SQL', extensions: ['sql'] }]
  */
 type ConnectionView = { mode: 'picker' } | { mode: 'form'; connection: SavedConnection | null }
 
+/**
+ * バインド変数の値が揃うのを待っている実行（ADR の「バインド変数」節）。
+ *
+ * `⌘⏎` / `⇧⌘⏎` の実行と、`⌘E` / `⇧⌘E` の実行計画のどちらもここへ載せる。
+ */
+type PendingRun = { kind: 'execute'; sql: string } | { kind: 'plan'; sql: string; actual: boolean }
+
 export function App() {
   const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
   const [connectionView, setConnectionView] = useState<ConnectionView>({ mode: 'picker' })
   const [csvOpen, setCsvOpen] = useState(false)
+  const [bindPrompt, setBindPrompt] = useState<{ names: string[]; run: PendingRun } | null>(null)
   const [disconnectBlocked, setDisconnectBlocked] = useState(false)
   const [csvProgress, setCsvProgress] = useState<CsvExportState | null>(null)
   const csvCancelled = useRef(false)
@@ -182,18 +198,69 @@ export function App() {
     [setCursor],
   )
 
-  const runSql = useCallback(
-    async (sql: string) => {
+  /**
+   * 値が揃った実行を行う。
+   *
+   * 実行と実行計画のどちらもここを通る。バインド変数を尋ねる経路を 1 本に
+   * まとめるためである。
+   */
+  const runPending = useCallback(
+    async (run: PendingRun, binds: Bind[]) => {
       const tabId = useTabStore.getState().activeTabId
-      if (!connection || !tabId || sql.trim() === '') {
+      if (!connection || !tabId) {
         return
       }
-      selectResultTab('result')
-      await execute(connection.id, tabId, sql, connection.name)
-      // 履歴は実行のたびに増える。開いていれば読み直す。
-      await useHistoryStore.getState().reload()
+
+      if (run.kind === 'execute') {
+        selectResultTab('result')
+        await execute(connection.id, tabId, run.sql, connection.name, binds)
+        // 履歴は実行のたびに増える。開いていれば読み直す。
+        await useHistoryStore.getState().reload()
+        return
+      }
+
+      selectResultTab('plan')
+      await generatePlan(connection.id, tabId, run.sql, run.actual ? 'actual' : 'estimate', binds)
     },
-    [connection, execute, selectResultTab],
+    [connection, execute, generatePlan, selectResultTab],
+  )
+
+  /**
+   * 実行に取りかかる。
+   *
+   * SQL にバインド変数が含まれていれば、その値を尋ねてからにする
+   * （ADR の「バインド変数」節）。
+   */
+  const startRun = useCallback(
+    (run: PendingRun) => {
+      const names = collectBindVariables(run.sql)
+      if (names.length === 0) {
+        void runPending(run, [])
+        return
+      }
+      setBindPrompt({ names, run })
+    },
+    [runPending],
+  )
+
+  /** バインド変数の値が決まった。覚えたうえで実行へ進む。 */
+  const submitBinds = useCallback(() => {
+    if (!bindPrompt) {
+      return
+    }
+    const tabId = useTabStore.getState().activeTabId
+    const values = selectBindValues(useTabStore.getState(), tabId)
+    setBindPrompt(null)
+    void runPending(bindPrompt.run, toBinds(bindPrompt.names, values))
+  }, [bindPrompt, runPending])
+
+  const runSql = useCallback(
+    (sql: string) => {
+      if (sql.trim() !== '') {
+        startRun({ kind: 'execute', sql })
+      }
+    },
+    [startRun],
   )
 
   /**
@@ -216,7 +283,7 @@ export function App() {
   const runStatement = useCallback(() => {
     const sql = currentSql(false)
     if (sql) {
-      void runSql(sql)
+      runSql(sql)
     }
   }, [currentSql, runSql])
 
@@ -224,7 +291,7 @@ export function App() {
   const runSelection = useCallback(() => {
     const sql = currentSql(true)
     if (sql) {
-      void runSql(sql)
+      runSql(sql)
     }
   }, [currentSql, runSql])
 
@@ -255,10 +322,9 @@ export function App() {
         }
       }
 
-      selectResultTab('plan')
-      await generatePlan(connection.id, tabId, sql, actual ? 'actual' : 'estimate')
+      startRun({ kind: 'plan', sql, actual })
     },
-    [connection, currentSql, generatePlan, selectResultTab],
+    [connection, currentSql, startRun],
   )
 
   const cancelExecution = useCallback(() => {
@@ -592,6 +658,13 @@ export function App() {
   const overlay = (
     <>
       {settings}
+      {bindPrompt ? (
+        <BindPrompt
+          names={bindPrompt.names}
+          onSubmit={submitBinds}
+          onClose={() => setBindPrompt(null)}
+        />
+      ) : null}
       {csvOpen ? (
         <CsvSaveDialog
           options={csvOptions}
@@ -705,6 +778,42 @@ function RunControls({
   const hasSelection = useUiStore((state) => state.hasSelection)
 
   return <RunButton running={running} hasSelection={hasSelection} {...handlers} />
+}
+
+/**
+ * バインド変数ダイアログへ、選択中のタブが覚えている値を配る薄い包み。
+ *
+ * 入力のたびに描き直る範囲をここへ閉じ込める。アプリのルートで購読すると、
+ * 1 文字打つたびにサイドバーと結果ペインまで組み直される。
+ */
+function BindPrompt({
+  names,
+  onSubmit,
+  onClose,
+}: {
+  names: string[]
+  onSubmit: () => void
+  onClose: () => void
+}) {
+  const tabId = useTabStore((state) => state.activeTabId)
+  const values = useTabStore((state) => selectBindValues(state, tabId))
+  const setBindValues = useTabStore((state) => state.setBindValues)
+
+  const onChange = (next: Record<string, BindInput>): void => {
+    if (tabId) {
+      setBindValues(tabId, next)
+    }
+  }
+
+  return (
+    <BindValuesDialog
+      names={names}
+      values={values}
+      onChange={onChange}
+      onSubmit={onSubmit}
+      onClose={onClose}
+    />
+  )
 }
 
 /**

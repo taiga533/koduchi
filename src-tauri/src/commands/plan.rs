@@ -3,6 +3,7 @@
 //! 実行計画の生成は履歴に記録しない（ADR 0005）。記録の判断は呼び出し側にある。
 
 use crate::commands::{run_blocking, AppState, ConnectionId};
+use crate::db::driver::Bind;
 use crate::db::error::DbResult;
 use tauri::State;
 
@@ -14,15 +15,17 @@ use tauri::State;
 ///
 /// * `id` - 接続の識別子
 /// * `sql` - 計画を見たい SQL
+/// * `binds` - SQL 中のバインド変数へ与える値
 #[tauri::command]
 pub async fn explain_plan(
     state: State<'_, AppState>,
     id: ConnectionId,
     sql: String,
+    binds: Vec<Bind>,
 ) -> DbResult<String> {
     let pool = state.require(&id)?;
 
-    run_blocking(move || pool.explain_plan(&sql)).await
+    run_blocking(move || pool.explain_plan(&sql, &binds)).await
 }
 
 /// 実測付きの実行計画をテキストで返す（`⇧⌘E`）。
@@ -34,13 +37,15 @@ pub async fn explain_plan(
 ///
 /// * `id` - 接続の識別子
 /// * `sql` - 計画を見たい SQL
+/// * `binds` - SQL 中のバインド変数へ与える値
 #[tauri::command]
 pub async fn actual_plan(
     state: State<'_, AppState>,
     id: ConnectionId,
     sql: String,
+    binds: Vec<Bind>,
 ) -> DbResult<String> {
     let pool = state.require(&id)?;
 
-    run_blocking(move || pool.actual_plan(&sql)).await
+    run_blocking(move || pool.actual_plan(&sql, &binds)).await
 }

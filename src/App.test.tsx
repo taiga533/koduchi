@@ -68,6 +68,7 @@ function 接続済みにする(): void {
 beforeEach(() => {
   useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
   useExecutionStore.getState().clear()
+  useTabStore.setState({ bindValues: {} })
   useSchemaStore.getState().clear()
   useUiStore.setState({
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
@@ -248,12 +249,150 @@ describe('App', () => {
     await screen.findByText('SQL を実行すると、ここに結果が出ます')
 
     // Act
-    await useExecutionStore.getState().execute('c1', 選択中のタブ(), 'select 1 from dual', '開発')
+    await useExecutionStore
+      .getState()
+      .execute('c1', 選択中のタブ(), 'select 1 from dual', '開発', [])
 
     // Assert
     expect(await screen.findByText('2 行 · 84 ms')).toBeInTheDocument()
     expect(screen.getByText('N')).toBeInTheDocument()
     expect(screen.getByText('S')).toBeInTheDocument()
+  })
+
+  it('バインド変数を含む SQL は値を尋ねてから実行する', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => 二行の結果 })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select * from users where id = :id')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+
+    // Assert
+    expect(await screen.findByText('バインド変数の値')).toBeInTheDocument()
+    expect(calls.execute).toHaveLength(0)
+  })
+
+  it('尋ねた値を添えて実行する', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => 二行の結果 })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select * from users where id = :id')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('バインド変数の値')
+
+    // Act
+    await userEvent.type(screen.getByLabelText(':id'), '42')
+    await userEvent.click(screen.getByRole('button', { name: 'この値で実行' }))
+
+    // Assert
+    await waitFor(() => expect(calls.execute).toHaveLength(1))
+    expect(calls.execute[0].binds).toEqual([['id', '42']])
+  })
+
+  it('null にチェックを付けると null として渡す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => 二行の結果 })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select * from users where memo = :memo')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('バインド変数の値')
+
+    // Act
+    await userEvent.click(screen.getByRole('checkbox', { name: 'NULL' }))
+    await userEvent.click(screen.getByRole('button', { name: 'この値で実行' }))
+
+    // Assert
+    await waitFor(() => expect(calls.execute).toHaveLength(1))
+    expect(calls.execute[0].binds).toEqual([['memo', null]])
+  })
+
+  it('前回の値は次に尋ねられたとき初期値になる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({ onExecute: () => 二行の結果 })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select * from users where id = :id')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('バインド変数の値')
+    await userEvent.type(screen.getByLabelText(':id'), '42')
+    await userEvent.click(screen.getByRole('button', { name: 'この値で実行' }))
+    await waitFor(() => expect(screen.queryByText('バインド変数の値')).not.toBeInTheDocument())
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('バインド変数の値')
+
+    // Assert
+    expect(screen.getByLabelText(':id')).toHaveValue('42')
+  })
+
+  it('取り消すと実行しない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => 二行の結果 })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select * from users where id = :id')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('バインド変数の値')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '取り消す' }))
+
+    // Assert
+    expect(screen.queryByText('バインド変数の値')).not.toBeInTheDocument()
+    expect(calls.execute).toHaveLength(0)
+  })
+
+  it('バインド変数が無ければ尋ねずに実行する', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => 二行の結果 })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select 1 from dual')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+
+    // Assert
+    await waitFor(() => expect(calls.execute).toHaveLength(1))
+    expect(calls.execute[0].binds).toEqual([])
+    expect(screen.queryByText('バインド変数の値')).not.toBeInTheDocument()
+  })
+
+  it('実行計画もバインド変数の値を添えて取る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select * from users where id = :id')
+    await userEvent.keyboard('{Meta>}e{/Meta}')
+    await screen.findByText('バインド変数の値')
+
+    // Act
+    await userEvent.type(screen.getByLabelText(':id'), '7')
+    await userEvent.click(screen.getByRole('button', { name: 'この値で実行' }))
+
+    // Assert
+    await waitFor(() => expect(calls.explainPlan).toHaveLength(1))
+    expect(calls.explainPlan[0].binds).toEqual([['id', '7']])
   })
 
   it('実行に失敗するとメッセージタブが現れる', async () => {
@@ -285,7 +424,7 @@ describe('App', () => {
     // Act
     await useExecutionStore
       .getState()
-      .execute('c1', 選択中のタブ(), 'select * from nowhere', '開発')
+      .execute('c1', 選択中のタブ(), 'select * from nowhere', '開発', [])
 
     // Assert
     expect(await screen.findByRole('button', { name: /メッセージ/ })).toBeInTheDocument()
@@ -325,7 +464,7 @@ describe('App', () => {
     render(<App />)
     await screen.findByText('SQL を実行すると、ここに結果が出ます')
     const タブ = 選択中のタブ()
-    await useExecutionStore.getState().execute('c1', タブ, 'select 1 from dual', 'dev')
+    await useExecutionStore.getState().execute('c1', タブ, 'select 1 from dual', 'dev', [])
     await waitFor(() => expect(useSchemaStore.getState().schemas).toHaveLength(1))
     const user = userEvent.setup()
 
