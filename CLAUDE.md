@@ -75,6 +75,8 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 **結果テーブルのコピー**: セル選択は `ResultTable` の中に閉じた状態で持つ（`ui` ストアへ置くと打鍵ごとにアプリ全体が描き直る）。タブを切り替えたときは `ResultPane` が `key={tabId}` で作り直し、選択を捨てる。範囲の判定とコピー文字列の組み立ては `src/components/results/selection.ts` の純粋な関数に寄せてある。クリップボードは `src/api/clipboard.ts` 越しに呼ぶ（テストで差し替えるため）。
 
+**結果テーブルの列幅と詳細**: 列幅は `ui` ストアの `resultColumnWidths`（タブ ID → 列名 → 幅）に置く。選択と違って再実行やタブ切替をまたいで残す値だからである。幅の勘定は `src/components/results/columnSizing.ts` の純粋な関数に寄せてあり、内容合わせは実寸を測らず PlemolJP の送り幅（半角 0.528em、全角はその 2 倍）から見積もる。セルの詳細は `CellDetailPanel.tsx`。マウス操作の割り振りは `ResultTable.tsx` 冒頭の表に書いてある。**列のソートは実装しない**（理由は `adr/README.md`）。
+
 **CSV の書き出し**: 行はフロントエンドに溜めない。カーソルから取り出したかたまりを `csv_append` で順に Rust へ渡し、書き終えたら `csv_finish` を呼ぶ（`src/csv/exportCsv.ts`）。中止と失敗では `csv_abort` で書きかけのファイルごと消す。数十万行を 1 度の IPC に載せないための形である。
 
 **書体**: PlemolJP v3.1.0（等幅版、SIL OFL 1.1）を `src/assets/fonts/` に同梱し、`src/theme/fonts.css` で登録している。半角と全角の幅比が 1:2 なので、日本語を含むデータでも結果テーブルの桁が揃う。データベースの内容は任意の文字を含みうるため**サブセット化はしない**。収録ウェイトは 400 / 500 / 600 / 700 の 4 つ。

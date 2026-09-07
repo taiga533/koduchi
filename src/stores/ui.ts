@@ -57,6 +57,13 @@ interface UiState {
   csvOptions: CsvOptions
   /** 設定画面を開いているか。 */
   settingsOpen: boolean
+  /**
+   * 結果テーブルで手を入れた列幅。タブ ID → 列名 → 幅（ピクセル）。
+   *
+   * 列名をキーにするため、同じクエリを実行し直しても幅が保たれる。設定ファイルや
+   * セッション（ADR 0005）へは保存しない。再起動すれば既定の幅に戻る。
+   */
+  resultColumnWidths: Record<string, Record<string, number>>
 
   selectSidebarSegment: (segment: SidebarSegment) => void
   selectResultTab: (tab: ResultTab) => void
@@ -66,6 +73,10 @@ interface UiState {
   setGridLines: (gridLines: boolean) => void
   setRowHeight: (rowHeight: RowHeight) => void
   setCsvOptions: (options: CsvOptions) => void
+  /** 結果テーブルの列幅を覚える。 */
+  setResultColumnWidth: (tabId: string, columnName: string, width: number) => void
+  /** タブぶんの列幅を忘れる。タブを閉じたときに呼ぶ。 */
+  clearResultColumnWidths: (tabId: string) => void
   /** サイドバーの幅を変える。値は許される範囲へ丸める。 */
   setSidebarWidth: (width: number) => void
   /**
@@ -139,6 +150,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   appearance: defaultAppearance,
   csvOptions: defaultCsvOptions,
   settingsOpen: false,
+  resultColumnWidths: {},
 
   selectSidebarSegment: (segment) => set({ sidebarSegment: segment }),
   selectResultTab: (tab) => set({ resultTab: tab }),
@@ -184,6 +196,25 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => {
       persist(state.appearance, csvOptions)
       return { csvOptions }
+    }),
+
+  setResultColumnWidth: (tabId, columnName, width) =>
+    set((state) => ({
+      resultColumnWidths: {
+        ...state.resultColumnWidths,
+        [tabId]: { ...state.resultColumnWidths[tabId], [columnName]: width },
+      },
+    })),
+
+  clearResultColumnWidths: (tabId) =>
+    set((state) => {
+      if (!(tabId in state.resultColumnWidths)) {
+        return state
+      }
+      const rest = Object.fromEntries(
+        Object.entries(state.resultColumnWidths).filter(([id]) => id !== tabId),
+      )
+      return { resultColumnWidths: rest }
     }),
 
   setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),

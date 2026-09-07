@@ -115,6 +115,7 @@ export function App() {
   const loadSettings = useUiStore((state) => state.loadSettings)
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
+  const clearResultColumnWidths = useUiStore((state) => state.clearResultColumnWidths)
   const sidebarWidth = useUiStore((state) => state.sidebarWidth)
   const editorHeight = useUiStore((state) => state.editorHeight)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
@@ -279,16 +280,18 @@ export function App() {
    * タブを閉じる。
    *
    * 開いたままのカーソルはデータベース側の資源を握り続けるため、閉じる前に
-   * 明示的に手放す（ADR 0003）。
+   * 明示的に手放す（ADR 0003）。結果テーブルで手を入れた列幅も、二度と使われない
+   * ため一緒に忘れる。
    */
   const closeTabAndRelease = useCallback(
     (tabId: string) => {
       if (connection) {
         void releaseTab(connection.id, tabId)
       }
+      clearResultColumnWidths(tabId)
       closeTab(tabId)
     },
-    [closeTab, connection, releaseTab],
+    [clearResultColumnWidths, closeTab, connection, releaseTab],
   )
 
   /**
