@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, queryResponse } from './test/fakeDbApi'
 import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
 import { useConnectionStore } from './stores/connection'
-import { useExecutionStore } from './stores/execution'
+import { emptyExecution, useExecutionStore } from './stores/execution'
+import { useSchemaStore } from './stores/schema'
 import { selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
 
@@ -59,9 +60,15 @@ const 接続済み = {
   error: null,
 }
 
+/** 接続済みの状態にする。接続を経由せずに 3 パネル構成から始めるために使う。 */
+function 接続済みにする(): void {
+  useConnectionStore.setState(接続済み)
+}
+
 beforeEach(() => {
   useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
   useExecutionStore.getState().clear()
+  useSchemaStore.getState().clear()
   useUiStore.setState({
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
     editorHeight: EDITOR_HEIGHT_DEFAULT,
@@ -284,6 +291,120 @@ describe('App', () => {
     expect(await screen.findByRole('button', { name: /メッセージ/ })).toBeInTheDocument()
     expect(screen.getByText('ORA-00942: table or view does not exist')).toBeInTheDocument()
   })
+
+  it('切断すると接続を選ぶ画面へ戻り、エディタのタブは残る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+    act(() => useTabStore.getState().updateContent(タブ, 'select * from dual'))
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
+    expect(calls.disconnect).toEqual(['c1'])
+    expect(useTabStore.getState().tabs.map((tab) => tab.id)).toContain(タブ)
+    expect(selectActiveTab(useTabStore.getState())?.content).toBe('select * from dual')
+  })
+
+  it('切断のときに開いている結果セットを閉じ、スキーマを捨てる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({
+      onExecute: () => 二行の結果,
+      schemas: [{ name: 'KODUCHI', objectCount: 1, objects: [{ name: 'T1', kind: 'table' }] }],
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+    await useExecutionStore.getState().execute('c1', タブ, 'select 1 from dual', 'dev')
+    await waitFor(() => expect(useSchemaStore.getState().schemas).toHaveLength(1))
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    await screen.findByText('接続を選ぶ')
+    expect(calls.releaseTab).toEqual([{ id: 'c1', tabId: タブ }])
+    expect(useExecutionStore.getState().byTab).toEqual({})
+    expect(useSchemaStore.getState().schemas).toEqual([])
+  })
+
+  it('別の接続へ切り替えても切断して接続を選ぶ画面へ戻る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '別の接続へ切り替え…' }))
+
+    // Assert
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
+    expect(calls.disconnect).toEqual(['c1'])
+  })
+
+  it('実行中の文があるときは切断せず、中止を促す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+    act(() =>
+      useExecutionStore.setState({ byTab: { [タブ]: { ...emptyExecution, status: 'running' } } }),
+    )
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    expect(await screen.findByText('実行中のため切断できません')).toBeInTheDocument()
+    expect(calls.disconnect).toEqual([])
+    expect(useConnectionStore.getState().connection).not.toBeNull()
+  })
+
+  it('切断できない知らせから実行を中止できる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+    act(() =>
+      useExecutionStore.setState({ byTab: { [タブ]: { ...emptyExecution, status: 'running' } } }),
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+    await screen.findByText('実行中のため切断できません')
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '実行を中止' }))
+
+    // Assert
+    expect(calls.cancel).toEqual([{ id: 'c1', tabId: タブ }])
+    expect(screen.queryByText('実行中のため切断できません')).not.toBeInTheDocument()
+  })
+
   it('サイドバーの境界をドラッグするとサイドバーの幅が変わる', async () => {
     // Arrange
     const { api } = createFakeDbApi()
