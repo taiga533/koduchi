@@ -1,7 +1,9 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { ResultTable } from './ResultTable'
 import { emptyExecution, type TabExecution } from '../../stores/execution'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
+import { createFakeClipboard, type FakeClipboard } from '../../test/fakeClipboardApi'
 
 /**
  * jsdom は要素の寸法を持たない。仮想スクロールは `offsetHeight` で表示領域を
@@ -148,5 +150,271 @@ describe('ResultTable', () => {
     // Assert
     expect(screen.getByText('ID')).toBeInTheDocument()
     expect(screen.getByText('一致する行がありません')).toBeInTheDocument()
+  })
+})
+
+/** 選択中のセルの testid を並べる。 */
+function 選択中のセル(): string[] {
+  return [...document.querySelectorAll('[data-selected="true"]')].map(
+    (element) => element.getAttribute('data-testid') ?? '',
+  )
+}
+
+describe('ResultTable のセル選択とコピー', () => {
+  /** 3 行 2 列。NULL を 1 つ含む。 */
+  const 選択用の結果: TabExecution = {
+    ...emptyExecution,
+    status: 'succeeded',
+    columns: [
+      { name: 'ID', typeName: 'NUMBER(4)', kind: 'number' },
+      { name: 'LABEL', typeName: 'VARCHAR2(80)', kind: 'text' },
+    ],
+    rows: [
+      [
+        { text: '10', kind: 'number' },
+        { text: 'あ', kind: 'text' },
+      ],
+      [
+        { text: '20', kind: 'number' },
+        { text: 'い', kind: 'text' },
+      ],
+      [
+        { text: '30', kind: 'number' },
+        { text: '', kind: 'null' },
+      ],
+    ],
+    exhausted: true,
+    elapsedMs: 12,
+  }
+
+  let クリップボード: FakeClipboard
+
+  beforeEach(() => {
+    クリップボード = createFakeClipboard()
+    setClipboardApi(クリップボード)
+  })
+
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('セルを押すとそのセルだけが選択される', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.mouseDown(screen.getByTestId('result-cell-1-1'))
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-1-1'])
+  })
+
+  it('⇧ を伴うクリックで矩形に広がる', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+
+    // Act
+    fireEvent.mouseDown(screen.getByTestId('result-cell-1-1'), { shiftKey: true })
+
+    // Assert
+    expect(選択中のセル()).toEqual([
+      'result-cell-0-0',
+      'result-cell-0-1',
+      'result-cell-1-0',
+      'result-cell-1-1',
+    ])
+  })
+
+  it('ドラッグで矩形選択できる', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+    fireEvent.mouseEnter(screen.getByTestId('result-cell-1-0'))
+    fireEvent.mouseUp(window)
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-0-0', 'result-cell-1-0'])
+  })
+
+  it('離した後にセルへ入っても選択は広がらない', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+    fireEvent.mouseUp(window)
+
+    // Act
+    fireEvent.mouseEnter(screen.getByTestId('result-cell-2-1'))
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-0-0'])
+  })
+
+  it('行番号を押すと行全体が選択される', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.mouseDown(screen.getByTestId('result-row-number-2'))
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-2-0', 'result-cell-2-1'])
+  })
+
+  it('⌘A で表示中の全行が選択される', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'a', metaKey: true })
+
+    // Assert
+    expect(選択中のセル()).toHaveLength(6)
+  })
+
+  it('矢印キーで選択が 1 セル動く', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'ArrowDown' })
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-1-0'])
+  })
+
+  it('⇧ + 矢印で選択が伸びる', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), {
+      key: 'ArrowRight',
+      shiftKey: true,
+    })
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-0-0', 'result-cell-0-1'])
+  })
+
+  it('End で行末へ Home で行頭へ移る', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-1-0'))
+    const 本文 = screen.getByTestId('result-table-body')
+
+    // Act
+    fireEvent.keyDown(本文, { key: 'End' })
+    const 行末 = 選択中のセル()
+    fireEvent.keyDown(本文, { key: 'Home' })
+
+    // Assert
+    expect(行末).toEqual(['result-cell-1-1'])
+    expect(選択中のセル()).toEqual(['result-cell-1-0'])
+  })
+
+  it('⌘C で選択範囲がタブ区切りでクリップボードへ載る', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+    fireEvent.mouseDown(screen.getByTestId('result-cell-1-1'), { shiftKey: true })
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'c', metaKey: true })
+
+    // Assert
+    expect(クリップボード.last()).toBe('10\tあ\n20\tい')
+  })
+
+  it('⇧⌘C では列見出しが 1 行目に付く', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-1'), { shiftKey: true })
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), {
+      key: 'c',
+      metaKey: true,
+      shiftKey: true,
+    })
+
+    // Assert
+    expect(クリップボード.last()).toBe('ID\tLABEL\n10\tあ')
+  })
+
+  it('NULL のセルは NULL としてコピーされる', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-2-1'))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'c', metaKey: true })
+
+    // Assert
+    expect(クリップボード.last()).toBe('NULL')
+  })
+
+  it('選択が無ければ ⌘C は何も書かない', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'c', metaKey: true })
+
+    // Assert
+    expect(クリップボード.written).toEqual([])
+  })
+
+  it('右クリックでメニューが出てそのセルが選択される', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByTestId('result-cell-1-0'))
+
+    // Assert
+    expect(screen.getByTestId('result-context-menu')).toBeInTheDocument()
+    expect(選択中のセル()).toEqual(['result-cell-1-0'])
+  })
+
+  it('メニューの「見出し付きでコピー」は列名を添える', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.contextMenu(screen.getByTestId('result-cell-0-1'))
+
+    // Act
+    fireEvent.click(screen.getByText('見出し付きでコピー'))
+
+    // Assert
+    expect(クリップボード.last()).toBe('LABEL\nあ')
+  })
+
+  it('メニューの「この列をコピー」は表示中の全行を載せる', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.contextMenu(screen.getByTestId('result-cell-0-0'))
+
+    // Act
+    fireEvent.click(screen.getByText('この列をコピー'))
+
+    // Assert
+    expect(クリップボード.last()).toBe('10\n20\n30')
+  })
+
+  it('メニューの外を押すと閉じる', () => {
+    // Arrange
+    render(<ResultTable execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.contextMenu(screen.getByTestId('result-cell-0-0'))
+
+    // Act
+    fireEvent.mouseDown(screen.getByTestId('result-context-menu-backdrop'))
+
+    // Assert
+    expect(screen.queryByTestId('result-context-menu')).not.toBeInTheDocument()
   })
 })
