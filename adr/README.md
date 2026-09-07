@@ -98,6 +98,18 @@ TanStack Virtual による仮想スクロール。スクロールが下端に近
 
 テーマ 3 択 / Oracle Instant Client のパス（未検出時のみ表示）/ 履歴の一括削除 / 罫線の有無（`--gl`）/ 行の高さ（`--rp`）。
 
+### ペインの大きさ
+
+サイドバーと本体の境界、エディタと結果ペインの境界をドラッグして大きさを変えられる。区切りは `src/components/layout/Splitter.tsx` の 1 部品で、縦横どちらにも使う。当たり判定は 6px、見た目の線は 1px（`--line`、ホバーとフォーカスで `--ac`）。親の `gap-6px` の中へ負の余白で重ねて置くため、区切りを足しても隣り合うペインの間隔は変わらない。
+
+- **下限と上限**: サイドバーは 180〜480px、エディタの高さは 120px 〜（ウィンドウの高さ − 200px）。ウィンドウを縮めたときに下限を割らないよう、`resize` のたびに丸め直す。値と丸めは `src/components/layout/paneSizes.ts` に集めてある。
+- **既定値**: サイドバー 240px、エディタ 268px。境界のダブルクリックで戻る。
+- **キーボード**: `role="separator"` に焦点を当てて矢印キーで 8px、`⇧` + 矢印で 32px 動く。エディタの中でしか効かない `⌘⏎` などと同じく、焦点のある場所でしか意味を持たないため、`App.tsx` のキーバインド表には載せない。
+- **入力**: `pointerdown` / `pointermove` / `pointerup` と `setPointerCapture` で扱う。`mousemove` を `window` に貼るより外れにくい。ドラッグ中は `document.body` に `user-select: none` を当てる。
+- **保存先**: 値はウィンドウごとのセッション（[0005](0005-クエリ履歴とセッション復元のsqlite.md) の `history.sqlite3`）に置く。`settings.toml` ではない。ウィンドウごとに違ってよい値だからである。`SessionState` の `sidebarWidth` / `editorHeight` はどちらも省略でき、この 2 つを持たない古いセッションは既定値へ落ちる（`session_state` の列は起動時に無ければ足す）。
+
+ペインの分割・入れ替え・タブの引き剥がしは行わない。境界を動かすだけである。
+
 ### 状態管理
 
 zustand を機能別に 6 ストアへ分割する（`connection` / `tab` / `execution` / `history` / `schema` / `ui`）。ストアは Tauri の `invoke` を直接呼ばず、`src/api/` 層越しに呼ぶ。これによりストアの単体テストをデータベースから切り離せる（[0010](0010-テストとリンタの構成.md)）。
@@ -109,7 +121,7 @@ src/
   api/            Tauri invoke のラッパ（テスト時に差し替える境界）
   stores/         zustand ストア6種
   components/
-    titlebar/  sidebar/  editor/  results/  connection/  settings/
+    titlebar/  sidebar/  editor/  results/  connection/  settings/  layout/
   theme/          CSSトークン定義（:root / [data-theme="dark"]）
   types/          Rust と共有する型定義
 src-tauri/src/

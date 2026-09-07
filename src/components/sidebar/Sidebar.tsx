@@ -41,6 +41,8 @@ interface SidebarProps {
   onOpenNewConnection: () => void
   /** 履歴の SQL をエディタへ入れる。 */
   onUseHistory: (sql: string) => void
+  /** サイドバーの幅（px）。境界のドラッグで変わる。 */
+  width: number
 }
 
 export function Sidebar({
@@ -49,6 +51,7 @@ export function Sidebar({
   connectionName,
   onOpenNewConnection,
   onUseHistory,
+  width,
 }: SidebarProps) {
   const segment = useUiStore((state) => state.sidebarSegment)
   const selectSegment = useUiStore((state) => state.selectSidebarSegment)
@@ -77,7 +80,10 @@ export function Sidebar({
   const setSearch = segment === 'history' ? setHistorySearch : setSchemaSearch
 
   return (
-    <aside className="w-240px shrink-0 bg-panel rounded-10px border border-line flex flex-col overflow-hidden">
+    <aside
+      style={{ width: `${width}px` }}
+      className="shrink-0 bg-panel rounded-10px border border-line flex flex-col overflow-hidden"
+    >
       <div className="p-9px flex flex-col gap-8px border-b border-line2">
         <div className="flex gap-2px p-2px rounded-8px bg-line2">
           {SEGMENTS.map((item) => {
