@@ -59,6 +59,7 @@
 
 - CodeMirror 6 + `@codemirror/lang-sql`。接続種別で方言を切り替え、取得済みスキーマ（[0007](0007-スキーマ取得の段階的ロード.md)）を渡してテーブル名・列名の補完を効かせる。
 - タブは `.sql` ファイルの開く/保存に対応する。未保存バッファも SQLite に保存し、再起動でタブ構成ごと復元する。新規タブ名は `無題-1.sql`。
+- 検索・置換は `@codemirror/search` の標準パネルを使う。自前で組まないのは、正規表現・単語単位・大小の区別・置換の反復といった細部を作り直す値打ちが無いためである。素のままだと文言が英語で意匠も浮くので、`EditorState.phrases` で日本語へ差し替え、見た目は `koduchiEditorTheme` がトークン経由で与え、閉じるボタンだけ lucide のアイコンへ挿げ替える（`src/components/editor/search.tsx`）。検索欄は `keyup` のたびに問い合わせを作り直す作りなので、日本語入力の変換中の打鍵だけは捨て、未確定の文字列で検索が走らないようにしてある。
 
 ### 結果テーブル
 
@@ -84,6 +85,9 @@ TanStack Virtual による仮想スクロール。スクロールが下端に近
 | `⇧⌘E`       | 実測付きで生成                   |
 | `⌥⌘S`       | 結果を CSV で保存                |
 | `⌘.`        | 実行を中止                       |
+| `⌘F`        | エディタ内を検索                 |
+| `⌘G` / `⇧⌘G` | 次の一致 / 前の一致             |
+| `⌥⌘F`       | エディタ内を置換                 |
 | `⌘S` / `⌘O` | 保存 / 開く                      |
 | `⌘T` / `⌘W` | 新しいタブ / タブを閉じる        |
 | `⌃⌘N`       | 別の接続を新しいウィンドウで開く |
@@ -103,6 +107,18 @@ TanStack Virtual による仮想スクロール。スクロールが下端に近
 
 テーマ 3 択 / Oracle Instant Client のパス（未検出時のみ表示）/ 履歴の一括削除 / 罫線の有無（`--gl`）/ 行の高さ（`--rp`）。
 
+### ペインの大きさ
+
+サイドバーと本体の境界、エディタと結果ペインの境界をドラッグして大きさを変えられる。区切りは `src/components/layout/Splitter.tsx` の 1 部品で、縦横どちらにも使う。当たり判定は 6px、見た目の線は 1px（`--line`、ホバーとフォーカスで `--ac`）。親の `gap-6px` の中へ負の余白で重ねて置くため、区切りを足しても隣り合うペインの間隔は変わらない。
+
+- **下限と上限**: サイドバーは 180〜480px、エディタの高さは 120px 〜（ウィンドウの高さ − 200px）。ウィンドウを縮めたときに下限を割らないよう、`resize` のたびに丸め直す。値と丸めは `src/components/layout/paneSizes.ts` に集めてある。
+- **既定値**: サイドバー 240px、エディタ 268px。境界のダブルクリックで戻る。
+- **キーボード**: `role="separator"` に焦点を当てて矢印キーで 8px、`⇧` + 矢印で 32px 動く。エディタの中でしか効かない `⌘⏎` などと同じく、焦点のある場所でしか意味を持たないため、`App.tsx` のキーバインド表には載せない。
+- **入力**: `pointerdown` / `pointermove` / `pointerup` と `setPointerCapture` で扱う。`mousemove` を `window` に貼るより外れにくい。ドラッグ中は `document.body` に `user-select: none` を当てる。
+- **保存先**: 値はウィンドウごとのセッション（[0005](0005-クエリ履歴とセッション復元のsqlite.md) の `history.sqlite3`）に置く。`settings.toml` ではない。ウィンドウごとに違ってよい値だからである。`SessionState` の `sidebarWidth` / `editorHeight` はどちらも省略でき、この 2 つを持たない古いセッションは既定値へ落ちる（`session_state` の列は起動時に無ければ足す）。
+
+ペインの分割・入れ替え・タブの引き剥がしは行わない。境界を動かすだけである。
+
 ### 状態管理
 
 zustand を機能別に 6 ストアへ分割する（`connection` / `tab` / `execution` / `history` / `schema` / `ui`）。ストアは Tauri の `invoke` を直接呼ばず、`src/api/` 層越しに呼ぶ。これによりストアの単体テストをデータベースから切り離せる（[0010](0010-テストとリンタの構成.md)）。
@@ -114,7 +130,7 @@ src/
   api/            Tauri invoke のラッパ（テスト時に差し替える境界）
   stores/         zustand ストア6種
   components/
-    titlebar/  sidebar/  editor/  results/  connection/  settings/
+    titlebar/  sidebar/  editor/  results/  connection/  settings/  layout/
   theme/          CSSトークン定義（:root / [data-theme="dark"]）
   types/          Rust と共有する型定義
 src-tauri/src/

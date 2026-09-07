@@ -25,6 +25,15 @@ import { DisconnectBlockedDialog } from './components/connection/DisconnectBlock
 import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
 import { EditorPanel } from './components/editor/EditorPanel'
+import { Splitter } from './components/layout/Splitter'
+import {
+  EDITOR_HEIGHT_DEFAULT,
+  EDITOR_HEIGHT_MIN,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  editorHeightMax,
+} from './components/layout/paneSizes'
 import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
@@ -106,6 +115,12 @@ export function App() {
   const loadSettings = useUiStore((state) => state.loadSettings)
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const editorHeight = useUiStore((state) => state.editorHeight)
+  const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
+  const setEditorHeight = useUiStore((state) => state.setEditorHeight)
+  const clampToWindow = useUiStore((state) => state.clampToWindow)
+  const restoreLayout = useUiStore((state) => state.restoreLayout)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
@@ -143,9 +158,19 @@ export function App() {
         ) {
           selectSidebarSegment(session.sidebarSegment)
         }
+        restoreLayout(session, window.innerHeight)
       })
       .catch(() => {})
-  }, [restoreTabs, selectSidebarSegment])
+  }, [restoreLayout, restoreTabs, selectSidebarSegment])
+
+  // ウィンドウを縮めたときにエディタの高さが上限を超えたままにならないよう、
+  // 大きさが変わるたびに丸め直す（下限は割らない）。
+  useEffect(() => {
+    const onResize = () => clampToWindow(window.innerHeight)
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [clampToWindow])
 
   /** エディタからのカーソル通知。描画に関わる分だけストアへ渡す。 */
   const onCursorChange = useCallback(
@@ -600,10 +625,23 @@ export function App() {
         connectionName={connection.name}
         onOpenNewConnection={openNewConnectionWindow}
         onUseHistory={useHistorySql}
+        width={sidebarWidth}
+      />
+      <Splitter
+        orientation="vertical"
+        label="サイドバーの幅"
+        value={sidebarWidth}
+        min={SIDEBAR_WIDTH_MIN}
+        max={SIDEBAR_WIDTH_MAX}
+        defaultValue={SIDEBAR_WIDTH_DEFAULT}
+        onChange={setSidebarWidth}
       />
       <div className="flex-1 min-w-0 flex flex-col gap-6px">
         <TabBar onCloseTab={closeTabAndRelease} />
-        <div className="relative h-268px shrink-0 bg-panel rounded-10px border border-line overflow-hidden">
+        <div
+          style={{ height: `${editorHeight}px` }}
+          className="relative shrink-0 bg-panel rounded-10px border border-line overflow-hidden"
+        >
           <EditorPanel
             onCursorChange={onCursorChange}
             onRunStatement={runStatement}
@@ -620,6 +658,15 @@ export function App() {
             onCancel={cancelExecution}
           />
         </div>
+        <Splitter
+          orientation="horizontal"
+          label="エディタの高さ"
+          value={editorHeight}
+          min={EDITOR_HEIGHT_MIN}
+          max={editorHeightMax(window.innerHeight)}
+          defaultValue={EDITOR_HEIGHT_DEFAULT}
+          onChange={(height) => setEditorHeight(height, window.innerHeight)}
+        />
         <ResultPane
           tabId={activeTabId}
           runningLabel={`${connection.name} · ${activeTabName}`}
@@ -702,18 +749,24 @@ function SessionSaver() {
   const tabs = useTabStore((state) => state.tabs)
   const activeTabId = useTabStore((state) => state.activeTabId)
   const sidebarSegment = useUiStore((state) => state.sidebarSegment)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const editorHeight = useUiStore((state) => state.editorHeight)
 
   // タブの状態が落ち着いたら書き出す。1 打鍵ごとに書かないよう少し待つ。
+  // ペインの寸法も同じ待ちに乗せる。ドラッグ中は 1 フレームごとに変わるためである。
   useEffect(() => {
     const timer = setTimeout(() => {
-      const session = selectSession({ tabs, activeTabId }, sidebarSegment)
+      const session = selectSession(
+        { tabs, activeTabId },
+        { sidebarSegment, sidebarWidth, editorHeight },
+      )
       void getDbApi()
         .saveSession(currentWindowLabel(), session)
         .catch(() => {})
     }, SESSION_SAVE_DELAY)
 
     return () => clearTimeout(timer)
-  }, [activeTabId, sidebarSegment, tabs])
+  }, [activeTabId, editorHeight, sidebarSegment, sidebarWidth, tabs])
 
   return null
 }

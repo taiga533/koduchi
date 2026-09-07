@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, queryResponse } from './test/fakeDbApi'
+import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
 import { useConnectionStore } from './stores/connection'
 import { emptyExecution, useExecutionStore } from './stores/execution'
 import { useSchemaStore } from './stores/schema'
 import { selectActiveTab, useTabStore } from './stores/tab'
+import { useUiStore } from './stores/ui'
 
 /** 2 行 2 列の問い合わせ結果。 */
 const 二行の結果 = queryResponse(
@@ -36,29 +38,41 @@ function 選択中のタブ(): string {
   return tab.id
 }
 
+/** 接続済みの状態を作る。ペインの寸法を見るテストで使う。 */
+const 接続済み = {
+  status: 'connected' as const,
+  connection: {
+    id: 'c1',
+    savedId: null,
+    name: 'dev',
+    params: {
+      username: 'koduchi',
+      password: '',
+      target: {
+        method: 'ezConnect' as const,
+        host: 'localhost',
+        port: 1521,
+        serviceName: 'FREEPDB1',
+      },
+      readOnly: false,
+    },
+  },
+  error: null,
+}
+
 /** 接続済みの状態にする。接続を経由せずに 3 パネル構成から始めるために使う。 */
 function 接続済みにする(): void {
-  useConnectionStore.setState({
-    status: 'connected',
-    connection: {
-      id: 'c1',
-      savedId: null,
-      name: 'dev',
-      params: {
-        username: 'koduchi',
-        password: '',
-        target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
-        readOnly: false,
-      },
-    },
-    error: null,
-  })
+  useConnectionStore.setState(接続済み)
 }
 
 beforeEach(() => {
   useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
   useExecutionStore.getState().clear()
   useSchemaStore.getState().clear()
+  useUiStore.setState({
+    sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
+    editorHeight: EDITOR_HEIGHT_DEFAULT,
+  })
 })
 
 afterEach(() => {
@@ -389,5 +403,106 @@ describe('App', () => {
     // Assert
     expect(calls.cancel).toEqual([{ id: 'c1', tabId: タブ }])
     expect(screen.queryByText('実行中のため切断できません')).not.toBeInTheDocument()
+  })
+
+  it('サイドバーの境界をドラッグするとサイドバーの幅が変わる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    useConnectionStore.setState(接続済み)
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const 境界 = screen.getByRole('separator', { name: 'サイドバーの幅' })
+
+    // Act
+    fireEvent.pointerDown(境界, { pointerId: 1, button: 0, clientX: 240, clientY: 0 })
+    fireEvent.pointerMove(境界, { pointerId: 1, clientX: 320, clientY: 0 })
+    fireEvent.pointerUp(境界, { pointerId: 1, clientX: 320, clientY: 0 })
+
+    // Assert
+    expect(useUiStore.getState().sidebarWidth).toBe(320)
+    expect(境界).toHaveAttribute('aria-valuenow', '320')
+  })
+
+  it('エディタの境界をダブルクリックすると既定の高さへ戻る', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    useConnectionStore.setState(接続済み)
+    useUiStore.setState({ editorHeight: 420 })
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.doubleClick(screen.getByRole('separator', { name: 'エディタの高さ' }))
+
+    // Assert
+    expect(useUiStore.getState().editorHeight).toBe(EDITOR_HEIGHT_DEFAULT)
+  })
+
+  it('保存されたペインの寸法をセッションから復元する', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      session: {
+        tabs: [],
+        activeTabId: null,
+        sidebarSegment: null,
+        sidebarWidth: 300,
+        editorHeight: 200,
+      },
+    })
+    setDbApi(api)
+    useConnectionStore.setState(接続済み)
+
+    // Act
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Assert
+    await waitFor(() => expect(useUiStore.getState().sidebarWidth).toBe(300))
+    expect(useUiStore.getState().editorHeight).toBe(200)
+  })
+
+  it('寸法を持たない古いセッションを読んでも既定値で表示する', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      session: {
+        tabs: [],
+        activeTabId: null,
+        sidebarSegment: null,
+        sidebarWidth: null,
+        editorHeight: null,
+      },
+    })
+    setDbApi(api)
+    useConnectionStore.setState(接続済み)
+
+    // Act
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Assert
+    expect(useUiStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT)
+    expect(useUiStore.getState().editorHeight).toBe(EDITOR_HEIGHT_DEFAULT)
+  })
+
+  it('変えた寸法はセッションとして書き出される', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    useConnectionStore.setState(接続済み)
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'サイドバーの幅' }), {
+      key: 'ArrowRight',
+    })
+
+    // Assert
+    await waitFor(() => {
+      const 最後 = calls.saveSession.at(-1)
+      expect(最後?.state.sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT + 8)
+    })
   })
 })
