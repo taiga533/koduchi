@@ -4,9 +4,9 @@
 //! 全接続」の切替がある以上、接続ごとにファイルを分けることはできない。
 //! 保持期間は無制限とし、代わりに一括削除と 1 件ごとの削除を用意する。
 //!
-//! セッション復元（エディタタブとサイドバーの選択セグメント）も同じ SQLite に
-//! 置く。テーブルが 1 つ増えるだけで済むためである。結果セット・スキーマツリーの
-//! 展開状態・接続そのものは復元しない。
+//! セッション復元（エディタタブ・サイドバーの選択セグメント・ペインの寸法）も
+//! 同じ SQLite に置く。テーブルが 1 つ増えるだけで済むためである。結果セット・
+//! スキーマツリーの展開状態・接続そのものは復元しない。
 
 use crate::db::error::{DbError, DbErrorKind};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -76,7 +76,13 @@ pub struct SessionTab {
 }
 
 /// ウィンドウ 1 つぶんの復元対象。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// ペインの寸法（サイドバーの幅・エディタの高さ）もここに置く。ウィンドウごとに
+/// 違ってよい値であり、`settings.toml` ではなくセッションに属するためである。
+/// この 2 つを持たない古いセッションを読んでも落ちないよう、どちらも省略できる。
+///
+/// `PartialEq` は導出するが `Eq` は導出しない。寸法が `f64` だからである。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionState {
     /// 並び順のままのタブ。
@@ -84,6 +90,12 @@ pub struct SessionState {
     pub active_tab_id: Option<String>,
     /// サイドバーの選択セグメント。
     pub sidebar_segment: Option<String>,
+    /// サイドバーの幅（px）。保存されていなければ `None`。
+    #[serde(default)]
+    pub sidebar_width: Option<f64>,
+    /// エディタの高さ（px）。保存されていなければ `None`。
+    #[serde(default)]
+    pub editor_height: Option<f64>,
 }
 
 /// テーブル定義。起動のたびに流しても安全な形で書く。
@@ -118,6 +130,13 @@ create table if not exists session_state (
     sidebar_segment text
 );
 "#;
+
+/// `session_state` に後から足した列。
+///
+/// `create table if not exists` は既にあるテーブルへ列を足さない。ペインの寸法を
+/// 導入する前に作られたファイルでも動くよう、無ければ足す。
+const SESSION_STATE_ADDED_COLUMNS: &[(&str, &str)] =
+    &[("sidebar_width", "real"), ("editor_height", "real")];
 
 /// SQLite のエラーをアプリのエラーへ変換する。
 fn to_db_error(context: &str, error: rusqlite::Error) -> DbError {
@@ -165,6 +184,7 @@ impl HistoryStore {
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| to_db_error("履歴のテーブルを作れませんでした", error))?;
+        migrate_session_state(&connection)?;
         Ok(HistoryStore {
             connection: Mutex::new(connection),
         })
@@ -318,12 +338,21 @@ impl HistoryStore {
 
         transaction
             .execute(
-                "insert into session_state (window_label, active_tab_id, sidebar_segment)
-                 values (?1, ?2, ?3)
+                "insert into session_state
+                     (window_label, active_tab_id, sidebar_segment, sidebar_width, editor_height)
+                 values (?1, ?2, ?3, ?4, ?5)
                  on conflict (window_label) do update set
                      active_tab_id = excluded.active_tab_id,
-                     sidebar_segment = excluded.sidebar_segment",
-                params![window_label, state.active_tab_id, state.sidebar_segment],
+                     sidebar_segment = excluded.sidebar_segment,
+                     sidebar_width = excluded.sidebar_width,
+                     editor_height = excluded.editor_height",
+                params![
+                    window_label,
+                    state.active_tab_id,
+                    state.sidebar_segment,
+                    state.sidebar_width,
+                    state.editor_height,
+                ],
             )
             .map_err(|error| to_db_error("セッションを保存できませんでした", error))?;
 
@@ -363,23 +392,62 @@ impl HistoryStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| to_db_error("セッションを読み出せませんでした", error))?;
 
-        let meta: Option<(Option<String>, Option<String>)> = connection
+        type Meta = (Option<String>, Option<String>, Option<f64>, Option<f64>);
+        let meta: Option<Meta> = connection
             .query_row(
-                "select active_tab_id, sidebar_segment from session_state where window_label = ?1",
+                "select active_tab_id, sidebar_segment, sidebar_width, editor_height
+                 from session_state where window_label = ?1",
                 params![window_label],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(|error| to_db_error("セッションを読み出せませんでした", error))?;
 
-        let (active_tab_id, sidebar_segment) = meta.unwrap_or((None, None));
+        let (active_tab_id, sidebar_segment, sidebar_width, editor_height) =
+            meta.unwrap_or((None, None, None, None));
 
         Ok(SessionState {
             tabs,
             active_tab_id,
             sidebar_segment,
+            sidebar_width,
+            editor_height,
         })
     }
+}
+
+/// `session_state` に後から足した列を、無ければ足す。
+///
+/// 古いファイルをそのまま開けるようにするための移行である。列を消すことはしない。
+///
+/// # 引数
+///
+/// * `connection` - 対象の接続
+fn migrate_session_state(connection: &Connection) -> Result<(), DbError> {
+    let existing: Vec<String> = {
+        let mut statement = connection
+            .prepare("select name from pragma_table_info('session_state')")
+            .map_err(|error| to_db_error("セッションの列を調べられませんでした", error))?;
+        let names = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| to_db_error("セッションの列を調べられませんでした", error))?;
+        names
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| to_db_error("セッションの列を調べられませんでした", error))?
+    };
+
+    for (name, kind) in SESSION_STATE_ADDED_COLUMNS {
+        if existing.iter().any(|column| column == name) {
+            continue;
+        }
+        connection
+            .execute_batch(&format!(
+                "alter table session_state add column {name} {kind}"
+            ))
+            .map_err(|error| to_db_error("セッションの列を足せませんでした", error))?;
+    }
+
+    Ok(())
 }
 
 /// `like` のワイルドカードを打ち消す。
@@ -643,6 +711,8 @@ mod tests {
             ],
             active_tab_id: Some(String::from("t2")),
             sidebar_segment: Some(String::from("history")),
+            sidebar_width: Some(320.0),
+            editor_height: Some(400.0),
         };
 
         // Act
@@ -676,6 +746,8 @@ mod tests {
             ],
             active_tab_id: Some(String::from("t1")),
             sidebar_segment: None,
+            sidebar_width: None,
+            editor_height: None,
         };
         store.save_session("main", &二枚).unwrap();
 
@@ -684,6 +756,8 @@ mod tests {
             tabs: vec![二枚.tabs[1].clone()],
             active_tab_id: Some(String::from("t2")),
             sidebar_segment: None,
+            sidebar_width: None,
+            editor_height: None,
         };
         store.save_session("main", &一枚).unwrap();
         let restored = store.load_session("main").unwrap();
@@ -707,6 +781,8 @@ mod tests {
             }],
             active_tab_id: Some(String::from("t1")),
             sidebar_segment: None,
+            sidebar_width: None,
+            editor_height: None,
         };
         store.save_session("main", &state).unwrap();
 
@@ -728,6 +804,87 @@ mod tests {
         // Assert
         assert!(restored.tabs.is_empty());
         assert_eq!(restored.active_tab_id, None);
+    }
+
+    #[test]
+    fn ペインの寸法もセッションとして読み戻せる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let state = SessionState {
+            tabs: Vec::new(),
+            active_tab_id: None,
+            sidebar_segment: None,
+            sidebar_width: Some(312.0),
+            editor_height: Some(180.0),
+        };
+
+        // Act
+        store.save_session("main", &state).unwrap();
+        let restored = store.load_session("main").unwrap();
+
+        // Assert
+        assert_eq!(restored.sidebar_width, Some(312.0));
+        assert_eq!(restored.editor_height, Some(180.0));
+    }
+
+    #[test]
+    fn 寸法を持たないセッションを読んでもエラーにならない() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .save_session("main", &SessionState::default())
+            .unwrap();
+
+        // Act
+        let restored = store.load_session("main").unwrap();
+
+        // Assert
+        assert_eq!(restored.sidebar_width, None);
+        assert_eq!(restored.editor_height, None);
+    }
+
+    #[test]
+    fn 寸法の列が無い古いファイルでも開ける() {
+        // Arrange: 寸法を導入する前と同じ形のテーブルだけを作る
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.sqlite3");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "create table session_state (
+                         window_label text primary key,
+                         active_tab_id text,
+                         sidebar_segment text
+                     );
+                     insert into session_state (window_label, active_tab_id, sidebar_segment)
+                     values ('main', 't1', 'history');",
+                )
+                .unwrap();
+        }
+
+        // Act
+        let store = HistoryStore::open(&path).unwrap();
+        let restored = store.load_session("main").unwrap();
+
+        // Assert
+        assert_eq!(restored.active_tab_id, Some(String::from("t1")));
+        assert_eq!(restored.sidebar_segment, Some(String::from("history")));
+        assert_eq!(restored.sidebar_width, None);
+        assert_eq!(restored.editor_height, None);
+    }
+
+    #[test]
+    fn 寸法を持たないセッションでもjsonから読める() {
+        // Arrange: ペインの寸法が無い、古い形の JSON
+        let json = r#"{"tabs":[],"activeTabId":null,"sidebarSegment":"schema"}"#;
+
+        // Act
+        let state: SessionState = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert_eq!(state.sidebar_width, None);
+        assert_eq!(state.editor_height, None);
     }
 
     #[test]

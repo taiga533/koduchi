@@ -67,6 +67,15 @@ pub struct ConnectionParams {
     pub auto_commit: bool,
 }
 
+/// バインド変数 1 つ。名前と与える値の対（ADR の「バインド変数」節）。
+///
+/// 値は型を選ばせずすべて文字列として受け取り、Oracle 側では `VARCHAR2` として
+/// バインドする。`None` は NULL を意味する。
+///
+/// 名前に前置きの `:` は含めない。`serde` では 2 要素の配列として表され、
+/// フロントエンドからは `["id", "42"]` / `["id", null]` の形で届く。
+pub type Bind = (String, Option<String>);
+
 /// 結果セットの列。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,8 +162,10 @@ pub trait Driver: 'static {
     /// # 引数
     ///
     /// * `sql` - 実行する SQL。末尾のセミコロンは含まない
+    /// * `binds` - SQL 中のバインド変数へ与える値
     /// * `chunk_size` - 一度に取り出す行数
-    fn execute(&mut self, sql: &str, chunk_size: usize) -> DbResult<ExecuteOutcome>;
+    fn execute(&mut self, sql: &str, binds: &[Bind], chunk_size: usize)
+        -> DbResult<ExecuteOutcome>;
 
     /// 開いているカーソルから続きを取り出す。
     ///
@@ -196,7 +207,8 @@ pub trait Driver: 'static {
     /// # 引数
     ///
     /// * `sql` - 計画を見たい SQL
-    fn explain_plan(&mut self, sql: &str) -> DbResult<String>;
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    fn explain_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String>;
 
     /// トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
     ///
@@ -216,7 +228,8 @@ pub trait Driver: 'static {
     /// # 引数
     ///
     /// * `sql` - 計画を見たい SQL
-    fn actual_plan(&mut self, sql: &str) -> DbResult<String>;
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    fn actual_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String>;
 }
 
 #[cfg(test)]
@@ -302,6 +315,19 @@ mod tests {
 
         // Assert
         assert!(params.auto_commit);
+    }
+
+    #[test]
+    fn バインド変数は名前と値の配列として届く() {
+        // Arrange
+        let json = r#"[["id", "42"], ["memo", null]]"#;
+
+        // Act
+        let binds: Vec<Bind> = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert_eq!(binds[0], (String::from("id"), Some(String::from("42"))));
+        assert_eq!(binds[1], (String::from("memo"), None));
     }
 
     #[test]

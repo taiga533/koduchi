@@ -9,7 +9,7 @@
 //! タブには「結果は破棄されました。再実行してください」を出す。
 
 use crate::db::actor::ConnectionHandle;
-use crate::db::driver::{Chunk, ConnectionParams, Driver, ExecuteOutcome};
+use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
 use std::sync::{Arc, Mutex};
@@ -212,12 +212,13 @@ impl ConnectionPool {
     ///
     /// * `tab_id` - 実行元のタブ
     /// * `sql` - 実行する SQL
-    pub fn execute(&self, tab_id: &str, sql: &str) -> DbResult<ExecuteResponse> {
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    pub fn execute(&self, tab_id: &str, sql: &str, binds: &[Bind]) -> DbResult<ExecuteResponse> {
         let (handle, discarded_tab) = self.acquire(tab_id);
 
         // 剥がしたタブのカーソルは、同じ接続を使い回す前に閉じておく必要がある。
         // 実行そのものが前のカーソルを閉じるため、ここでは表からの削除だけでよい。
-        let outcome = handle.execute(sql, self.chunk_size)?;
+        let outcome = handle.execute(sql, binds, self.chunk_size)?;
 
         let 保持し続ける = matches!(
             &outcome,
@@ -302,8 +303,9 @@ impl ConnectionPool {
     /// # 引数
     ///
     /// * `sql` - 計画を見たい SQL
-    pub fn explain_plan(&self, sql: &str) -> DbResult<String> {
-        self.background_handle()?.explain_plan(sql)
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    pub fn explain_plan(&self, sql: &str, binds: &[Bind]) -> DbResult<String> {
+        self.background_handle()?.explain_plan(sql, binds)
     }
 
     /// 実測付きの実行計画を取る（`⇧⌘E`）。
@@ -311,8 +313,9 @@ impl ConnectionPool {
     /// # 引数
     ///
     /// * `sql` - 計画を見たい SQL
-    pub fn actual_plan(&self, sql: &str) -> DbResult<String> {
-        self.background_handle()?.actual_plan(sql)
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    pub fn actual_plan(&self, sql: &str, binds: &[Bind]) -> DbResult<String> {
+        self.background_handle()?.actual_plan(sql, binds)
     }
 
     /// トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
@@ -390,7 +393,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::driver::{Canceller, Column};
+    use crate::db::driver::{Bind, Canceller, Column};
     use crate::db::value::CellKind;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -415,7 +418,12 @@ mod tests {
             Box::new(何もしない中止経路)
         }
 
-        fn execute(&mut self, _sql: &str, _chunk_size: usize) -> DbResult<ExecuteOutcome> {
+        fn execute(
+            &mut self,
+            _sql: &str,
+            _binds: &[Bind],
+            _chunk_size: usize,
+        ) -> DbResult<ExecuteOutcome> {
             Ok(ExecuteOutcome::Query {
                 columns: vec![Column {
                     name: String::from("N"),
@@ -461,11 +469,11 @@ mod tests {
             Ok(())
         }
 
-        fn explain_plan(&mut self, _sql: &str) -> DbResult<String> {
+        fn explain_plan(&mut self, _sql: &str, _binds: &[Bind]) -> DbResult<String> {
             Ok(String::new())
         }
 
-        fn actual_plan(&mut self, _sql: &str) -> DbResult<String> {
+        fn actual_plan(&mut self, _sql: &str, _binds: &[Bind]) -> DbResult<String> {
             Ok(String::new())
         }
     }

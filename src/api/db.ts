@@ -9,6 +9,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   AppSettings,
+  Bind,
   Cell,
   Chunk,
   ClientStatus,
@@ -44,7 +45,7 @@ export interface DbApi {
    */
   testConnection(params: ConnectionParams): Promise<string>
   /** SQL を 1 文実行する。問い合わせでは最初のかたまりだけが返る。 */
-  execute(id: string, tabId: string, sql: string): Promise<ExecuteResponse>
+  execute(id: string, tabId: string, sql: string, binds: Bind[]): Promise<ExecuteResponse>
   /** 開いている結果セットから続きを取り出す（ADR 0003）。 */
   fetchMore(id: string, tabId: string): Promise<Chunk>
   /** タブの結果セットを閉じる。タブを閉じたときに呼ぶ。 */
@@ -90,9 +91,9 @@ export interface DbApi {
   schemaColumns(id: string, owner: string): Promise<TableColumn[]>
 
   /** 見積りだけの実行計画をテキストで返す（`⌘E`）。 */
-  explainPlan(id: string, sql: string): Promise<string>
+  explainPlan(id: string, sql: string, binds: Bind[]): Promise<string>
   /** 実測付きの実行計画をテキストで返す（`⇧⌘E`）。 */
-  actualPlan(id: string, sql: string): Promise<string>
+  actualPlan(id: string, sql: string, binds: Bind[]): Promise<string>
 
   /** tnsnames.ora を読む（ADR 0006）。 */
   readTnsnames(directory: string): Promise<TnsnamesFile>
@@ -121,7 +122,7 @@ const tauriDbApi: DbApi = {
   findInstantClientCandidates: () => invoke('find_instant_client_candidates'),
   connect: (id, params) => invoke('connect', { id, params }),
   testConnection: (params) => invoke('test_connection', { params }),
-  execute: (id, tabId, sql) => invoke('execute', { id, tabId, sql }),
+  execute: (id, tabId, sql, binds) => invoke('execute', { id, tabId, sql, binds }),
   fetchMore: (id, tabId) => invoke('fetch_more', { id, tabId }),
   releaseTab: (id, tabId) => invoke('release_tab', { id, tabId }),
   cancel: (id, tabId) => invoke('cancel', { id, tabId }),
@@ -146,8 +147,8 @@ const tauriDbApi: DbApi = {
   schemaOverview: (id, filter) => invoke('schema_overview', { id, filter }),
   schemaColumns: (id, owner) => invoke('schema_columns', { id, owner }),
 
-  explainPlan: (id, sql) => invoke('explain_plan', { id, sql }),
-  actualPlan: (id, sql) => invoke('actual_plan', { id, sql }),
+  explainPlan: (id, sql, binds) => invoke('explain_plan', { id, sql, binds }),
+  actualPlan: (id, sql, binds) => invoke('actual_plan', { id, sql, binds }),
 
   readTnsnames: (directory) => invoke('read_tnsnames', { directory }),
   readTextFile: (path) => invoke('read_text_file', { path }),

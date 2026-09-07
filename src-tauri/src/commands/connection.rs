@@ -4,7 +4,7 @@
 //! 用のスレッドへ処理を移し、tokio のワーカーを占有しないようにする。
 
 use crate::commands::{run_blocking, AppState, ConnectionId};
-use crate::db::driver::{Chunk, ConnectionParams, ExecuteOutcome};
+use crate::db::driver::{Bind, Chunk, ConnectionParams, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::pool::{ConnectionPool, DEFAULT_CHUNK_SIZE, DEFAULT_POOL_SIZE};
 use serde::Serialize;
@@ -68,16 +68,18 @@ pub async fn test_connection(params: ConnectionParams) -> DbResult<String> {
 /// * `id` - 接続の識別子
 /// * `tab_id` - 実行元のエディタタブ
 /// * `sql` - 実行する SQL。末尾のセミコロンは含まない
+/// * `binds` - SQL 中のバインド変数へ与える値（ADR の「バインド変数」節）
 #[tauri::command]
 pub async fn execute(
     state: State<'_, AppState>,
     id: ConnectionId,
     tab_id: String,
     sql: String,
+    binds: Vec<Bind>,
 ) -> DbResult<ExecuteResponse> {
     let pool = state.get(&id).ok_or_else(DbError::closed)?;
 
-    let response = run_blocking(move || pool.execute(&tab_id, &sql)).await?;
+    let response = run_blocking(move || pool.execute(&tab_id, &sql, &binds)).await?;
 
     Ok(ExecuteResponse {
         outcome: response.outcome,

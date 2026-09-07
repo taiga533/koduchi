@@ -8,7 +8,7 @@ import {
   selectResultTabs,
   useExecutionStore,
 } from './execution'
-import type { Cell, Column } from '../types/db'
+import type { Bind, Cell, Column } from '../types/db'
 
 const TAB = 'tab-1'
 
@@ -40,7 +40,7 @@ describe('useExecutionStore', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Assert
     const execution = selectExecution(useExecutionStore.getState(), TAB)
@@ -56,7 +56,7 @@ describe('useExecutionStore', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', 'tab-a', 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', 'tab-a', 'select 1 from dual', '開発', [])
 
     // Assert
     expect(selectExecution(useExecutionStore.getState(), 'tab-a').rows).toHaveLength(2)
@@ -69,7 +69,7 @@ describe('useExecutionStore', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Assert
     const log = useExecutionStore.getState().log
@@ -89,7 +89,7 @@ describe('useExecutionStore', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発', [])
 
     // Assert
     const execution = selectExecution(useExecutionStore.getState(), TAB)
@@ -105,7 +105,7 @@ describe('useExecutionStore', () => {
     useExecutionStore.setState({ byTab: { [TAB]: { ...emptyExecution, status: 'running' } } })
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Assert
     expect(calls.execute).toEqual([])
@@ -119,7 +119,7 @@ describe('useExecutionStore', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', 'tab-b', 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', 'tab-b', 'select 1 from dual', '開発', [])
 
     // Assert
     expect(selectExecution(useExecutionStore.getState(), 'tab-a').status).toBe('discarded')
@@ -135,7 +135,7 @@ describe('fetchMore', () => {
       onFetchMore: () => ({ rows: 行を作る(500, 1000), exhausted: true }),
     })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発', [])
 
     // Act
     await useExecutionStore.getState().fetchMore('c1', TAB)
@@ -151,7 +151,7 @@ describe('fetchMore', () => {
     // Arrange
     const { api, calls } = createFakeDbApi({ onExecute: () => queryResponse(列, 行を作る(2)) })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Act
     await useExecutionStore.getState().fetchMore('c1', TAB)
@@ -166,7 +166,7 @@ describe('fetchMore', () => {
       onExecute: () => queryResponse(列, 行を作る(1000), { exhausted: false }),
     })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発', [])
     useExecutionStore.setState((state) => ({
       byTab: { ...state.byTab, [TAB]: { ...state.byTab[TAB], loadingMore: true } },
     }))
@@ -187,7 +187,7 @@ describe('fetchMore', () => {
       },
     })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発', [])
 
     // Act
     await useExecutionStore.getState().fetchMore('c1', TAB)
@@ -227,7 +227,7 @@ describe('cancel と releaseTab', () => {
     // Arrange
     const { api, calls } = createFakeDbApi({ onExecute: () => queryResponse(列, 行を作る(2)) })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Act
     await useExecutionStore.getState().releaseTab('c1', TAB)
@@ -328,7 +328,7 @@ describe('selectResultTabs', () => {
     // Arrange
     const { api } = createFakeDbApi({ onExecute: () => queryResponse(列, 行を作る(2)) })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Act
     const tabs = selectResultTabs(useExecutionStore.getState(), TAB)
@@ -345,7 +345,7 @@ describe('selectResultTabs', () => {
       },
     })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発', [])
 
     // Act
     const tabs = selectResultTabs(useExecutionStore.getState(), TAB)
@@ -367,7 +367,7 @@ describe('selectResultTabs', () => {
       }),
     })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'begin say_hello; end;', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'begin say_hello; end;', '開発', [])
 
     // Act
     const tabs = selectResultTabs(useExecutionStore.getState(), TAB)
@@ -384,7 +384,7 @@ describe('履歴への記録', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Assert
     expect(calls.recordHistory).toHaveLength(1)
@@ -406,7 +406,7 @@ describe('履歴への記録', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発', [])
 
     // Assert
     expect(calls.recordHistory[0]).toMatchObject({
@@ -427,7 +427,7 @@ describe('履歴への記録', () => {
     })
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Assert
     expect(useExecutionStore.getState().byTab[TAB].status).toBe('succeeded')
@@ -442,7 +442,7 @@ describe('実行計画', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate')
+    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate', [])
 
     // Assert
     expect(calls.explainPlan).toHaveLength(1)
@@ -461,7 +461,7 @@ describe('実行計画', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'actual')
+    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'actual', [])
 
     // Assert
     expect(calls.actualPlan).toHaveLength(1)
@@ -474,7 +474,7 @@ describe('実行計画', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate')
+    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate', [])
 
     // Assert
     expect(calls.recordHistory).toHaveLength(0)
@@ -491,7 +491,7 @@ describe('実行計画', () => {
     })
 
     // Act
-    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate')
+    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate', [])
 
     // Assert
     expect(useExecutionStore.getState().planByTab[TAB]).toMatchObject({
@@ -506,7 +506,7 @@ describe('実行計画', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate')
+    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate', [])
 
     // Assert
     expect(selectResultTabs(useExecutionStore.getState(), TAB)).toEqual(['result', 'plan'])
@@ -516,7 +516,7 @@ describe('実行計画', () => {
     // Arrange
     const { api } = createFakeDbApi()
     setDbApi(api)
-    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate')
+    await useExecutionStore.getState().generatePlan('c1', TAB, 'select 1 from dual', 'estimate', [])
 
     // Act
     await useExecutionStore.getState().releaseTab('c1', TAB)
@@ -533,7 +533,7 @@ describe('markExhausted', () => {
       onExecute: () => queryResponse(列, 行を作る(2), { exhausted: false }),
     })
     setDbApi(api)
-    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from events', '開発', [])
 
     // Act
     useExecutionStore.getState().markExhausted(TAB)
@@ -563,7 +563,7 @@ describe('トランザクションの制御（ADR 0012）', () => {
     setDbApi(api)
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'insert into t values (1)', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'insert into t values (1)', '開発', [])
 
     // Assert
     expect(useExecutionStore.getState().inTransaction).toBe(true)
@@ -578,7 +578,7 @@ describe('トランザクションの制御（ADR 0012）', () => {
     useExecutionStore.setState({ inTransaction: true })
 
     // Act
-    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
 
     // Assert
     expect(useExecutionStore.getState().inTransaction).toBe(false)
@@ -655,5 +655,70 @@ describe('トランザクションの制御（ADR 0012）', () => {
 
     // Assert
     expect(useExecutionStore.getState().inTransaction).toBe(false)
+  })
+})
+
+describe('バインド変数の受け渡し', () => {
+  it('実行では与えた値をそのまま窓口へ渡す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const binds: Bind[] = [
+      ['id', '42'],
+      ['memo', null],
+    ]
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .execute('c1', TAB, 'select * from users where id = :id', '開発', binds)
+
+    // Assert
+    expect(calls.execute[0].binds).toEqual(binds)
+  })
+
+  it('履歴にはバインド変数の値を記録しない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const binds: Bind[] = [['id', '個人情報']]
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .execute('c1', TAB, 'select * from users where id = :id', '開発', binds)
+
+    // Assert
+    expect(JSON.stringify(calls.recordHistory)).not.toContain('個人情報')
+  })
+
+  it('見積りの実行計画でも与えた値を窓口へ渡す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const binds: Bind[] = [['id', '42']]
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .generatePlan('c1', TAB, 'select * from users where id = :id', 'estimate', binds)
+
+    // Assert
+    expect(calls.explainPlan[0].binds).toEqual(binds)
+  })
+
+  it('実測付きの実行計画でも与えた値を窓口へ渡す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const binds: Bind[] = [['id', '42']]
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .generatePlan('c1', TAB, 'select * from users where id = :id', 'actual', binds)
+
+    // Assert
+    expect(calls.actualPlan[0].binds).toEqual(binds)
   })
 })

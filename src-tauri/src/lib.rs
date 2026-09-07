@@ -23,6 +23,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 結果テーブルの ⌘C / ⇧⌘C が使う。
+        .plugin(tauri_plugin_clipboard_manager::init())
         // ウィンドウの位置とサイズの復元はプラグインに任せる（ADR 0009）。
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState::default())

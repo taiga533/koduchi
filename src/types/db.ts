@@ -79,6 +79,14 @@ export type ExecuteResponse = ExecuteOutcome & {
   discardedTab: string | null
 }
 
+/**
+ * バインド変数 1 つ。名前と与える値の対（ADR の「バインド変数」節）。
+ *
+ * 値は型を選ばせずすべて文字列として渡し、Oracle 側では `VARCHAR2` として
+ * バインドする。`null` は NULL を意味する。名前に前置きの `:` は含めない。
+ */
+export type Bind = [name: string, value: string | null]
+
 /** 接続先の指定方法（ADR 0006）。 */
 export type ConnectTarget =
   | { method: 'ezConnect'; host: string; port: number; serviceName: string }
@@ -267,6 +275,15 @@ export interface SessionState {
   tabs: SessionTab[]
   activeTabId: string | null
   sidebarSegment: string | null
+  /**
+   * サイドバーの幅（px）。この 2 つを持たない古いセッションでは `null` になる。
+   *
+   * ペインの寸法はウィンドウごとに違ってよいため、`settings.toml` ではなく
+   * セッションへ置く。
+   */
+  sidebarWidth: number | null
+  /** エディタの高さ（px）。古いセッションでは `null`。 */
+  editorHeight: number | null
 }
 
 /** CSV の区切り文字。 */
