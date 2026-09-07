@@ -78,6 +78,84 @@ const editorTheme = EditorView.theme({
     backgroundColor: 'var(--fill2)',
     color: 'var(--fg)',
   },
+
+  // 検索・置換パネル。素の CodeMirror は角ばった枠と OS 既定の入力欄を出すので、
+  // 補完の吹き出しと同じ作法（`--panel` の地に `--line` の罫）へ寄せる。
+  '.cm-panels': {
+    backgroundColor: 'var(--panel)',
+    color: 'var(--fg)',
+    border: 'none',
+  },
+  '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--line)' },
+  '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--line)' },
+  '.cm-panel.cm-search': {
+    position: 'relative',
+    padding: '7px 26px 7px 10px',
+    backgroundColor: 'var(--panel2)',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+    color: 'var(--fg2)',
+  },
+  '.cm-panel.cm-search label': {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    marginLeft: '8px',
+    color: 'var(--fg3)',
+    fontSize: '11px',
+  },
+  '.cm-panel.cm-search input[type=checkbox]': { accentColor: 'var(--ac)', margin: '0' },
+  '.cm-textfield': {
+    backgroundColor: 'var(--panel)',
+    color: 'var(--fg)',
+    border: '1px solid var(--line)',
+    borderRadius: '6px',
+    padding: '3px 7px',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+    minWidth: '180px',
+  },
+  '.cm-textfield:focus': { outline: 'none', borderColor: 'var(--ac)' },
+  '.cm-button': {
+    backgroundColor: 'var(--fill)',
+    backgroundImage: 'none',
+    color: 'var(--fg2)',
+    border: '1px solid var(--line)',
+    borderRadius: '6px',
+    padding: '3px 9px',
+    marginLeft: '5px',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '11px',
+  },
+  '.cm-button:hover': { backgroundColor: 'var(--fill2)', color: 'var(--fg)' },
+  '.cm-button:active': { backgroundImage: 'none', backgroundColor: 'var(--fill2)' },
+  '.cm-panel.cm-search [name=close]': {
+    position: 'absolute',
+    top: '6px',
+    right: '8px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '2px',
+    border: 'none',
+    borderRadius: '5px',
+    background: 'transparent',
+    color: 'var(--fg5)',
+    cursor: 'pointer',
+  },
+  '.cm-panel.cm-search [name=close]:hover': {
+    backgroundColor: 'var(--fill2)',
+    color: 'var(--fg2)',
+  },
+
+  // 一致箇所の強調。今いる 1 件だけをアクセント色で塗り、残りは淡く敷く。
+  '.cm-searchMatch': { backgroundColor: 'var(--fill2)', outline: '1px solid var(--line)' },
+  '.cm-searchMatch.cm-searchMatch-selected': {
+    backgroundColor: 'var(--ac)',
+    color: 'var(--acfg)',
+    outline: 'none',
+  },
+  '.cm-selectionMatch': { backgroundColor: 'var(--fill2)' },
 })
 
 /** エディタのテーマ一式。 */
