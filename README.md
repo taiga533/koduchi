@@ -5,6 +5,26 @@ TypeScript + Vite + UnoCSS で作る macOS 向けデスクトップアプリ。
 
 設計判断はすべて [`adr/`](adr/README.md) に記録してある。
 
+## インストール
+
+[リリースページ](https://github.com/taiga533/koduchi/releases)から `.dmg` を
+ダウンロードし、`koduchi.app` を `/Applications` へ移す。Apple Silicon 向けの
+ビルドのみを配布している。
+
+### 初回起動
+
+配布物に署名していない（Apple Developer Program に加入していない。
+[ADR 0011](adr/0011-cicdとリリース配布.md)）ため、初回起動時に
+「開発元を確認できないため開けません」と出て弾かれる。次の手順で開く。
+
+1. `koduchi.app` を一度ダブルクリックする（ここでは弾かれる）。
+2. アップルメニュー → システム設定 → プライバシーとセキュリティ を開く。
+3. 下の方に出る「"koduchi" は開発元を確認できないため…」の右にある
+   **「このまま開く」** を押す。
+4. 確認のダイアログでもう一度「開く」を押す。
+
+2 回目以降はふつうに起動できる。
+
 ## 必要なもの
 
 |                            |                                                                             |
@@ -102,6 +122,32 @@ KODUCHI_TEST_KEYCHAIN=1 cargo test
 ```bash
 docker compose down -v && docker compose up -d
 ```
+
+## リリース
+
+`v*` のタグを push すると GitHub Actions が dmg を作り、**下書きの**リリースに
+添付する（[ADR 0011](adr/0011-cicdとリリース配布.md)）。公開は人間が行う。
+
+```bash
+# 1. バージョンを上げる（package.json と src-tauri/Cargo.toml の 2 箇所。
+#    tauri.conf.json は package.json を参照するので触らない）
+# 2. main へマージする
+# 3. タグを打つ前に検査する
+./scripts/check-release-tag.sh v0.2.0
+# 4. タグを push する
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`check-release-tag.sh` は、タグ名と 2 つのマニフェストのバージョンが一致すること、
+タグの指すコミットが `main` に含まれていることを確かめる。ワークフローの冒頭でも
+同じ検査が走る。
+
+ビルドが終わったら、下書きに添付された dmg を開けることを確かめてから、GitHub 上で
+公開する。**公開したリリースは差し替えられない**（イミュータブルリリース）。
+
+プルリクエストと `main` への push では、フロントエンド（型チェック・vitest・
+oxlint・prettier）と Rust（fmt・clippy・test）の検査が走る。Tauri のフルビルドは
+リリース時にだけ行う。
 
 ## 保存されるもの
 

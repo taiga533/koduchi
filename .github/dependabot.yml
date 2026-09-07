@@ -1,0 +1,16 @@
+# GitHub Actions を commit SHA でピン留めしている（ADR 0011）。
+# 放っておくと古びるので、Dependabot に更新の PR を出させる。
+#
+# npm（bun.lock）と cargo は対象にしない。個人プロジェクトには PR が多すぎるうえ、
+# どちらもバージョンを明示して手で上げる運用が既に回っている。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Tokyo
+    commit-message:
+      prefix: 'ci'
