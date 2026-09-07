@@ -2,21 +2,43 @@
  * 結果テーブル（デザイン 3a の結果ペイン）。
  *
  * TanStack Virtual による仮想スクロールで、行数が多くても描画が破綻しないように
- * する。分割取得（ADR 0003）は実装順の後の段で加える。
+ * する。スクロールが下端に近づくたびに 1,000 行ずつ追加取得する（ADR 0003）。
  *
  * 行の高さは設定で決まる固定値であり、セルの内容は折り返さない。そのため実寸を
  * 測る必要がなく、見積りをそのまま使える。
+ *
+ * 列幅は見出しの右端をドラッグして変えられ、見出しをダブルクリックすると取得済み
+ * の行に合わせて詰まる（`columnSizing.ts`）。セルをダブルクリックすると右側に
+ * 詳細パネルが開き、切り詰められた全文を読める（`CellDetailPanel.tsx`）。
+ *
+ * 列の並べ替え（ソート）は実装しない。結果は 1,000 行ずつの分割取得であり、
+ * 取得済みの行だけを並べ替えると「全体を並べ替えた」ように見えて嘘になるためで
+ * ある（ADR README の「結果テーブル」節）。
  */
 
-import { useEffect, useRef } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import type { Column } from '../../types/db'
 import type { RowHeight } from '../../theme/appearance'
 import type { TabExecution } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
-import { columnWidth, displayText, isRightAligned, tableMinWidth } from './cellText'
+import { displayText, isRightAligned } from './cellText'
+import type { ColumnWidths } from './columnSizing'
+import {
+  autoFitWidth,
+  clampColumnWidth,
+  columnMinWidthOf,
+  gridTemplate,
+  resolveTableMinWidth,
+} from './columnSizing'
+import { CellDetailPanel } from './CellDetailPanel'
 
 /** 行番号を出す先頭列の幅（ピクセル）。 */
 const ROW_NUMBER_WIDTH = 44
+
+/** 幅を決めていないタブで使う空の対応表。参照を固定して再描画を防ぐ。 */
+const NO_WIDTHS: ColumnWidths = {}
 
 /**
  * 行の高さ（ピクセル）。
@@ -36,17 +58,31 @@ const ROW_HEIGHTS: Record<RowHeight, number> = {
  */
 const FETCH_MORE_THRESHOLD = 200
 
+/** 詳細パネルに出しているセルの位置。 */
+interface CellPosition {
+  rowIndex: number
+  columnIndex: number
+}
+
 interface ResultTableProps {
+  /** 結果を持つエディタタブの ID。列幅を覚えるキーになる。 */
+  tabId: string | null
   execution: TabExecution
   /** 続きのかたまりを要求する。カーソルが尽きていれば呼ばれない。 */
   onRequestMore: () => void
 }
 
-export function ResultTable({ execution, onRequestMore }: ResultTableProps) {
+export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLDivElement>(null)
   const rowHeightSetting = useUiStore((state) => state.appearance.rowHeight)
   const rowHeight = ROW_HEIGHTS[rowHeightSetting]
+
+  const widths = useUiStore(
+    (state) => (tabId === null ? undefined : state.resultColumnWidths[tabId]) ?? NO_WIDTHS,
+  )
+  const setColumnWidth = useUiStore((state) => state.setResultColumnWidth)
+  const [selected, setSelected] = useState<CellPosition | null>(null)
 
   const virtualizer = useVirtualizer({
     count: execution.rows.length,
@@ -74,16 +110,10 @@ export function ResultTable({ execution, onRequestMore }: ResultTableProps) {
     onRequestMore,
   ])
 
-  const template = [
-    `${ROW_NUMBER_WIDTH}px`,
-    ...execution.columns.map((column) => columnWidth(column.kind)),
-  ].join(' ')
+  const template = gridTemplate(execution.columns, widths, ROW_NUMBER_WIDTH)
 
   // 見出しと本文は別々のスクロール領域にあるため、同じ最小幅を与えて桁を揃える。
-  const minWidth = tableMinWidth(
-    execution.columns.map((column) => column.kind),
-    ROW_NUMBER_WIDTH,
-  )
+  const minWidth = resolveTableMinWidth(execution.columns, widths, ROW_NUMBER_WIDTH)
 
   /**
    * 本文の横スクロールに見出しを追従させる。
@@ -97,78 +127,192 @@ export function ResultTable({ execution, onRequestMore }: ResultTableProps) {
     }
   }
 
-  return (
-    <div className="flex-1 min-h-0 flex flex-col overflow-hidden text-11.5px">
-      <div
-        ref={headerRef}
-        data-testid="result-table-header"
-        className="overflow-hidden shrink-0 bg-panel2 border-b border-line"
-      >
-        <div
-          className="grid text-10.5px tracking-0.03em text-fg3"
-          style={{ gridTemplateColumns: template, minWidth }}
-        >
-          <div className="px-9px py-5px text-right border-r border-line2" />
-          {execution.columns.map((column) => (
-            <div
-              key={column.name}
-              title={`${column.name} ${column.typeName}`}
-              className={`px-9px py-5px border-r border-line2 truncate ${
-                isRightAligned(column.kind) ? 'text-right' : ''
-              }`}
-            >
-              {column.name}
-            </div>
-          ))}
-        </div>
-      </div>
+  /**
+   * 列幅を覚える。
+   *
+   * タブが決まっていないときは覚え先が無いので何もしない。
+   */
+  const rememberWidth = useCallback(
+    (columnName: string, width: number) => {
+      if (tabId === null) {
+        return
+      }
+      setColumnWidth(tabId, columnName, clampColumnWidth(width))
+    },
+    [setColumnWidth, tabId],
+  )
 
-      {execution.rows.length === 0 ? (
-        <EmptyRows />
-      ) : (
+  /**
+   * 取得済みの行に合わせて列幅を詰める（見出しのダブルクリック）。
+   *
+   * 走査するのはストアに溜まっている行だけである。まだ取り出していない行の値は
+   * 分からないため、続きを読み込んでからもう一度合わせ直すことになる。
+   */
+  const fitColumn = (column: Column, columnIndex: number) => {
+    const values = execution.rows.map((row) => {
+      const cell = row[columnIndex]
+      return cell === undefined ? '' : displayText(cell)
+    })
+    rememberWidth(column.name, autoFitWidth(column.name, values))
+  }
+
+  const selectedCell = useMemo(() => {
+    if (selected === null) {
+      return null
+    }
+    const column = execution.columns[selected.columnIndex]
+    const cell = execution.rows[selected.rowIndex]?.[selected.columnIndex]
+    if (column === undefined || cell === undefined) {
+      return null
+    }
+    return { column, cell, rowNumber: selected.rowIndex + 1 }
+  }, [execution.columns, execution.rows, selected])
+
+  const closeDetail = useCallback(() => setSelected(null), [])
+
+  return (
+    <div className="flex-1 min-h-0 flex overflow-hidden">
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden text-11.5px">
         <div
-          ref={scrollRef}
-          data-testid="result-table-body"
-          onScroll={syncHeaderScroll}
-          className="flex-1 min-h-0 overflow-auto select-text"
+          ref={headerRef}
+          data-testid="result-table-header"
+          className="overflow-hidden shrink-0 bg-panel2 border-b border-line"
         >
-          <div style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth }}>
-            {virtualItems.map((virtualRow) => {
-              const row = execution.rows[virtualRow.index]
-              return (
-                <div
-                  key={virtualRow.key}
-                  className="grid absolute left-0 w-full border-b border-gl text-fg"
-                  style={{
-                    gridTemplateColumns: template,
-                    height: virtualRow.size,
-                    transform: `translateY(${virtualRow.start}px)`,
-                  }}
-                >
-                  <div
-                    className="text-right text-fg6 border-r border-gl bg-panel2"
-                    style={{ padding: 'var(--rp)' }}
-                  >
-                    {virtualRow.index + 1}
-                  </div>
-                  {row.map((cell, cellIndex) => (
-                    <div
-                      key={execution.columns[cellIndex]?.name ?? cellIndex}
-                      className={`border-r border-gl truncate ${
-                        isRightAligned(cell.kind) ? 'text-right' : ''
-                      } ${cell.kind === 'null' ? 'text-fg5 italic' : ''}`}
-                      style={{ padding: 'var(--rp)' }}
-                      title={displayText(cell)}
-                    >
-                      {displayText(cell)}
-                    </div>
-                  ))}
-                </div>
-              )
-            })}
+          <div
+            className="grid text-10.5px tracking-0.03em text-fg3"
+            style={{ gridTemplateColumns: template, minWidth }}
+          >
+            <div className="px-9px py-5px text-right border-r border-line2" />
+            {execution.columns.map((column, columnIndex) => (
+              <ColumnHeader
+                key={column.name}
+                column={column}
+                width={widths[column.name]}
+                onResize={(width) => rememberWidth(column.name, width)}
+                onFit={() => fitColumn(column, columnIndex)}
+              />
+            ))}
           </div>
         </div>
+
+        {execution.rows.length === 0 ? (
+          <EmptyRows />
+        ) : (
+          <div
+            ref={scrollRef}
+            data-testid="result-table-body"
+            onScroll={syncHeaderScroll}
+            className="flex-1 min-h-0 overflow-auto select-text"
+          >
+            <div style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth }}>
+              {virtualItems.map((virtualRow) => {
+                const row = execution.rows[virtualRow.index]
+                return (
+                  <div
+                    key={virtualRow.key}
+                    className="grid absolute left-0 w-full border-b border-gl text-fg"
+                    style={{
+                      gridTemplateColumns: template,
+                      height: virtualRow.size,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <div
+                      className="text-right text-fg6 border-r border-gl bg-panel2"
+                      style={{ padding: 'var(--rp)' }}
+                    >
+                      {virtualRow.index + 1}
+                    </div>
+                    {row.map((cell, cellIndex) => (
+                      <div
+                        key={execution.columns[cellIndex]?.name ?? cellIndex}
+                        onDoubleClick={() =>
+                          setSelected({ rowIndex: virtualRow.index, columnIndex: cellIndex })
+                        }
+                        className={`border-r border-gl truncate ${
+                          isRightAligned(cell.kind) ? 'text-right' : ''
+                        } ${cell.kind === 'null' ? 'text-fg5 italic' : ''}`}
+                        style={{ padding: 'var(--rp)' }}
+                        title={displayText(cell)}
+                      >
+                        {displayText(cell)}
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {selectedCell === null ? null : (
+        <CellDetailPanel
+          column={selectedCell.column}
+          cell={selectedCell.cell}
+          rowNumber={selectedCell.rowNumber}
+          onClose={closeDetail}
+        />
       )}
+    </div>
+  )
+}
+
+interface ColumnHeaderProps {
+  column: Column
+  /** 覚えている幅。無ければ型ごとの既定で描かれている。 */
+  width: number | undefined
+  /** ドラッグ中の幅を伝える。 */
+  onResize: (width: number) => void
+  /** 内容に合わせる（ダブルクリック）。 */
+  onFit: () => void
+}
+
+/**
+ * 列見出し 1 つ。右端に幅を変えるためのつまみを持つ。
+ *
+ * つまみの当たり判定は 6px。ドラッグ中はウィンドウ全体で `mousemove` を拾うため、
+ * ポインタが見出しの外へ出ても幅が追従する。
+ */
+function ColumnHeader({ column, width, onResize, onFit }: ColumnHeaderProps) {
+  const cellRef = useRef<HTMLDivElement>(null)
+
+  const beginResize = (event: ReactMouseEvent<HTMLElement>) => {
+    event.preventDefault()
+    const startX = event.clientX
+    // 覚えている幅が無ければ実際に描かれている幅から始める。jsdom のように寸法を
+    // 持たない環境では 0 が返るため、型ごとの既定へ落とす。
+    const measured = cellRef.current?.getBoundingClientRect().width ?? 0
+    const startWidth = width ?? (measured > 0 ? measured : columnMinWidthOf(column))
+
+    const onMove = (moveEvent: MouseEvent) => {
+      onResize(startWidth + moveEvent.clientX - startX)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  return (
+    <div
+      ref={cellRef}
+      title={`${column.name} ${column.typeName}`}
+      onDoubleClick={onFit}
+      className={`relative px-9px py-5px border-r border-line2 truncate ${
+        isRightAligned(column.kind) ? 'text-right' : ''
+      }`}
+    >
+      {column.name}
+      <span
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={`${column.name} の列幅を変える`}
+        onMouseDown={beginResize}
+        className="absolute top-0 right-0 w-6px h-full cursor-col-resize"
+      />
     </div>
   )
 }

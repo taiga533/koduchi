@@ -17,6 +17,7 @@ beforeEach(() => {
     settingsOpen: false,
     sidebarSegment: 'schema',
     resultTab: 'result',
+    resultColumnWidths: {},
   })
   document.documentElement.removeAttribute('data-theme')
   document.documentElement.removeAttribute('data-grid-lines')
@@ -131,5 +132,65 @@ describe('useUiStore', () => {
     expect(useUiStore.getState().settingsOpen).toBe(true)
     useUiStore.getState().closeSettings()
     expect(useUiStore.getState().settingsOpen).toBe(false)
+  })
+
+  it('結果テーブルの列幅を列名ごとに覚える', () => {
+    // Arrange
+    // 既定では何も覚えていない
+
+    // Act
+    useUiStore.getState().setResultColumnWidth('tab-1', 'ID', 220)
+
+    // Assert
+    expect(useUiStore.getState().resultColumnWidths).toEqual({ 'tab-1': { ID: 220 } })
+  })
+
+  it('列幅はタブごとに分かれて覚えられる', () => {
+    // Arrange
+    useUiStore.getState().setResultColumnWidth('tab-1', 'ID', 220)
+
+    // Act
+    useUiStore.getState().setResultColumnWidth('tab-2', 'ID', 90)
+
+    // Assert
+    expect(useUiStore.getState().resultColumnWidths).toEqual({
+      'tab-1': { ID: 220 },
+      'tab-2': { ID: 90 },
+    })
+  })
+
+  it('列幅を覚えても設定ファイルへは書かない', () => {
+    // Arrange
+    // 保存の呼び出しはまだ無い
+
+    // Act
+    useUiStore.getState().setResultColumnWidth('tab-1', 'ID', 220)
+
+    // Assert
+    expect(calls.saveAppSettings).toHaveLength(0)
+  })
+
+  it('タブを閉じるとそのタブの列幅を忘れる', () => {
+    // Arrange
+    useUiStore.getState().setResultColumnWidth('tab-1', 'ID', 220)
+    useUiStore.getState().setResultColumnWidth('tab-2', 'ID', 90)
+
+    // Act
+    useUiStore.getState().clearResultColumnWidths('tab-1')
+
+    // Assert
+    expect(useUiStore.getState().resultColumnWidths).toEqual({ 'tab-2': { ID: 90 } })
+  })
+
+  it('覚えていないタブを忘れさせても何も変わらない', () => {
+    // Arrange
+    useUiStore.getState().setResultColumnWidth('tab-1', 'ID', 220)
+    const 前 = useUiStore.getState().resultColumnWidths
+
+    // Act
+    useUiStore.getState().clearResultColumnWidths('tab-9')
+
+    // Assert
+    expect(useUiStore.getState().resultColumnWidths).toBe(前)
   })
 })

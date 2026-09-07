@@ -75,6 +75,7 @@ export function ResultPane({ tabId, runningLabel, onCancel, onRequestMore }: Res
       </div>
 
       <PaneBody
+        tabId={tabId}
         execution={execution}
         plan={plan}
         currentTab={currentTab}
@@ -88,6 +89,7 @@ export function ResultPane({ tabId, runningLabel, onCancel, onRequestMore }: Res
 }
 
 interface PaneBodyProps {
+  tabId: string | null
   execution: TabExecution
   plan: TabPlan | null
   currentTab: string
@@ -99,6 +101,7 @@ interface PaneBodyProps {
 
 /** ペインの本文。状態に応じて実行中・エラー・結果・空状態を出し分ける。 */
 function PaneBody({
+  tabId,
   execution,
   plan,
   currentTab,
@@ -146,7 +149,7 @@ function PaneBody({
     )
   }
 
-  return <ResultTable execution={execution} onRequestMore={onRequestMore} />
+  return <ResultTable tabId={tabId} execution={execution} onRequestMore={onRequestMore} />
 }
 
 /**
