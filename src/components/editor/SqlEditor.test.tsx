@@ -25,6 +25,20 @@ function 描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {})
   }
 }
 
+/** 検索パネルの要素を取り出す。開いていなければ `null`。 */
+function 検索パネル(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.cm-panel.cm-search')
+}
+
+/** 検索パネルの中の入力欄を名前で取り出す。 */
+function 検索欄(name: 'search' | 'replace'): HTMLInputElement {
+  const 欄 = 検索パネル()?.querySelector(`input[name="${name}"]`)
+  if (!(欄 instanceof HTMLInputElement)) {
+    throw new Error(`検索パネルの ${name} 欄が見つからない`)
+  }
+  return 欄
+}
+
 /** 編集領域の要素を取り出す。 */
 function 編集領域(): HTMLElement {
   const content = document.querySelector('.cm-content')
@@ -83,16 +97,14 @@ describe('SqlEditor', () => {
     expect(通知.position.at(-1)).toMatchObject({ line: 1, column: 4, offset: 3 })
   })
 
-  // CodeMirror の `Mod` は macOS では `⌘`、それ以外では `Ctrl` を指す。jsdom は
-  // macOS として判定されないため、ここでは `Ctrl` を押して確かめる。
-  it('⌥ + Mod + ⏎ でスクリプト実行が呼ばれる', async () => {
+  it('⌥⌘⏎ でスクリプト実行が呼ばれる', async () => {
     // Arrange
     const 呼ばれた: string[] = []
     描く({ value: 'select 1;', onRunScript: () => 呼ばれた.push('script') })
 
     // Act
     await userEvent.click(編集領域())
-    await userEvent.keyboard('{Alt>}{Control>}{Enter}{/Control}{/Alt}')
+    await userEvent.keyboard('{Alt>}{Meta>}{Enter}{/Meta}{/Alt}')
 
     // Assert
     expect(呼ばれた).toEqual(['script'])
@@ -107,6 +119,88 @@ describe('SqlEditor', () => {
 
     // Assert
     expect(編集領域().textContent).toContain('select * from users')
+  })
+
+  it('⌘F で検索パネルが開く', async () => {
+    // Arrange
+    描く({ value: 'select id from users' })
+
+    // Act
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+
+    // Assert
+    expect(検索パネル()).not.toBeNull()
+    expect(検索欄('search')).toBeInTheDocument()
+  })
+
+  it('検索パネルの文言が日本語になっている', async () => {
+    // Arrange
+    描く({ value: 'select id from users' })
+
+    // Act
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+
+    // Assert
+    expect(検索欄('search')).toHaveAttribute('placeholder', '検索')
+    expect(検索欄('replace')).toHaveAttribute('placeholder', '置換後の文字列')
+    expect(検索パネル()?.textContent).toContain('次へ')
+    expect(検索パネル()?.textContent).toContain('すべて置換')
+  })
+
+  it('検索語を入れると該当箇所が強調される', async () => {
+    // Arrange
+    描く({ value: 'select users.id from users' })
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+
+    // Act
+    await userEvent.type(検索欄('search'), 'users')
+
+    // Assert
+    expect(document.querySelectorAll('.cm-searchMatch').length).toBeGreaterThan(0)
+  })
+
+  it('⌥⌘F で置換欄に入力の焦点が移る', async () => {
+    // Arrange
+    描く({ value: 'select id from users' })
+
+    // Act
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}{Alt>}f{/Alt}{/Meta}')
+
+    // Assert
+    expect(document.activeElement).toBe(検索欄('replace'))
+  })
+
+  it('検索欄の変換中は検索語を確定しない', async () => {
+    // Arrange
+    描く({ value: 'select id from users' })
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+    const 欄 = 検索欄('search')
+
+    // Act
+    欄.value = 'い'
+    欄.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, isComposing: true }))
+
+    // Assert
+    expect(document.querySelectorAll('.cm-searchMatch')).toHaveLength(0)
+  })
+
+  it('検索パネルの閉じるボタンは文字ではなくアイコンで描かれる', async () => {
+    // Arrange
+    描く({ value: 'select id from users' })
+
+    // Act
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+
+    // Assert
+    const 閉じる = 検索パネル()?.querySelector('button[name="close"]')
+    expect(閉じる?.querySelector('svg')).not.toBeNull()
+    expect(閉じる?.textContent).toBe('')
   })
 
   it('自分が伝えた内容が返ってきても打ち直さない', async () => {

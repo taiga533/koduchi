@@ -7,8 +7,9 @@
  * ため、届くたびに `Compartment` で言語設定だけを差し替える。エディタを作り直すと
  * 取り消し履歴とカーソル位置が飛ぶ。
  *
- * `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` はここでしか意味を持たないため、CodeMirror の
- * keymap に置く（CLAUDE.md の「キーバインドの置き場所」）。
+ * 実行（`⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎`）と中止（`⌘.`）、検索・置換（`⌘F` / `⌘G` /
+ * `⇧⌘G` / `⌥⌘F`）はエディタの中でしか意味を持たないため、`App.tsx` の `keydown`
+ * ではなく CodeMirror の keymap に置く。検索の中身は `search.tsx` にある。
  *
  * 日本語入力（IME）の変換中はエディタの外へ何も伝えない。変換中に React の
  * 再描画を起こすと、CodeMirror が編集領域の DOM を組み直し、その拍子に
@@ -35,6 +36,7 @@ import {
 } from '@codemirror/autocomplete'
 import { PLSQL, sql } from '@codemirror/lang-sql'
 import { koduchiEditorTheme } from './theme'
+import { koduchiSearch, koduchiSearchKeymap } from './search'
 
 /** エディタのカーソルと選択の状態。 */
 export interface EditorPosition {
@@ -146,6 +148,7 @@ export function SqlEditor({
         // 補完の候補は編集領域の外（本体直下）へ出す。編集領域の中に足し引きすると、
         // 入力の最中に DOM が動いて変換に割り込む。
         tooltips({ parent: document.body }),
+        koduchiSearch,
         koduchiEditorTheme,
         EditorView.lineWrapping,
         EditorView.contentAttributes.of(CONTENT_ATTRIBUTES),
@@ -182,6 +185,8 @@ export function SqlEditor({
               return true
             },
           },
+          // 検索は `defaultKeymap` より前に置く。`⌘F` を確実に取るため。
+          ...koduchiSearchKeymap,
           ...closeBracketsKeymap,
           ...completionKeymap,
           ...defaultKeymap,

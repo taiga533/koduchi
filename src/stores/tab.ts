@@ -4,10 +4,14 @@
  * タブは `.sql` ファイルの開く / 保存に対応し、未保存のままでも保持される
  * （ADR 0005）。未保存のバッファも含めて SQLite に保存し、再起動でタブ構成ごと
  * 復元する。
+ *
+ * バインド変数へ前回与えた値もここが覚える（ADR の「バインド変数」節）。実行の
+ * 状態ではなく編集中の文脈に属するためである。セッションには保存しないので、
+ * 再起動すれば消える。
  */
 
 import { create } from 'zustand'
-import type { SessionState } from '../types/db'
+import type { Bind, SessionState } from '../types/db'
 
 /** エディタタブ 1 枚。 */
 export interface EditorTab {
@@ -22,9 +26,31 @@ export interface EditorTab {
   dirty: boolean
 }
 
+/**
+ * バインド変数 1 つへの入力。
+ *
+ * NULL のときも入力した文字は残す。チェックを外せば元の値に戻るほうが、
+ * 値を尋ね直される場面では扱いやすい。
+ */
+export interface BindInput {
+  /** 入力された値。 */
+  text: string
+  /** NULL としてバインドするか。 */
+  isNull: boolean
+}
+
+/** 何も入力されていない変数の既定値。 */
+export const emptyBindInput: BindInput = { text: '', isNull: false }
+
 interface TabState {
   tabs: EditorTab[]
   activeTabId: string | null
+  /**
+   * タブごとの、変数名をキーにしたバインド変数の入力。
+   *
+   * セッションには保存しない。値には個人情報が入りうるためである。
+   */
+  bindValues: Record<string, Record<string, BindInput>>
 
   /** 新しい空のタブを開き、それを選択する。 */
   openNewTab: () => void
@@ -38,8 +64,15 @@ interface TabState {
   openFile: (filePath: string, content: string) => void
   /** 保存し終えたタブに保存先を記録し、未保存の印を消す（`⌘S`）。 */
   markSaved: (id: string, filePath: string) => void
-  /** 保存しておいたセッションからタブを組み直す（ADR 0005）。 */
-  restore: (session: SessionState) => void
+  /**
+   * 保存しておいたセッションからタブを組み直す（ADR 0005）。
+   *
+   * 見るのはタブとその選択だけである。サイドバーのセグメントとペインの寸法は
+   * `ui` ストアが受け取る。
+   */
+  restore: (session: Pick<SessionState, 'tabs' | 'activeTabId'>) => void
+  /** タブのバインド変数の入力を覚え直す。 */
+  setBindValues: (tabId: string, values: Record<string, BindInput>) => void
 }
 
 /**
@@ -83,6 +116,7 @@ const initialTab = createTab()
 export const useTabStore = create<TabState>((set) => ({
   tabs: [initialTab],
   activeTabId: initialTab.id,
+  bindValues: {},
 
   openNewTab: () =>
     set((state) => {
@@ -98,10 +132,12 @@ export const useTabStore = create<TabState>((set) => ({
       }
 
       const remaining = state.tabs.filter((tab) => tab.id !== id)
+      // 閉じたタブのバインド変数は残さない。
+      const { [id]: _removed, ...bindValues } = state.bindValues
 
       if (remaining.length === 0) {
         const tab = createTab()
-        return { tabs: [tab], activeTabId: tab.id }
+        return { tabs: [tab], activeTabId: tab.id, bindValues }
       }
 
       // 閉じたタブが選択中だったら、隣のタブへ移る。
@@ -110,7 +146,7 @@ export const useTabStore = create<TabState>((set) => ({
           ? remaining[Math.min(index, remaining.length - 1)].id
           : state.activeTabId
 
-      return { tabs: remaining, activeTabId }
+      return { tabs: remaining, activeTabId, bindValues }
     }),
 
   selectTab: (id) =>
@@ -175,8 +211,12 @@ export const useTabStore = create<TabState>((set) => ({
           ? session.activeTabId
           : tabs[0].id
 
-      return { tabs, activeTabId }
+      // 復元したタブは ID が変わりうる。前のタブの入力は持ち越さない。
+      return { tabs, activeTabId, bindValues: {} }
     }),
+
+  setBindValues: (tabId, values) =>
+    set((state) => ({ bindValues: { ...state.bindValues, [tabId]: values } })),
 }))
 
 /**
@@ -188,6 +228,16 @@ export function selectActiveTab(state: TabState): EditorTab | null {
   return state.tabs.find((tab) => tab.id === state.activeTabId) ?? null
 }
 
+/** タブ以外にセッションへ書き出すもの。 */
+export interface SessionLayout {
+  /** サイドバーの選択セグメント。 */
+  sidebarSegment: string
+  /** サイドバーの幅（px）。 */
+  sidebarWidth: number
+  /** エディタの高さ（px）。 */
+  editorHeight: number
+}
+
 /**
  * セッションに保存する形へ変換する（ADR 0005）。
  *
@@ -195,11 +245,11 @@ export function selectActiveTab(state: TabState): EditorTab | null {
  * 前提にした設計である。
  *
  * @param state タブストアの状態
- * @param sidebarSegment サイドバーの選択セグメント
+ * @param layout サイドバーの選択セグメントとペインの寸法
  */
 export function selectSession(
   state: Pick<TabState, 'tabs' | 'activeTabId'>,
-  sidebarSegment: string,
+  layout: SessionLayout,
 ): SessionState {
   return {
     tabs: state.tabs.map((tab) => ({
@@ -210,6 +260,43 @@ export function selectSession(
       dirty: tab.dirty,
     })),
     activeTabId: state.activeTabId,
-    sidebarSegment,
+    sidebarSegment: layout.sidebarSegment,
+    sidebarWidth: layout.sidebarWidth,
+    editorHeight: layout.editorHeight,
   }
+}
+
+/** バインド変数の入力を持たないタブのための、空の表。参照を固定して再描画を避ける。 */
+export const noBindValues: Record<string, BindInput> = {}
+
+/**
+ * タブのバインド変数の入力を返す。まだ入力していなければ空の表を返す。
+ *
+ * @param state タブストアの状態
+ * @param tabId 対象のタブ
+ */
+export function selectBindValues(
+  state: Pick<TabState, 'bindValues'>,
+  tabId: string | null,
+): Record<string, BindInput> {
+  if (!tabId) {
+    return noBindValues
+  }
+  return state.bindValues[tabId] ?? noBindValues
+}
+
+/**
+ * 入力を Rust 側へ渡す形へ変換する（ADR の「バインド変数」節）。
+ *
+ * 尋ねた名前の順に並べる。NULL のチェックが付いていれば値は `null` になり、
+ * 入力していない変数は空文字列として渡る。
+ *
+ * @param names 尋ねた変数の名前
+ * @param values 名前をキーにした入力
+ */
+export function toBinds(names: string[], values: Record<string, BindInput>): Bind[] {
+  return names.map((name) => {
+    const input = values[name] ?? emptyBindInput
+    return [name, input.isNull ? null : input.text]
+  })
 }

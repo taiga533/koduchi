@@ -33,7 +33,6 @@ beforeEach(() => {
   useTabStore.getState().restore({
     tabs: [{ id: 'tab-1', name: '無題-1.sql', filePath: null, content: 'select 1', dirty: false }],
     activeTabId: 'tab-1',
-    sidebarSegment: 'schema',
   })
 })
 
@@ -55,7 +54,6 @@ describe('EditorPanel', () => {
       useTabStore.getState().restore({
         tabs: [{ id: 'tab-2', name: '無題-2.sql', filePath: null, content: '', dirty: false }],
         activeTabId: 'tab-2',
-        sidebarSegment: 'schema',
       }),
     )
     描く()

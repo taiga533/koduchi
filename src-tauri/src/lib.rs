@@ -23,6 +23,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 結果テーブルの ⌘C / ⇧⌘C が使う。
+        .plugin(tauri_plugin_clipboard_manager::init())
         // ウィンドウの位置とサイズの復元はプラグインに任せる（ADR 0009）。
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState::default())
@@ -41,6 +43,8 @@ pub fn run() {
             commands::connection::fetch_more,
             commands::connection::release_tab,
             commands::connection::cancel,
+            commands::connection::commit,
+            commands::connection::rollback,
             commands::connection::disconnect,
             commands::config::list_saved_connections,
             commands::config::save_connection,
@@ -67,6 +71,28 @@ pub fn run() {
             commands::csv::csv_abort,
             commands::window::open_connection_window,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // メニューの「終了」で直接落とさず、各ウィンドウへ閉じる要求を送る
+            // （ADR 0012）。フロントエンドの関所を通し、未コミットの変更を
+            // 黙って捨てさせないためである。
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+                // 終了コードを伴う要求は明示的な終了であり、割り込まない。
+                if code.is_some() {
+                    return;
+                }
+
+                let windows = app.webview_windows();
+                // ウィンドウが残っていなければ、そのまま終了させる。
+                if windows.is_empty() {
+                    return;
+                }
+
+                api.prevent_exit();
+                for window in windows.values() {
+                    let _ = window.close();
+                }
+            }
+        });
 }

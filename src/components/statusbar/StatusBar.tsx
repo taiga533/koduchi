@@ -2,19 +2,34 @@
  * ステータスバー（デザイン 3a の最下段）。
  *
  * カーソル位置・文字コード・データベースの種別・接続状態・読み取り専用の別と、
- * 設定への入口を並べる。
+ * 設定への入口を並べる。手動コミットの接続では、その並びに未コミットの表示と
+ * コミット / ロールバックのボタンが加わる（ADR 0012）。
  *
  * カーソル位置は `ui` ストアから読む。打鍵のたびにアプリ全体を描き直さず、
  * ここだけが更新されるようにするためである。
+ *
+ * 接続中の表示は押せるようにしてあり、そこから切断と接続の切り替えへ進む。
+ * 1 接続 = 1 ウィンドウ（ADR 0009）であるため、接続を操作する場所はこの
+ * 「今どこへ繋がっているか」を出している所が自然である。
  */
 
-import { Lock, Settings } from 'lucide-react'
-import { useConnectionStore } from '../../stores/connection'
+import { useState } from 'react'
+import { ArrowLeftRight, Check, ChevronUp, Lock, Settings, Undo2, Unplug } from 'lucide-react'
+import { isManualCommit, useConnectionStore } from '../../stores/connection'
+import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 
 interface StatusBarProps {
   /** 設定画面を開く。 */
   onOpenSettings: () => void
+  /** 接続を切って接続を選ぶ画面へ戻る。 */
+  onDisconnect: () => void
+  /** 接続を切り替える。切断して接続を選ぶ画面を出す。 */
+  onSwitchConnection: () => void
+  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
+  onCommit?: () => void
+  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
+  onRollback?: () => void
 }
 
 /** 接続の段階を利用者向けの文言にする。 */
@@ -25,10 +40,23 @@ const STATUS_LABELS = {
   failed: '接続失敗',
 } as const
 
-export function StatusBar({ onOpenSettings }: StatusBarProps) {
+/** 接続中を示す緑。トークンに無い色であるため、この 1 箇所で持つ。 */
+const CONNECTED_COLOR = 'oklch(0.58 0.12 152)'
+
+export function StatusBar({
+  onOpenSettings,
+  onDisconnect,
+  onSwitchConnection,
+  onCommit,
+  onRollback,
+}: StatusBarProps) {
   const status = useConnectionStore((state) => state.status)
   const connection = useConnectionStore((state) => state.connection)
   const cursor = useUiStore((state) => state.cursor)
+  const inTransaction = useExecutionStore((state) => state.inTransaction)
+
+  // 読み取り専用と自動コミットの接続では、コミットすべき変更がそもそも生じない。
+  const 手動コミット = isManualCommit(connection)
 
   return (
     <footer className="h-26px flex items-center gap-16px px-14px bg-bg text-11px text-fg3 shrink-0">
@@ -38,13 +66,26 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
       <span>UTF-8</span>
       {connection ? <span>Oracle</span> : null}
       <span className="flex-1" />
-      <span style={{ color: status === 'connected' ? 'oklch(0.58 0.12 152)' : undefined }}>
-        {STATUS_LABELS[status]}
-      </span>
+      {status === 'connected' ? (
+        <ConnectionMenu onDisconnect={onDisconnect} onSwitchConnection={onSwitchConnection} />
+      ) : (
+        <span>{STATUS_LABELS[status]}</span>
+      )}
       {connection?.params.readOnly ? (
         <span className="flex items-center gap-5px">
           <Lock size={12} />
           読み取り専用
+        </span>
+      ) : null}
+      {手動コミット && inTransaction ? <span className="text-warn">未コミット</span> : null}
+      {手動コミット ? (
+        <span className="flex items-center gap-10px">
+          <TransactionButton label="コミット" shortcut="⌥⌘C" onClick={onCommit}>
+            <Check size={12} />
+          </TransactionButton>
+          <TransactionButton label="ロールバック" shortcut="⌥⌘R" onClick={onRollback}>
+            <Undo2 size={12} />
+          </TransactionButton>
         </span>
       ) : null}
       <button
@@ -56,5 +97,123 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         設定
       </button>
     </footer>
+  )
+}
+
+/**
+ * コミット / ロールバックのボタン（ADR 0012）。
+ *
+ * 未コミットが無いときに押しても害は無いため、押せる状態は変えない。押せたり
+ * 押せなかったりが実行のたびに切り替わるほうが、押し所を見失わせる。
+ */
+function TransactionButton({
+  label,
+  shortcut,
+  onClick,
+  children,
+}: {
+  label: string
+  shortcut: string
+  onClick?: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${label}（${shortcut}）`}
+      className="flex items-center gap-5px text-11px text-fg3 bg-transparent border-none cursor-pointer font-inherit p-0"
+    >
+      {children}
+      {label}
+    </button>
+  )
+}
+
+/**
+ * 接続中の表示から開くメニュー。
+ *
+ * 項目は「切断」と「別の接続へ切り替え…」の 2 つで、どちらも接続を閉じて
+ * 接続を選ぶ画面へ戻る。同じ動きに 2 つの入口を置いてあるのは、切り替えの
+ * つもりの利用者に「切断」しか見えないと、その道が無いように見えるためである。
+ *
+ * ステータスバーは画面の最下段にあるため、メニューは上へ開く。
+ */
+function ConnectionMenu({
+  onDisconnect,
+  onSwitchConnection,
+}: {
+  onDisconnect: () => void
+  onSwitchConnection: () => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  /** 項目を選んだときの共通処理。メニューを閉じてから実行する。 */
+  const select = (work: () => void) => {
+    setOpen(false)
+    work()
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex items-center gap-4px px-5px py-1px rounded-5px text-11px bg-transparent border-none cursor-pointer font-inherit hover:bg-fill"
+        style={{ color: CONNECTED_COLOR }}
+      >
+        {STATUS_LABELS.connected}
+        <ChevronUp size={12} />
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 bottom-24px z-10 w-208px p-5px rounded-9px bg-panel border border-line shadow-[0_8px_24px_rgba(24,28,38,.16)] flex flex-col gap-1px"
+        >
+          <MenuItem
+            icon={<Unplug size={13} />}
+            label="切断"
+            onSelect={() => select(onDisconnect)}
+          />
+          <MenuItem
+            icon={<ArrowLeftRight size={13} />}
+            label="別の接続へ切り替え…"
+            onSelect={() => select(onSwitchConnection)}
+          />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * メニューの 1 項目。
+ *
+ * @param icon 左に置くアイコン
+ * @param label 項目の文言
+ * @param onSelect 選んだときに呼ぶ
+ */
+function MenuItem({
+  icon,
+  label,
+  onSelect,
+}: {
+  icon: React.ReactNode
+  label: string
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onSelect}
+      className="flex items-center gap-8px w-full px-8px py-6px rounded-7px bg-transparent border-none cursor-pointer font-inherit text-11.5px text-fg text-left hover:bg-fill"
+    >
+      <span className="flex items-center text-fg4">{icon}</span>
+      {label}
+    </button>
   )
 }

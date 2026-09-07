@@ -51,6 +51,7 @@ fn 接続情報を解析する(raw: &str) -> Option<ConnectionParams> {
             service_name: service_name.to_string(),
         },
         read_only: false,
+        auto_commit: false,
     })
 }
 
@@ -94,6 +95,31 @@ fn 接続を開く() -> Option<ConnectionPool> {
     プールを開く(false, 1, DEFAULT_CHUNK_SIZE)
 }
 
+/// 自動コミットを有効にしたプールを 1 本開く（ADR 0012）。
+fn 自動コミットの接続を開く() -> Option<ConnectionPool> {
+    let mut params = 接続に使う情報()?;
+    params.auto_commit = true;
+
+    Some(ConnectionPool::open(&params, 1, DEFAULT_CHUNK_SIZE).unwrap())
+}
+
+/// 実行結果から未コミットかどうかを取り出す（ADR 0012）。
+fn 未コミットか(pool: &ConnectionPool, sql: &str) -> bool {
+    match pool.execute(TAB, sql, &[]).unwrap().outcome {
+        ExecuteOutcome::Query { in_transaction, .. } => in_transaction,
+        ExecuteOutcome::Statement { in_transaction, .. } => in_transaction,
+    }
+}
+
+/// 統合テストで書き換える 1 行を、テストの前後で元の値へ戻せるよう読み出す。
+fn セグメントを読む(pool: &ConnectionPool) -> String {
+    一つのセル(
+        pool,
+        "select segment from koduchi.user_traits where user_id = 1",
+    )
+    .text
+}
+
 /// 問い合わせを実行し、列と最初のかたまりを取り出す。
 ///
 /// 問い合わせ以外の結果が返ったらテストを失敗させる。
@@ -101,7 +127,7 @@ fn 問い合わせる(
     pool: &ConnectionPool,
     sql: &str,
 ) -> (Vec<koduchi_lib::db::driver::Column>, Chunk) {
-    match pool.execute(TAB, sql).unwrap().outcome {
+    match pool.execute(TAB, sql, &[]).unwrap().outcome {
         ExecuteOutcome::Query { columns, chunk, .. } => (columns, chunk),
         other => panic!("問い合わせの結果になるはず: {other:?}"),
     }
@@ -246,7 +272,7 @@ fn 誤ったsqlはエラーとして返る() {
     };
 
     // Act
-    let result = pool.execute(TAB, "select * from 存在しない表");
+    let result = pool.execute(TAB, "select * from 存在しない表", &[]);
 
     // Assert
     let error = result.expect_err("エラーになるはず");
@@ -268,7 +294,7 @@ fn dbms_outputの通知が実行結果に添えられる() {
 
     // Act
     let outcome = pool
-        .execute(TAB, "begin koduchi.say_hello(2); end;")
+        .execute(TAB, "begin koduchi.say_hello(2); end;", &[])
         .unwrap()
         .outcome;
 
@@ -291,7 +317,7 @@ fn 読み取り専用接続では書き込みが拒まれる() {
     };
 
     // Act
-    let result = pool.execute(TAB, "update koduchi.user_traits set segment = 'power'");
+    let result = pool.execute(TAB, "update koduchi.user_traits set segment = 'power'", &[]);
 
     // Assert
     let error = result.expect_err("読み取り専用なので失敗するはず");
@@ -371,11 +397,11 @@ fn プールの本数を超えると最も古い結果セットが閉じられ�
         return;
     };
     let 多い行 = "select event_id from koduchi.events where rownum <= 100";
-    pool.execute("tab-a", 多い行).unwrap();
-    pool.execute("tab-b", 多い行).unwrap();
+    pool.execute("tab-a", 多い行, &[]).unwrap();
+    pool.execute("tab-b", 多い行, &[]).unwrap();
 
     // Act
-    let 三つ目 = pool.execute("tab-c", 多い行).unwrap();
+    let 三つ目 = pool.execute("tab-c", 多い行, &[]).unwrap();
 
     // Assert
     assert_eq!(三つ目.discarded_tab.as_deref(), Some("tab-a"));
@@ -391,12 +417,12 @@ fn 使い続けているタブは閉じられない() {
         return;
     };
     let 多い行 = "select event_id from koduchi.events where rownum <= 100";
-    pool.execute("tab-a", 多い行).unwrap();
-    pool.execute("tab-b", 多い行).unwrap();
+    pool.execute("tab-a", 多い行, &[]).unwrap();
+    pool.execute("tab-b", 多い行, &[]).unwrap();
     pool.fetch_more("tab-a").unwrap();
 
     // Act
-    let 三つ目 = pool.execute("tab-c", 多い行).unwrap();
+    let 三つ目 = pool.execute("tab-c", 多い行, &[]).unwrap();
 
     // Assert
     assert_eq!(三つ目.discarded_tab.as_deref(), Some("tab-b"));
@@ -411,11 +437,11 @@ fn タブを閉じると接続が明け渡される() {
         return;
     };
     let 多い行 = "select event_id from koduchi.events where rownum <= 100";
-    pool.execute("tab-a", 多い行).unwrap();
+    pool.execute("tab-a", 多い行, &[]).unwrap();
 
     // Act
     pool.release("tab-a").unwrap();
-    let 次 = pool.execute("tab-b", 多い行).unwrap();
+    let 次 = pool.execute("tab-b", 多い行, &[]).unwrap();
 
     // Assert
     assert_eq!(次.discarded_tab, None);
@@ -429,7 +455,7 @@ fn 同じタブで実行し直すと前の結果セットが閉じられる() {
         return;
     };
     let 多い行 = "select event_id from koduchi.events where rownum <= 100";
-    pool.execute(TAB, 多い行).unwrap();
+    pool.execute(TAB, 多い行, &[]).unwrap();
 
     // Act
     let (_, chunk) = 問い合わせる(&pool, 多い行);
@@ -564,6 +590,118 @@ fn スキーマの列情報を取り出せる() {
 
 #[test]
 #[serial]
+fn バインド変数へ与えた値で絞り込める() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![(String::from("keyword"), Some(String::from("dual")))];
+
+    // Act
+    let outcome = pool
+        .execute(TAB, "select :keyword from dual", &binds)
+        .unwrap()
+        .outcome;
+
+    // Assert
+    match outcome {
+        ExecuteOutcome::Query { chunk, .. } => assert_eq!(chunk.rows[0][0].text, "dual"),
+        other => panic!("問い合わせの結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn nullを与えたバインド変数はnullとして届く() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![(String::from("memo"), None)];
+
+    // Act
+    let outcome = pool
+        .execute(
+            TAB,
+            "select case when :memo is null then 'NULL である' else 'NULL でない' end from dual",
+            &binds,
+        )
+        .unwrap()
+        .outcome;
+
+    // Assert
+    match outcome {
+        ExecuteOutcome::Query { chunk, .. } => assert_eq!(chunk.rows[0][0].text, "NULL である"),
+        other => panic!("問い合わせの結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn 文に無いバインド変数を渡しても実行できる() {
+    // Arrange: 抽出の見立てが Oracle とずれても実行そのものは落とさない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![
+        (String::from("id"), Some(String::from("1"))),
+        (String::from("使わない"), Some(String::from("x"))),
+    ];
+
+    // Act
+    let outcome = pool
+        .execute(TAB, "select :id from dual", &binds)
+        .unwrap()
+        .outcome;
+
+    // Assert
+    match outcome {
+        ExecuteOutcome::Query { chunk, .. } => assert_eq!(chunk.rows[0][0].text, "1"),
+        other => panic!("問い合わせの結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn バインド変数を含む文でも見積りの実行計画を取れる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![(String::from("user_id"), Some(String::from("1")))];
+
+    // Act
+    let plan = pool
+        .explain_plan("select * from users where user_id = :user_id", &binds)
+        .unwrap();
+
+    // Assert
+    assert!(plan.contains("SELECT STATEMENT"), "計画の中身: {plan}");
+}
+
+#[test]
+#[serial]
+fn バインド変数を含む文でも実測付きの実行計画を取れる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![(String::from("user_id"), Some(String::from("1")))];
+
+    // Act
+    let plan = pool
+        .actual_plan(
+            "select count(*) from users where user_id = :user_id",
+            &binds,
+        )
+        .unwrap();
+
+    // Assert
+    assert!(plan.contains("A-Rows"), "計画の中身: {plan}");
+}
+
+#[test]
+#[serial]
 fn 見積りの実行計画を取り出せる() {
     // Arrange
     let Some(pool) = 接続を開く() else {
@@ -572,7 +710,7 @@ fn 見積りの実行計画を取り出せる() {
 
     // Act
     let plan = pool
-        .explain_plan("select * from users where user_id = 1")
+        .explain_plan("select * from users where user_id = 1", &[])
         .unwrap();
 
     // Assert
@@ -588,7 +726,7 @@ fn 実測付きの実行計画には実際の行数が並ぶ() {
     };
 
     // Act
-    let plan = pool.actual_plan("select count(*) from users").unwrap();
+    let plan = pool.actual_plan("select count(*) from users", &[]).unwrap();
 
     // Assert
     assert!(plan.contains("A-Rows"), "計画の中身: {plan}");
@@ -603,7 +741,7 @@ fn 読み取り専用の接続でも見積りの実行計画を取れる() {
     };
 
     // Act
-    let plan = pool.explain_plan("select * from users").unwrap();
+    let plan = pool.explain_plan("select * from users", &[]).unwrap();
 
     // Assert
     assert!(plan.contains("SELECT STATEMENT"), "計画の中身: {plan}");
@@ -616,11 +754,15 @@ fn 実行計画を取った後も読み取り専用は保たれる() {
     let Some(pool) = プールを開く(true, 1, DEFAULT_CHUNK_SIZE) else {
         return;
     };
-    pool.explain_plan("select * from users").unwrap();
+    pool.explain_plan("select * from users", &[]).unwrap();
 
     // Act
     let error = pool
-        .execute(TAB, "insert into users (email) values ('x@example.com')")
+        .execute(
+            TAB,
+            "insert into users (email) values ('x@example.com')",
+            &[],
+        )
         .expect_err("読み取り専用なので書き込めないはず");
 
     // Assert
@@ -665,4 +807,178 @@ fn テスト接続は誤ったパスワードを接続のエラーとして返�
 
     // Assert
     assert_eq!(error.kind, DbErrorKind::Connect);
+}
+
+#[test]
+#[serial]
+fn 問い合わせだけでは未コミットにならない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(&pool, "select 1 from dual");
+
+    // Assert
+    assert!(!未コミット);
+}
+
+#[test]
+#[serial]
+fn 手動コミットの接続では更新の直後が未コミットになる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(
+        &pool,
+        "update koduchi.user_traits set sessions_28d = sessions_28d where user_id = 1",
+    );
+
+    // Assert
+    assert!(未コミット);
+    pool.rollback().unwrap();
+}
+
+#[test]
+#[serial]
+fn 無名plsqlブロックの書き込みも未コミットとして拾える() {
+    // Arrange: 先頭キーワードの判定ではすり抜ける形（ADR 0012）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(
+        &pool,
+        "begin update koduchi.user_traits set sessions_28d = sessions_28d where user_id = 1; end;",
+    );
+
+    // Assert
+    assert!(未コミット);
+    pool.rollback().unwrap();
+}
+
+#[test]
+#[serial]
+fn ロールバックすると未コミットが解消し変更も消える() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let 元の値 = セグメントを読む(&pool);
+    pool.execute(
+        TAB,
+        "update koduchi.user_traits set segment = 'ロールバックされる' where user_id = 1",
+        &[],
+    )
+    .unwrap();
+
+    // Act
+    pool.rollback().unwrap();
+
+    // Assert
+    assert_eq!(セグメントを読む(&pool), 元の値);
+    assert!(!未コミットか(&pool, "select 1 from dual"));
+}
+
+#[test]
+#[serial]
+fn コミットすると変更が残り未コミットも解消する() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let 元の値 = セグメントを読む(&pool);
+    pool.execute(
+        TAB,
+        "update koduchi.user_traits set segment = 'コミットされる' where user_id = 1",
+        &[],
+    )
+    .unwrap();
+
+    // Act
+    pool.commit().unwrap();
+
+    // Assert
+    assert_eq!(セグメントを読む(&pool), "コミットされる");
+    assert!(!未コミットか(&pool, "select 1 from dual"));
+
+    // 後片付け: 元の値へ戻す
+    pool.execute(
+        TAB,
+        &format!("update koduchi.user_traits set segment = '{元の値}' where user_id = 1"),
+        &[],
+    )
+    .unwrap();
+    pool.commit().unwrap();
+}
+
+#[test]
+#[serial]
+fn 自動コミットの接続では更新の直後も未コミットにならない() {
+    // Arrange
+    let Some(pool) = 自動コミットの接続を開く() else {
+        return;
+    };
+    let 元の値 = セグメントを読む(&pool);
+
+    // Act
+    let 未コミット = 未コミットか(
+        &pool,
+        "update koduchi.user_traits set segment = '自動コミット' where user_id = 1",
+    );
+
+    // Assert
+    assert!(!未コミット);
+    assert_eq!(セグメントを読む(&pool), "自動コミット");
+
+    // 後片付け
+    pool.execute(
+        TAB,
+        &format!("update koduchi.user_traits set segment = '{元の値}' where user_id = 1"),
+        &[],
+    )
+    .unwrap();
+}
+
+#[test]
+#[serial]
+fn 読み取り専用の接続は未コミットにならない() {
+    // Arrange: `SET TRANSACTION READ ONLY` 自体はトランザクションを開くが、
+    // コミットすべき変更は生じない（ADR 0012）
+    let Some(pool) = プールを開く(true, 1, DEFAULT_CHUNK_SIZE) else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(&pool, "select count(*) from koduchi.user_traits");
+
+    // Assert
+    assert!(!未コミット);
+}
+
+#[test]
+#[serial]
+fn 読み取り専用の接続はコミットしても読み取り専用のままである() {
+    // Arrange
+    let Some(pool) = プールを開く(true, 1, DEFAULT_CHUNK_SIZE) else {
+        return;
+    };
+
+    // Act
+    pool.commit().unwrap();
+
+    // Assert
+    let error = pool
+        .execute(TAB, "update koduchi.user_traits set segment = 'power'", &[])
+        .expect_err("読み取り専用なので書き込めないはず");
+    assert!(
+        error.message.contains("ORA-01456"),
+        "想定と違うエラー: {}",
+        error.message
+    );
 }

@@ -8,6 +8,7 @@
 import type { DbApi } from '../api/db'
 import type {
   AppSettings,
+  Bind,
   Cell,
   Chunk,
   ClientStatus,
@@ -31,10 +32,12 @@ import { defaultCsvOptions } from '../types/db'
 export interface FakeCalls {
   connect: { id: string; params: ConnectionParams }[]
   testConnection: ConnectionParams[]
-  execute: { id: string; tabId: string; sql: string }[]
+  execute: { id: string; tabId: string; sql: string; binds: Bind[] }[]
   fetchMore: { id: string; tabId: string }[]
   releaseTab: { id: string; tabId: string }[]
   cancel: { id: string; tabId: string }[]
+  commit: string[]
+  rollback: string[]
   disconnect: string[]
   recordHistory: NewHistoryEntry[]
   listHistory: HistoryQuery[]
@@ -43,8 +46,8 @@ export interface FakeCalls {
   saveSession: { windowLabel: string; state: SessionState }[]
   schemaOverview: { id: string; filter: SchemaFilter }[]
   schemaColumns: { id: string; owner: string }[]
-  explainPlan: { id: string; sql: string }[]
-  actualPlan: { id: string; sql: string }[]
+  explainPlan: { id: string; sql: string; binds: Bind[] }[]
+  actualPlan: { id: string; sql: string; binds: Bind[] }[]
   saveConnection: { connection: SavedConnection; password: string | null }[]
   loadConnectionPassword: string[]
   deleteConnection: string[]
@@ -88,6 +91,10 @@ export interface FakeDbApiOptions {
   tnsnames?: TnsnamesFile
   /** アプリ設定。 */
   appSettings?: AppSettings
+  /** コミットで投げるエラー（ADR 0012）。 */
+  commitError?: unknown
+  /** ロールバックで投げるエラー（ADR 0012）。 */
+  rollbackError?: unknown
 }
 
 /** 何も指定しないときに返す、行を持たない結果。 */
@@ -96,6 +103,7 @@ export const emptyResponse: ExecuteResponse = {
   affectedRows: 0,
   elapsedMs: 0,
   notices: [],
+  inTransaction: false,
   discardedTab: null,
 }
 
@@ -115,7 +123,7 @@ const defaultAppSettings: AppSettings = {
 export function queryResponse(
   columns: Column[],
   rows: Cell[][],
-  options: { exhausted?: boolean; discardedTab?: string | null } = {},
+  options: { exhausted?: boolean; discardedTab?: string | null; inTransaction?: boolean } = {},
 ): ExecuteResponse {
   return {
     kind: 'query',
@@ -123,6 +131,7 @@ export function queryResponse(
     chunk: { rows, exhausted: options.exhausted ?? true },
     elapsedMs: 84,
     notices: [],
+    inTransaction: options.inTransaction ?? false,
     discardedTab: options.discardedTab ?? null,
   }
 }
@@ -145,6 +154,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     fetchMore: [],
     releaseTab: [],
     cancel: [],
+    commit: [],
+    rollback: [],
     disconnect: [],
     recordHistory: [],
     listHistory: [],
@@ -190,8 +201,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return options.testVersion ?? '23.9.0.0.0'
     },
 
-    execute: async (id, tabId, sql) => {
-      calls.execute.push({ id, tabId, sql })
+    execute: async (id, tabId, sql, binds) => {
+      calls.execute.push({ id, tabId, sql, binds })
       return options.onExecute ? options.onExecute(sql) : emptyResponse
     },
 
@@ -206,6 +217,20 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
 
     cancel: async (id, tabId) => {
       calls.cancel.push({ id, tabId })
+    },
+
+    commit: async (id) => {
+      calls.commit.push(id)
+      if (options.commitError !== undefined) {
+        throw options.commitError
+      }
+    },
+
+    rollback: async (id) => {
+      calls.rollback.push(id)
+      if (options.rollbackError !== undefined) {
+        throw options.rollbackError
+      }
     },
 
     disconnect: async (id) => {
@@ -264,7 +289,13 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     },
 
     loadSession: async () =>
-      options.session ?? { tabs: [], activeTabId: null, sidebarSegment: null },
+      options.session ?? {
+        tabs: [],
+        activeTabId: null,
+        sidebarSegment: null,
+        sidebarWidth: null,
+        editorHeight: null,
+      },
 
     schemaOverview: async (id, filter) => {
       calls.schemaOverview.push({ id, filter })
@@ -276,13 +307,13 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return options.columns?.[owner] ?? []
     },
 
-    explainPlan: async (id, sql) => {
-      calls.explainPlan.push({ id, sql })
+    explainPlan: async (id, sql, binds) => {
+      calls.explainPlan.push({ id, sql, binds })
       return options.planText ?? 'Plan hash value: 0'
     },
 
-    actualPlan: async (id, sql) => {
-      calls.actualPlan.push({ id, sql })
+    actualPlan: async (id, sql, binds) => {
+      calls.actualPlan.push({ id, sql, binds })
       return options.planText ?? 'Plan hash value: 0'
     },
 

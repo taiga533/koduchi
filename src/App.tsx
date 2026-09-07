@@ -21,9 +21,20 @@ import { getDbApi } from './api/db'
 import { InstantClientNotice } from './components/connection/InstantClientNotice'
 import { ConnectionForm } from './components/connection/ConnectionForm'
 import { ConnectionPicker } from './components/connection/ConnectionPicker'
+import { DisconnectBlockedDialog } from './components/connection/DisconnectBlockedDialog'
 import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
+import { BindValuesDialog } from './components/editor/BindValuesDialog'
 import { EditorPanel } from './components/editor/EditorPanel'
+import { Splitter } from './components/layout/Splitter'
+import {
+  EDITOR_HEIGHT_DEFAULT,
+  EDITOR_HEIGHT_MIN,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  editorHeightMax,
+} from './components/layout/paneSizes'
 import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
@@ -33,15 +44,30 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
 import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
-import { isSelectStatement, splitStatements, statementAt } from './sql/statements'
-import { useConnectionStore } from './stores/connection'
-import { useExecutionStore } from './stores/execution'
+import {
+  collectBindVariables,
+  collectBindVariablesAcross,
+  isSelectStatement,
+  splitStatements,
+  statementAt,
+} from './sql/statements'
+import { isManualCommit, useConnectionStore } from './stores/connection'
+import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { useSchemaStore } from './stores/schema'
-import { selectActiveTab, selectSession, useTabStore } from './stores/tab'
+import type { BindInput } from './stores/tab'
+import {
+  selectActiveTab,
+  selectBindValues,
+  selectSession,
+  toBinds,
+  useTabStore,
+} from './stores/tab'
 import { useUiStore } from './stores/ui'
-import { currentWindowLabel } from './window'
-import type { ClientStatus, SavedConnection, SchemaFilter } from './types/db'
+import type { PendingWording } from './transaction/pendingChanges'
+import { askPendingChoice, CLOSE_WORDING, DISCONNECT_WORDING } from './transaction/pendingChanges'
+import { currentWindowLabel, onWindowCloseRequested } from './window'
+import type { Bind, ClientStatus, SavedConnection, SchemaFilter } from './types/db'
 
 /** カーソルの初期位置。エディタから通知が来るまでの値。 */
 const INITIAL_POSITION: EditorPosition = {
@@ -65,16 +91,43 @@ const SQL_FILTERS = [{ name: 'SQL', extensions: ['sql'] }]
  */
 type ConnectionView = { mode: 'picker' } | { mode: 'form'; connection: SavedConnection | null }
 
+/**
+ * バインド変数の値が揃うのを待っている実行（ADR の「バインド変数」節）。
+ *
+ * `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` の実行と、`⌘E` / `⇧⌘E` の実行計画のどれもここへ載せる。
+ */
+type PendingRun =
+  | { kind: 'execute'; sql: string }
+  | { kind: 'plan'; sql: string; actual: boolean }
+  /** `⌥⌘⏎`。切り出した文を順に実行する。値は全文で使い回す。 */
+  | { kind: 'script'; statements: string[] }
+
+/**
+ * 実行の対象からバインド変数の名前を集める。
+ *
+ * スクリプト実行では、1 文ごとに尋ねずに全文ぶんをまとめて 1 度だけ尋ねる。
+ *
+ * @param run 値が揃うのを待っている実行
+ */
+function bindVariablesOf(run: PendingRun): string[] {
+  return run.kind === 'script'
+    ? collectBindVariablesAcross(run.statements)
+    : collectBindVariables(run.sql)
+}
+
 export function App() {
   const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
   const [connectionView, setConnectionView] = useState<ConnectionView>({ mode: 'picker' })
   const [csvOpen, setCsvOpen] = useState(false)
+  const [bindPrompt, setBindPrompt] = useState<{ names: string[]; run: PendingRun } | null>(null)
+  const [disconnectBlocked, setDisconnectBlocked] = useState(false)
   const [csvProgress, setCsvProgress] = useState<CsvExportState | null>(null)
   const csvCancelled = useRef(false)
   // 実行に要る位置は描画に関わらないため、状態ではなく ref で持つ。
   const positionRef = useRef<EditorPosition>(INITIAL_POSITION)
 
   const connection = useConnectionStore((state) => state.connection)
+  const disconnect = useConnectionStore((state) => state.disconnect)
   const activeTabId = useTabStore((state) => state.activeTabId)
   // 名前だけを購読する。タブの配列そのものを見ると、打鍵のたびにここが
   // 描き直り、サイドバーと結果ペインまで巻き添えになる。
@@ -91,8 +144,11 @@ export function App() {
   const generatePlan = useExecutionStore((state) => state.generatePlan)
   const fetchMore = useExecutionStore((state) => state.fetchMore)
   const cancel = useExecutionStore((state) => state.cancel)
+  const commit = useExecutionStore((state) => state.commit)
+  const rollback = useExecutionStore((state) => state.rollback)
   const releaseTab = useExecutionStore((state) => state.releaseTab)
   const markExhausted = useExecutionStore((state) => state.markExhausted)
+  const clearExecutions = useExecutionStore((state) => state.clear)
 
   const selectSidebarSegment = useUiStore((state) => state.selectSidebarSegment)
   const selectResultTab = useUiStore((state) => state.selectResultTab)
@@ -103,9 +159,17 @@ export function App() {
   const loadSettings = useUiStore((state) => state.loadSettings)
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
+  const clearResultColumnWidths = useUiStore((state) => state.clearResultColumnWidths)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const editorHeight = useUiStore((state) => state.editorHeight)
+  const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
+  const setEditorHeight = useUiStore((state) => state.setEditorHeight)
+  const clampToWindow = useUiStore((state) => state.clampToWindow)
+  const restoreLayout = useUiStore((state) => state.restoreLayout)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
+  const clearSchemas = useSchemaStore((state) => state.clear)
 
   // 起動時に Instant Client を初期化する。接続を試す前に判定できるため、
   // 意味の分からないエラーで落ちる事態を避けられる（ADR 0001）。
@@ -139,9 +203,19 @@ export function App() {
         ) {
           selectSidebarSegment(session.sidebarSegment)
         }
+        restoreLayout(session, window.innerHeight)
       })
       .catch(() => {})
-  }, [restoreTabs, selectSidebarSegment])
+  }, [restoreLayout, restoreTabs, selectSidebarSegment])
+
+  // ウィンドウを縮めたときにエディタの高さが上限を超えたままにならないよう、
+  // 大きさが変わるたびに丸め直す（下限は割らない）。
+  useEffect(() => {
+    const onResize = () => clampToWindow(window.innerHeight)
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [clampToWindow])
 
   /** エディタからのカーソル通知。描画に関わる分だけストアへ渡す。 */
   const onCursorChange = useCallback(
@@ -152,18 +226,76 @@ export function App() {
     [setCursor],
   )
 
-  const runSql = useCallback(
-    async (sql: string) => {
+  /**
+   * 値が揃った実行を行う。
+   *
+   * 実行と実行計画のどちらもここを通る。バインド変数を尋ねる経路を 1 本に
+   * まとめるためである。
+   */
+  const runPending = useCallback(
+    async (run: PendingRun, binds: Bind[]) => {
       const tabId = useTabStore.getState().activeTabId
-      if (!connection || !tabId || sql.trim() === '') {
+      if (!connection || !tabId) {
         return
       }
-      selectResultTab('result')
-      await execute(connection.id, tabId, sql, connection.name)
-      // 履歴は実行のたびに増える。開いていれば読み直す。
-      await useHistoryStore.getState().reload()
+
+      if (run.kind === 'execute') {
+        selectResultTab('result')
+        await execute(connection.id, tabId, run.sql, connection.name, binds)
+        // 履歴は実行のたびに増える。開いていれば読み直す。
+        await useHistoryStore.getState().reload()
+        return
+      }
+
+      if (run.kind === 'script') {
+        selectResultTab('result')
+        await executeScript(connection.id, tabId, run.statements, connection.name, binds)
+        await useHistoryStore.getState().reload()
+        return
+      }
+
+      selectResultTab('plan')
+      await generatePlan(connection.id, tabId, run.sql, run.actual ? 'actual' : 'estimate', binds)
     },
-    [connection, execute, selectResultTab],
+    [connection, execute, executeScript, generatePlan, selectResultTab],
+  )
+
+  /**
+   * 実行に取りかかる。
+   *
+   * SQL にバインド変数が含まれていれば、その値を尋ねてからにする
+   * （ADR の「バインド変数」節）。
+   */
+  const startRun = useCallback(
+    (run: PendingRun) => {
+      const names = bindVariablesOf(run)
+      if (names.length === 0) {
+        void runPending(run, [])
+        return
+      }
+      setBindPrompt({ names, run })
+    },
+    [runPending],
+  )
+
+  /** バインド変数の値が決まった。覚えたうえで実行へ進む。 */
+  const submitBinds = useCallback(() => {
+    if (!bindPrompt) {
+      return
+    }
+    const tabId = useTabStore.getState().activeTabId
+    const values = selectBindValues(useTabStore.getState(), tabId)
+    setBindPrompt(null)
+    void runPending(bindPrompt.run, toBinds(bindPrompt.names, values))
+  }, [bindPrompt, runPending])
+
+  const runSql = useCallback(
+    (sql: string) => {
+      if (sql.trim() !== '') {
+        startRun({ kind: 'execute', sql })
+      }
+    },
+    [startRun],
   )
 
   /**
@@ -186,7 +318,7 @@ export function App() {
   const runStatement = useCallback(() => {
     const sql = currentSql(false)
     if (sql) {
-      void runSql(sql)
+      runSql(sql)
     }
   }, [currentSql, runSql])
 
@@ -194,32 +326,29 @@ export function App() {
   const runSelection = useCallback(() => {
     const sql = currentSql(true)
     if (sql) {
-      void runSql(sql)
+      runSql(sql)
     }
   }, [currentSql, runSql])
 
   /**
    * `⌥⌘⏎`。タブ全体の文を順に実行する。
    *
-   * 選択範囲があるときは、その中の文だけを順に実行する。途中で失敗したら
-   * 以降の文は実行しない（executeScript が判断する）。
+   * 選択範囲があるときは、その中の文だけを順に実行する。バインド変数があれば
+   * 実行を始める前に全文ぶんまとめて尋ねる。途中で失敗したら以降の文は
+   * 実行しない（`executeScript` が判断する）。
    */
-  const runScript = useCallback(async () => {
+  const runScript = useCallback(() => {
     const tab = selectActiveTab(useTabStore.getState())
-    if (!connection || !tab) {
+    if (!tab) {
       return
     }
 
     const source = positionRef.current.selectedText ?? tab.content
     const statements = splitStatements(source).map((statement) => statement.text)
-    if (statements.length === 0) {
-      return
+    if (statements.length > 0) {
+      startRun({ kind: 'script', statements })
     }
-
-    selectResultTab('result')
-    await executeScript(connection.id, tab.id, statements, connection.name)
-    await useHistoryStore.getState().reload()
-  }, [connection, executeScript, selectResultTab])
+  }, [startRun])
 
   /**
    * `⌘E` / `⇧⌘E`。実行計画を出す。
@@ -248,10 +377,9 @@ export function App() {
         }
       }
 
-      selectResultTab('plan')
-      await generatePlan(connection.id, tabId, sql, actual ? 'actual' : 'estimate')
+      startRun({ kind: 'plan', sql, actual })
     },
-    [connection, currentSql, generatePlan, selectResultTab],
+    [connection, currentSql, startRun],
   )
 
   const cancelExecution = useCallback(() => {
@@ -260,6 +388,65 @@ export function App() {
       void cancel(connection.id, tabId)
     }
   }, [cancel, connection])
+
+  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
+  const commitTransaction = useCallback(() => {
+    if (connection) {
+      void commit(connection.id)
+    }
+  }, [commit, connection])
+
+  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
+  const rollbackTransaction = useCallback(() => {
+    if (connection) {
+      void rollback(connection.id)
+    }
+  }, [connection, rollback])
+
+  /**
+   * 未コミットの変更を片付けてから進めてよいかを決める（ADR 0012）。
+   *
+   * 接続を手放す操作 — ウィンドウを閉じる・アプリを終了する・切断する — は、
+   * すべてこの関所を通る。未コミットの変更があれば「コミット / 破棄 / やめる」を
+   * 尋ね、「やめる」を選ばれたら進めない。コミットに失敗したときも進めない。
+   * 失敗を告げないまま接続を手放すと、変更は暗黙のロールバックで消える。
+   *
+   * @param wording 操作ごとの問いかけと肯定側のラベル
+   */
+  const resolvePendingTransaction = useCallback(
+    async (wording: PendingWording): Promise<boolean> => {
+      const active = useConnectionStore.getState().connection
+      if (!active || !isManualCommit(active) || !useExecutionStore.getState().inTransaction) {
+        return true
+      }
+
+      const choice = await askPendingChoice(wording)
+
+      if (choice === 'cancel') {
+        return false
+      }
+
+      if (choice === 'commit') {
+        await commit(active.id)
+        // コミットできていれば未コミットの表示は消えている。残っていれば失敗した。
+        return !useExecutionStore.getState().inTransaction
+      }
+
+      await rollback(active.id)
+      return true
+    },
+    [commit, rollback],
+  )
+
+  /** ウィンドウを閉じてよいかを決める。 */
+  const allowClose = useCallback(
+    () => resolvePendingTransaction(CLOSE_WORDING),
+    [resolvePendingTransaction],
+  )
+
+  // 未コミットのまま閉じさせない（ADR 0012）。アプリの終了も Rust 側から
+  // 各ウィンドウを閉じにいくため、この関所を通る。
+  useEffect(() => onWindowCloseRequested(allowClose), [allowClose])
 
   /** 結果の続きを取りにいく（ADR 0003）。 */
   const requestMore = useCallback(() => {
@@ -273,17 +460,87 @@ export function App() {
    * タブを閉じる。
    *
    * 開いたままのカーソルはデータベース側の資源を握り続けるため、閉じる前に
-   * 明示的に手放す（ADR 0003）。
+   * 明示的に手放す（ADR 0003）。結果テーブルで手を入れた列幅も、二度と使われない
+   * ため一緒に忘れる。
    */
   const closeTabAndRelease = useCallback(
     (tabId: string) => {
       if (connection) {
         void releaseTab(connection.id, tabId)
       }
+      clearResultColumnWidths(tabId)
       closeTab(tabId)
     },
-    [closeTab, connection, releaseTab],
+    [clearResultColumnWidths, closeTab, connection, releaseTab],
   )
+
+  /**
+   * 接続を切り、接続を選ぶ画面へ戻す（方針 2・4）。
+   *
+   * エディタのタブと内容はそのまま残す。切断でタブを失うと、書きかけの SQL の
+   * ために接続を切れなくなる。
+   *
+   * 後片付けはここで順に呼ぶ。開いたままの結果セットはデータベース側の資源を
+   * 握るため、接続が生きているうちに `release_tab` で閉じる（ADR 0003）。
+   * ストアの掃除もここで行い、ストア同士を結合させない。
+   *
+   * 実行中の文があるときは切断せず、先に中止するよう促す（方針 5）。
+   * 未コミットの変更があるときは、閉じるときと同じ関所を通す（ADR 0012）。
+   */
+  const disconnectAndReset = useCallback(async () => {
+    const active = useConnectionStore.getState().connection
+    if (!active) {
+      return
+    }
+
+    if (selectAnyRunning(useExecutionStore.getState())) {
+      setDisconnectBlocked(true)
+      return
+    }
+
+    // 切断もデータベース側の暗黙のロールバックを招く。閉じるときと同じ関所を
+    // 通し、未コミットの変更を黙って捨てさせない（ADR 0012）。
+    if (!(await resolvePendingTransaction(DISCONNECT_WORDING))) {
+      return
+    }
+
+    for (const tabId of Object.keys(useExecutionStore.getState().byTab)) {
+      try {
+        await releaseTab(active.id, tabId)
+      } catch {
+        // 閉じられなくても切断で接続ごと落ちる。切断そのものは止めない。
+      }
+    }
+
+    clearExecutions()
+    clearSchemas()
+
+    try {
+      await disconnect()
+    } catch {
+      // 切断に失敗しても画面は接続を選ぶところへ戻す。
+    }
+
+    setConnectionView({ mode: 'picker' })
+  }, [clearExecutions, clearSchemas, disconnect, releaseTab, resolvePendingTransaction])
+
+  /**
+   * 実行中のすべてのタブを中止する（`⌘.` と同じ）。
+   *
+   * 切断できない旨のダイアログから呼ぶ。実行中のタブは選択中のものとは限らない
+   * ため、走っているものをすべて対象にする。
+   */
+  const cancelAllRunning = useCallback(() => {
+    const active = useConnectionStore.getState().connection
+    if (active) {
+      for (const [tabId, execution] of Object.entries(useExecutionStore.getState().byTab)) {
+        if (execution.status === 'running') {
+          void cancel(active.id, tabId)
+        }
+      }
+    }
+    setDisconnectBlocked(false)
+  }, [cancel])
 
   /** `⌘S`。保存先が決まっていなければ選ばせる。 */
   const saveActiveTab = useCallback(async () => {
@@ -408,6 +665,14 @@ export function App() {
         handled(() => void runPlan(event.shiftKey))
         return
       }
+      if (key === 'c' && event.altKey) {
+        handled(commitTransaction)
+        return
+      }
+      if (key === 'r' && event.altKey) {
+        handled(rollbackTransaction)
+        return
+      }
       if (key === 's' && event.altKey) {
         handled(openCsvDialog)
         return
@@ -442,6 +707,8 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
     closeTabAndRelease,
+    commitTransaction,
+    rollbackTransaction,
     openCsvDialog,
     openNewConnectionWindow,
     openNewTab,
@@ -478,7 +745,11 @@ export function App() {
 
   if (clientStatus.status === 'unavailable') {
     return (
-      <Shell onOpenSettings={openSettings} overlay={settings}>
+      <Shell
+        onOpenSettings={openSettings}
+        onDisconnect={() => void disconnectAndReset()}
+        overlay={settings}
+      >
         <CenteredPanel>
           <InstantClientNotice
             message={clientStatus.message}
@@ -491,7 +762,11 @@ export function App() {
 
   if (!connection) {
     return (
-      <Shell onOpenSettings={openSettings} overlay={settings}>
+      <Shell
+        onOpenSettings={openSettings}
+        onDisconnect={() => void disconnectAndReset()}
+        overlay={settings}
+      >
         <CenteredPanel>
           {connectionView.mode === 'picker' ? (
             <ConnectionPicker
@@ -514,6 +789,13 @@ export function App() {
   const overlay = (
     <>
       {settings}
+      {bindPrompt ? (
+        <BindPrompt
+          names={bindPrompt.names}
+          onSubmit={submitBinds}
+          onClose={() => setBindPrompt(null)}
+        />
+      ) : null}
       {csvOpen ? (
         <CsvSaveDialog
           options={csvOptions}
@@ -529,39 +811,73 @@ export function App() {
           }}
         />
       ) : null}
+      {disconnectBlocked ? (
+        <DisconnectBlockedDialog
+          onCancelExecution={cancelAllRunning}
+          onClose={() => setDisconnectBlocked(false)}
+        />
+      ) : null}
     </>
   )
 
   return (
-    <Shell onOpenSettings={openSettings} overlay={overlay}>
+    <Shell
+      onOpenSettings={openSettings}
+      onDisconnect={() => void disconnectAndReset()}
+      onCommit={commitTransaction}
+      onRollback={rollbackTransaction}
+      overlay={overlay}
+    >
       <Sidebar
         connectionId={connection.id}
         savedConnectionId={connection.savedId}
         connectionName={connection.name}
         onOpenNewConnection={openNewConnectionWindow}
         onUseHistory={useHistorySql}
+        width={sidebarWidth}
+      />
+      <Splitter
+        orientation="vertical"
+        label="サイドバーの幅"
+        value={sidebarWidth}
+        min={SIDEBAR_WIDTH_MIN}
+        max={SIDEBAR_WIDTH_MAX}
+        defaultValue={SIDEBAR_WIDTH_DEFAULT}
+        onChange={setSidebarWidth}
       />
       <div className="flex-1 min-w-0 flex flex-col gap-6px">
         <TabBar onCloseTab={closeTabAndRelease} />
-        <div className="relative h-268px shrink-0 bg-panel rounded-10px border border-line overflow-hidden">
+        <div
+          style={{ height: `${editorHeight}px` }}
+          className="relative shrink-0 bg-panel rounded-10px border border-line overflow-hidden"
+        >
           <EditorPanel
             onCursorChange={onCursorChange}
             onRunStatement={runStatement}
             onRunSelection={runSelection}
-            onRunScript={() => void runScript()}
+            onRunScript={runScript}
             onCancel={cancelExecution}
           />
           <RunControls
             tabId={activeTabId}
             onRun={runStatement}
             onRunSelection={runSelection}
-            onRunScript={() => void runScript()}
+            onRunScript={runScript}
             onExplain={() => void runPlan(false)}
             onExplainActual={() => void runPlan(true)}
             onSaveCsv={openCsvDialog}
             onCancel={cancelExecution}
           />
         </div>
+        <Splitter
+          orientation="horizontal"
+          label="エディタの高さ"
+          value={editorHeight}
+          min={EDITOR_HEIGHT_MIN}
+          max={editorHeightMax(window.innerHeight)}
+          defaultValue={EDITOR_HEIGHT_DEFAULT}
+          onChange={(height) => setEditorHeight(height, window.innerHeight)}
+        />
         <ResultPane
           tabId={activeTabId}
           runningLabel={`${connection.name} · ${activeTabName}`}
@@ -601,18 +917,65 @@ function RunControls({
 }
 
 /**
+ * バインド変数ダイアログへ、選択中のタブが覚えている値を配る薄い包み。
+ *
+ * 入力のたびに描き直る範囲をここへ閉じ込める。アプリのルートで購読すると、
+ * 1 文字打つたびにサイドバーと結果ペインまで組み直される。
+ */
+function BindPrompt({
+  names,
+  onSubmit,
+  onClose,
+}: {
+  names: string[]
+  onSubmit: () => void
+  onClose: () => void
+}) {
+  const tabId = useTabStore((state) => state.activeTabId)
+  const values = useTabStore((state) => selectBindValues(state, tabId))
+  const setBindValues = useTabStore((state) => state.setBindValues)
+
+  const onChange = (next: Record<string, BindInput>): void => {
+    if (tabId) {
+      setBindValues(tabId, next)
+    }
+  }
+
+  return (
+    <BindValuesDialog
+      names={names}
+      values={values}
+      onChange={onChange}
+      onSubmit={onSubmit}
+      onClose={onClose}
+    />
+  )
+}
+
+/**
  * 3 パネル構成の枠。
  *
  * タイトルバー・本体・ステータスバーを縦に並べる。本体の中身は呼び出し側が渡す。
  * 設定画面と CSV の保存ダイアログは、この枠の上に重ねる。
+ *
+ * 切断はステータスバーの接続状態から呼ぶ。「切断」と「別の接続へ切り替え…」は
+ * どちらも同じ動きであるため、受け取る手続きは 1 つでよい。
  */
 function Shell({
   children,
   onOpenSettings,
+  onDisconnect,
+  onCommit,
+  onRollback,
   overlay,
 }: {
   children: React.ReactNode
   onOpenSettings: () => void
+  onDisconnect: () => void
+  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
+  onCommit?: () => void
+  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
+  onRollback?: () => void
   overlay?: React.ReactNode
 }) {
   return (
@@ -620,7 +983,13 @@ function Shell({
       <SessionSaver />
       <TitleBar />
       <div className="flex-1 min-h-0 flex gap-6px p-6px">{children}</div>
-      <StatusBar onOpenSettings={onOpenSettings} />
+      <StatusBar
+        onOpenSettings={onOpenSettings}
+        onDisconnect={onDisconnect}
+        onSwitchConnection={onDisconnect}
+        onCommit={onCommit}
+        onRollback={onRollback}
+      />
       {overlay}
     </div>
   )
@@ -636,18 +1005,24 @@ function SessionSaver() {
   const tabs = useTabStore((state) => state.tabs)
   const activeTabId = useTabStore((state) => state.activeTabId)
   const sidebarSegment = useUiStore((state) => state.sidebarSegment)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const editorHeight = useUiStore((state) => state.editorHeight)
 
   // タブの状態が落ち着いたら書き出す。1 打鍵ごとに書かないよう少し待つ。
+  // ペインの寸法も同じ待ちに乗せる。ドラッグ中は 1 フレームごとに変わるためである。
   useEffect(() => {
     const timer = setTimeout(() => {
-      const session = selectSession({ tabs, activeTabId }, sidebarSegment)
+      const session = selectSession(
+        { tabs, activeTabId },
+        { sidebarSegment, sidebarWidth, editorHeight },
+      )
       void getDbApi()
         .saveSession(currentWindowLabel(), session)
         .catch(() => {})
     }, SESSION_SAVE_DELAY)
 
     return () => clearTimeout(timer)
-  }, [activeTabId, sidebarSegment, tabs])
+  }, [activeTabId, editorHeight, sidebarSegment, sidebarWidth, tabs])
 
   return null
 }

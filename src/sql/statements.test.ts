@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { isSelectStatement, splitStatements, statementAt } from './statements'
+import {
+  collectBindVariables,
+  collectBindVariablesAcross,
+  isSelectStatement,
+  splitStatements,
+  statementAt,
+} from './statements'
 
 describe('splitStatements', () => {
   it('セミコロンで区切られた複数の文を切り出す', () => {
@@ -378,5 +384,229 @@ describe('isSelectStatement', () => {
 
     // Assert
     expect(result).toBe(false)
+  })
+})
+
+describe('collectBindVariables', () => {
+  it('バインド変数を出てきた順に集める', () => {
+    // Arrange
+    const sql = 'select * from users where id = :id and name = :name'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id', 'name'])
+  })
+
+  it('バインド変数が無ければ空の一覧を返す', () => {
+    // Arrange
+    const sql = 'select 1 from dual'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual([])
+  })
+
+  it('同じ名前は 1 つにまとめる', () => {
+    // Arrange
+    const sql = 'select * from events where from_id = :id or to_id = :id'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id'])
+  })
+
+  it('大文字小文字だけが違う名前も同じものとして 1 つにまとめる', () => {
+    // Arrange
+    const sql = 'select * from users where id = :id and parent_id = :ID'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id'])
+  })
+
+  it('文字列リテラルの中のコロンは拾わない', () => {
+    // Arrange
+    const sql = "select '10:30' from users where id = :id"
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id'])
+  })
+
+  it('二重の引用符で表した文字列中のコロンも拾わない', () => {
+    // Arrange
+    const sql = "select 'it''s :notabind' from dual"
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual([])
+  })
+
+  it('引用符で囲まれた識別子の中のコロンは拾わない', () => {
+    // Arrange
+    const sql = 'select "a:b" from users where id = :id'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id'])
+  })
+
+  it('行コメントの中のコロンは拾わない', () => {
+    // Arrange
+    const sql = '-- :commented を無視する\nselect * from users where id = :id'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id'])
+  })
+
+  it('ブロックコメントの中のコロンは拾わない', () => {
+    // Arrange
+    const sql = '/* :commented */ select * from users where id = :id'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id'])
+  })
+
+  it('引用符リテラルの中のコロンは拾わない', () => {
+    // Arrange
+    const sql = "select q'[a:b それと :c]' from users where id = :id"
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['id'])
+  })
+
+  it('コロンが連続する形は変数として扱わない', () => {
+    // Arrange
+    const sql = 'select value::text from settings'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual([])
+  })
+
+  it('pl_sql の代入記号は変数として扱わない', () => {
+    // Arrange
+    const sql = 'begin total := 0; end;'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual([])
+  })
+
+  it('pl_sql のラベルは変数として扱わない', () => {
+    // Arrange
+    const sql = 'begin <<outer_loop>> for r in (select 1 from dual) loop null; end loop; end;'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual([])
+  })
+
+  it('番号で表したバインド変数も集める', () => {
+    // Arrange
+    const sql = 'select * from users where id = :1'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['1'])
+  })
+
+  it('pl_sql ブロックの中のバインド変数も集める', () => {
+    // Arrange
+    const sql = 'begin dbms_output.put_line(:message); end;'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['message'])
+  })
+
+  it('名前に使えない文字が続くコロンは変数として扱わない', () => {
+    // Arrange
+    const sql = 'select * from users where id = : and name = :name'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['name'])
+  })
+
+  it('下線や記号を含む名前も 1 つの変数として読み取る', () => {
+    // Arrange
+    const sql = 'select * from users where id = :user_id$1'
+
+    // Act
+    const names = collectBindVariables(sql)
+
+    // Assert
+    expect(names).toEqual(['user_id$1'])
+  })
+})
+
+describe('collectBindVariablesAcross', () => {
+  it('複数の文から名前を出てきた順に集める', () => {
+    // Arrange
+    const statements = ['insert into t values (:id)', 'update t set name = :name where id = :id']
+
+    // Act
+    const names = collectBindVariablesAcross(statements)
+
+    // Assert
+    expect(names).toEqual(['id', 'name'])
+  })
+
+  it('大文字小文字が違うだけの名前は 1 つにまとめる', () => {
+    // Arrange
+    const statements = ['select * from t where id = :ID', 'delete from t where id = :id']
+
+    // Act
+    const names = collectBindVariablesAcross(statements)
+
+    // Assert
+    expect(names).toEqual(['ID'])
+  })
+
+  it('バインド変数が無ければ空になる', () => {
+    // Arrange
+    const statements = ['select 1 from dual', 'commit']
+
+    // Act
+    const names = collectBindVariablesAcross(statements)
+
+    // Assert
+    expect(names).toEqual([])
   })
 })

@@ -8,12 +8,13 @@
  * 実行ログはウィンドウに 1 本だけ持ち、メッセージタブに時系列で出す。
  *
  * 実行はすべて履歴に記録する（ADR 0005）。ただし `⌘E` / `⇧⌘E` による実行計画の
- * 生成は記録しない。
+ * 生成は記録しない。バインド変数へ与えた値も記録しない。値には個人情報が入りうる
+ * ためである（ADR の「バインド変数」節）。
  */
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
-import type { Cell, Column, NewHistoryEntry } from '../types/db'
+import type { Bind, Cell, Column, NewHistoryEntry } from '../types/db'
 import { toErrorMessage } from '../types/db'
 
 /** 実行の段階。 */
@@ -100,8 +101,17 @@ export interface LogEntry {
   error: string | null
   /** データベースからの通知（`DBMS_OUTPUT`）。 */
   notices: string[]
-  /** スクリプト実行の何文目か。単発の実行では `null`。 */
+  /** スクリプト実行の何文目か。単発の実行とトランザクションの操作では `null`。 */
   statement: ScriptProgress | null
+}
+
+/** トランザクションの操作。ログの見出しに使う。 */
+export type TransactionAction = 'commit' | 'rollback'
+
+/** トランザクションの操作をログに出す文言（ADR 0012）。 */
+const TRANSACTION_LABELS: Record<TransactionAction, string> = {
+  commit: 'コミット',
+  rollback: 'ロールバック',
 }
 
 interface ExecutionState {
@@ -111,32 +121,49 @@ interface ExecutionState {
   planByTab: Record<string, TabPlan>
   /** メッセージタブに出す実行ログ。新しいものが後ろに積まれる。 */
   log: LogEntry[]
+  /**
+   * 未コミットのトランザクションが残っているか（ADR 0012）。
+   *
+   * 実行のたびにデータベースへ聞いた結果で置き換える。接続はウィンドウに
+   * 1 つであるため、タブごとではなくウィンドウに 1 つ持つ。
+   */
+  inTransaction: boolean
 
   /**
    * SQL を実行する。
    *
    * 成功・失敗を問わず履歴に記録する。記録に失敗しても実行の結果は保つ。
+   * 記録するのは SQL 本体だけで、バインド変数へ与えた値は残さない。
    */
   execute: (
     connectionId: string,
     tabId: string,
     sql: string,
     connectionName: string,
+    binds: Bind[],
   ) => Promise<void>
   /**
    * 複数の文を順に実行する（`⌥⌘⏎`）。
    *
    * 前の文が終わってから次を投げる。途中で失敗したら以降の文は実行しない。
-   * 履歴とログには 1 文ずつ記録する。
+   * 履歴とログには 1 文ずつ記録する。バインド変数の値は全文で使い回すため、
+   * 呼び出し側が実行を始める前にまとめて尋ねる。
    */
   executeScript: (
     connectionId: string,
     tabId: string,
     statements: string[],
     connectionName: string,
+    binds: Bind[],
   ) => Promise<void>
   /** 実行計画を取る（`⌘E` / `⇧⌘E`）。履歴には記録しない。 */
-  generatePlan: (connectionId: string, tabId: string, sql: string, mode: PlanMode) => Promise<void>
+  generatePlan: (
+    connectionId: string,
+    tabId: string,
+    sql: string,
+    mode: PlanMode,
+    binds: Bind[],
+  ) => Promise<void>
   /** 開いている結果セットから続きを取り出す。 */
   fetchMore: (connectionId: string, tabId: string) => Promise<void>
   /**
@@ -145,6 +172,14 @@ interface ExecutionState {
    * スクリプト実行では、走っている文を中止したうえで残りの文も実行しない。
    */
   cancel: (connectionId: string, tabId: string) => Promise<void>
+  /**
+   * トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+   *
+   * 結果はメッセージタブのログへ 1 行として残す。
+   */
+  commit: (connectionId: string) => Promise<void>
+  /** トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。 */
+  rollback: (connectionId: string) => Promise<void>
   /** タブの結果セットを手放す。タブを閉じたときに呼ぶ。 */
   releaseTab: (connectionId: string, tabId: string) => Promise<void>
   /**
@@ -219,12 +254,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
    * 1 文を実行し、ログと履歴へ 1 件ずつ記録する。
    *
    * タブの表示状態は呼び出し側が決める。単発の実行とスクリプト実行とで、
-   * 何を残すかが違うためである。
+   * 何を結果として残すかが違うためである。未コミットかどうかは応答が持って
+   * くるため、ここで受け取ったまま置き換える（ADR 0012）。
    *
    * @param connectionId 接続の ID
    * @param tabId 実行するタブ
    * @param sql 実行する 1 文
    * @param connectionName 履歴に残す接続名
+   * @param binds バインド変数の値。文に無い名前は Rust 側で捨てられる
    * @param progress スクリプト実行の何文目か。単発の実行では `null`
    */
   const runStatement = async (
@@ -232,13 +269,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     tabId: string,
     sql: string,
     connectionName: string,
+    binds: Bind[],
     progress: ScriptProgress | null,
   ): Promise<StatementOutcome> => {
     const startedAt = new Date()
     const entryId = crypto.randomUUID()
 
     try {
-      const response = await getDbApi().execute(connectionId, tabId, sql)
+      const response = await getDbApi().execute(connectionId, tabId, sql, binds)
 
       const execution: TabExecution =
         response.kind === 'query'
@@ -260,6 +298,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       const rowCount = execution.affectedRows ?? execution.rows.length
 
       set((state) => ({
+        inTransaction: response.inTransaction,
         log: [
           ...state.log,
           {
@@ -324,8 +363,9 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     byTab: {},
     planByTab: {},
     log: [],
+    inTransaction: false,
 
-    execute: async (connectionId, tabId, sql, connectionName) => {
+    execute: async (connectionId, tabId, sql, connectionName, binds) => {
       if (get().byTab[tabId]?.status === 'running') {
         return
       }
@@ -334,7 +374,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         byTab: patchTab(state.byTab, tabId, { ...emptyExecution, status: 'running' }),
       }))
 
-      const outcome = await runStatement(connectionId, tabId, sql, connectionName, null)
+      const outcome = await runStatement(connectionId, tabId, sql, connectionName, binds, null)
 
       set((state) => {
         if (!outcome.ok) {
@@ -358,7 +398,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       })
     },
 
-    executeScript: async (connectionId, tabId, statements, connectionName) => {
+    executeScript: async (connectionId, tabId, statements, connectionName, binds) => {
       if (get().byTab[tabId]?.status === 'running' || statements.length === 0) {
         return
       }
@@ -406,11 +446,15 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
           tabId,
           statements[index],
           connectionName,
+          binds,
           progress,
         )
 
         if (!outcome.ok) {
           // 途中で失敗したら以降の文は実行しない。何文目で止まったかを残す。
+          // ここまでの文は未コミットのまま残る。勝手にコミットもロールバックも
+          // しない（ADR 0012）。未コミットかどうかは最後に受け取った応答の値が
+          // そのまま残り、ステータスバーに出る。
           set((state) => ({
             byTab: patchTab(state.byTab, tabId, {
               ...emptyExecution,
@@ -452,7 +496,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       })
     },
 
-    generatePlan: async (connectionId, tabId, sql, mode) => {
+    generatePlan: async (connectionId, tabId, sql, mode, binds) => {
       set((state) => ({
         planByTab: {
           ...state.planByTab,
@@ -464,8 +508,8 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         const api = getDbApi()
         const text =
           mode === 'estimate'
-            ? await api.explainPlan(connectionId, sql)
-            : await api.actualPlan(connectionId, sql)
+            ? await api.explainPlan(connectionId, sql, binds)
+            : await api.actualPlan(connectionId, sql, binds)
 
         set((state) => ({
           planByTab: {
@@ -524,6 +568,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       await getDbApi().cancel(connectionId, tabId)
     },
 
+    commit: async (connectionId) => {
+      await 終わらせる(set, connectionId, 'commit')
+    },
+
+    rollback: async (connectionId) => {
+      await 終わらせる(set, connectionId, 'rollback')
+    },
+
     releaseTab: async (connectionId, tabId) => {
       await getDbApi().releaseTab(connectionId, tabId)
       set((state) => {
@@ -542,10 +594,68 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
 
     clear: () => {
       cancelRequests.clear()
-      set({ byTab: {}, planByTab: {}, log: [] })
+      set({ byTab: {}, planByTab: {}, log: [], inTransaction: false })
     },
   }
 })
+
+/**
+ * トランザクションを終わらせ、その結果をログへ 1 行として残す（ADR 0012）。
+ *
+ * 成功したら未コミットの表示を消す。失敗したときは未コミットのままにする。
+ * 「コミットしました」と出しながら変更が残っているほうが害が大きい。
+ *
+ * @param set ストアの更新関数
+ * @param connectionId 対象の接続
+ * @param action コミットかロールバックか
+ */
+async function 終わらせる(
+  set: (updater: (state: ExecutionState) => Partial<ExecutionState>) => void,
+  connectionId: string,
+  action: TransactionAction,
+): Promise<void> {
+  const label = TRANSACTION_LABELS[action]
+  const startedAt = new Date()
+  const entryId = crypto.randomUUID()
+
+  try {
+    const api = getDbApi()
+    await (action === 'commit' ? api.commit(connectionId) : api.rollback(connectionId))
+
+    set((state) => ({
+      inTransaction: false,
+      log: [
+        ...state.log,
+        {
+          id: entryId,
+          startedAt,
+          sql: label,
+          elapsedMs: Date.now() - startedAt.getTime(),
+          rowCount: null,
+          error: null,
+          notices: [`${label}しました`],
+          statement: null,
+        },
+      ],
+    }))
+  } catch (error) {
+    set((state) => ({
+      log: [
+        ...state.log,
+        {
+          id: entryId,
+          startedAt,
+          sql: label,
+          elapsedMs: Date.now() - startedAt.getTime(),
+          rowCount: null,
+          error: toErrorMessage(error),
+          notices: [],
+          statement: null,
+        },
+      ],
+    }))
+  }
+}
 
 /**
  * タブの実行状態を返す。まだ実行していなければ空の状態を返す。
@@ -558,6 +668,18 @@ export function selectExecution(state: ExecutionState, tabId: string | null): Ta
     return emptyExecution
   }
   return state.byTab[tabId] ?? emptyExecution
+}
+
+/**
+ * 実行中のタブが 1 つでもあるかを返す。
+ *
+ * 切断してよいかの判定に使う。接続を閉じると走っている文は道半ばで
+ * 打ち切られるため、先に中止させる（`⌘.`）。
+ *
+ * @param state 実行ストアの状態
+ */
+export function selectAnyRunning(state: ExecutionState): boolean {
+  return Object.values(state.byTab).some((execution) => execution.status === 'running')
 }
 
 /**

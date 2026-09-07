@@ -61,7 +61,13 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
       const target = await resolveTarget(connection.target)
       await connect(
         connection.name,
-        { username: connection.username, password: secret, target, readOnly: connection.readOnly },
+        {
+          username: connection.username,
+          password: secret,
+          target,
+          readOnly: connection.readOnly,
+          autoCommit: connection.autoCommit,
+        },
         connection.id,
       )
 

@@ -32,6 +32,8 @@ keyring = { version = "4.2.0", default-features = false, features = ["v1"] }
 encoding_rs = "0.8.35"
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-window-state = "2.4.1"
+# 結果テーブルの ⌘C をクリップボードへ載せる。
+tauri-plugin-clipboard-manager = "2.3.3"
 
 [dev-dependencies]
 # InitParams::init() がプロセス 1 回きりであるため、
