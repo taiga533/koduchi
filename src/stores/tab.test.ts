@@ -209,7 +209,6 @@ describe('セッションの復元', () => {
     useTabStore.getState().restore({
       tabs: [{ id: 't1', name: '無題-3.sql', filePath: null, content: '', dirty: false }],
       activeTabId: 't1',
-      sidebarSegment: null,
     })
 
     // Act
@@ -224,7 +223,7 @@ describe('セッションの復元', () => {
     const before = useTabStore.getState().tabs
 
     // Act
-    useTabStore.getState().restore({ tabs: [], activeTabId: null, sidebarSegment: null })
+    useTabStore.getState().restore({ tabs: [], activeTabId: null })
 
     // Assert
     expect(useTabStore.getState().tabs).toEqual(before)
@@ -238,7 +237,11 @@ describe('selectSession', () => {
     useTabStore.getState().updateContent(id, 'select 1 from dual')
 
     // Act
-    const session = selectSession(useTabStore.getState(), 'schema')
+    const session = selectSession(useTabStore.getState(), {
+      sidebarSegment: 'schema',
+      sidebarWidth: 240,
+      editorHeight: 268,
+    })
 
     // Assert
     expect(session.tabs).toEqual([
@@ -246,6 +249,18 @@ describe('selectSession', () => {
     ])
     expect(session.activeTabId).toBe(id)
     expect(session.sidebarSegment).toBe('schema')
+  })
+
+  it('ペインの寸法も書き出す', () => {
+    // Arrange
+    const layout = { sidebarSegment: 'history', sidebarWidth: 320, editorHeight: 400 }
+
+    // Act
+    const session = selectSession(useTabStore.getState(), layout)
+
+    // Assert
+    expect(session.sidebarWidth).toBe(320)
+    expect(session.editorHeight).toBe(400)
   })
 })
 
@@ -297,7 +312,11 @@ describe('バインド変数の記憶', () => {
     useTabStore.getState().setBindValues(id, { id: { text: '個人情報', isNull: false } })
 
     // Act
-    const session = selectSession(useTabStore.getState(), 'schema')
+    const session = selectSession(useTabStore.getState(), {
+      sidebarSegment: 'schema',
+      sidebarWidth: 240,
+      editorHeight: 268,
+    })
 
     // Assert
     expect(JSON.stringify(session)).not.toContain('個人情報')
@@ -312,7 +331,6 @@ describe('バインド変数の記憶', () => {
     useTabStore.getState().restore({
       tabs: [{ id: 't1', name: '無題-1.sql', filePath: null, content: '', dirty: false }],
       activeTabId: 't1',
-      sidebarSegment: null,
     })
 
     // Assert

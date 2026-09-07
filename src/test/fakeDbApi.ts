@@ -265,7 +265,13 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     },
 
     loadSession: async () =>
-      options.session ?? { tabs: [], activeTabId: null, sidebarSegment: null },
+      options.session ?? {
+        tabs: [],
+        activeTabId: null,
+        sidebarSegment: null,
+        sidebarWidth: null,
+        editorHeight: null,
+      },
 
     schemaOverview: async (id, filter) => {
       calls.schemaOverview.push({ id, filter })

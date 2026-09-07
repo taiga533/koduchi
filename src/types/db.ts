@@ -258,6 +258,15 @@ export interface SessionState {
   tabs: SessionTab[]
   activeTabId: string | null
   sidebarSegment: string | null
+  /**
+   * サイドバーの幅（px）。この 2 つを持たない古いセッションでは `null` になる。
+   *
+   * ペインの寸法はウィンドウごとに違ってよいため、`settings.toml` ではなく
+   * セッションへ置く。
+   */
+  sidebarWidth: number | null
+  /** エディタの高さ（px）。古いセッションでは `null`。 */
+  editorHeight: number | null
 }
 
 /** CSV の区切り文字。 */

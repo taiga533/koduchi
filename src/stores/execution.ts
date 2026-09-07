@@ -378,6 +378,18 @@ export function selectExecution(state: ExecutionState, tabId: string | null): Ta
 }
 
 /**
+ * 実行中のタブが 1 つでもあるかを返す。
+ *
+ * 切断してよいかの判定に使う。接続を閉じると走っている文は道半ばで
+ * 打ち切られるため、先に中止させる（`⌘.`）。
+ *
+ * @param state 実行ストアの状態
+ */
+export function selectAnyRunning(state: ExecutionState): boolean {
+  return Object.values(state.byTab).some((execution) => execution.status === 'running')
+}
+
+/**
  * 結果ペインのヘッダー右端に出す要約を組み立てる（ADR 0003）。
  *
  * カーソル方式では総行数が事前に分からないため、表示を 2 段階にする。

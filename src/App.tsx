@@ -21,10 +21,20 @@ import { getDbApi } from './api/db'
 import { InstantClientNotice } from './components/connection/InstantClientNotice'
 import { ConnectionForm } from './components/connection/ConnectionForm'
 import { ConnectionPicker } from './components/connection/ConnectionPicker'
+import { DisconnectBlockedDialog } from './components/connection/DisconnectBlockedDialog'
 import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
 import { BindValuesDialog } from './components/editor/BindValuesDialog'
 import { EditorPanel } from './components/editor/EditorPanel'
+import { Splitter } from './components/layout/Splitter'
+import {
+  EDITOR_HEIGHT_DEFAULT,
+  EDITOR_HEIGHT_MIN,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  editorHeightMax,
+} from './components/layout/paneSizes'
 import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
@@ -36,7 +46,7 @@ import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
 import { collectBindVariables, isSelectStatement, statementAt } from './sql/statements'
 import { useConnectionStore } from './stores/connection'
-import { useExecutionStore } from './stores/execution'
+import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { useSchemaStore } from './stores/schema'
 import type { BindInput } from './stores/tab'
@@ -85,12 +95,14 @@ export function App() {
   const [connectionView, setConnectionView] = useState<ConnectionView>({ mode: 'picker' })
   const [csvOpen, setCsvOpen] = useState(false)
   const [bindPrompt, setBindPrompt] = useState<{ names: string[]; run: PendingRun } | null>(null)
+  const [disconnectBlocked, setDisconnectBlocked] = useState(false)
   const [csvProgress, setCsvProgress] = useState<CsvExportState | null>(null)
   const csvCancelled = useRef(false)
   // 実行に要る位置は描画に関わらないため、状態ではなく ref で持つ。
   const positionRef = useRef<EditorPosition>(INITIAL_POSITION)
 
   const connection = useConnectionStore((state) => state.connection)
+  const disconnect = useConnectionStore((state) => state.disconnect)
   const activeTabId = useTabStore((state) => state.activeTabId)
   // 名前だけを購読する。タブの配列そのものを見ると、打鍵のたびにここが
   // 描き直り、サイドバーと結果ペインまで巻き添えになる。
@@ -108,6 +120,7 @@ export function App() {
   const cancel = useExecutionStore((state) => state.cancel)
   const releaseTab = useExecutionStore((state) => state.releaseTab)
   const markExhausted = useExecutionStore((state) => state.markExhausted)
+  const clearExecutions = useExecutionStore((state) => state.clear)
 
   const selectSidebarSegment = useUiStore((state) => state.selectSidebarSegment)
   const selectResultTab = useUiStore((state) => state.selectResultTab)
@@ -118,9 +131,17 @@ export function App() {
   const loadSettings = useUiStore((state) => state.loadSettings)
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
+  const clearResultColumnWidths = useUiStore((state) => state.clearResultColumnWidths)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const editorHeight = useUiStore((state) => state.editorHeight)
+  const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
+  const setEditorHeight = useUiStore((state) => state.setEditorHeight)
+  const clampToWindow = useUiStore((state) => state.clampToWindow)
+  const restoreLayout = useUiStore((state) => state.restoreLayout)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
+  const clearSchemas = useSchemaStore((state) => state.clear)
 
   // 起動時に Instant Client を初期化する。接続を試す前に判定できるため、
   // 意味の分からないエラーで落ちる事態を避けられる（ADR 0001）。
@@ -154,9 +175,19 @@ export function App() {
         ) {
           selectSidebarSegment(session.sidebarSegment)
         }
+        restoreLayout(session, window.innerHeight)
       })
       .catch(() => {})
-  }, [restoreTabs, selectSidebarSegment])
+  }, [restoreLayout, restoreTabs, selectSidebarSegment])
+
+  // ウィンドウを縮めたときにエディタの高さが上限を超えたままにならないよう、
+  // 大きさが変わるたびに丸め直す（下限は割らない）。
+  useEffect(() => {
+    const onResize = () => clampToWindow(window.innerHeight)
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [clampToWindow])
 
   /** エディタからのカーソル通知。描画に関わる分だけストアへ渡す。 */
   const onCursorChange = useCallback(
@@ -315,17 +346,80 @@ export function App() {
    * タブを閉じる。
    *
    * 開いたままのカーソルはデータベース側の資源を握り続けるため、閉じる前に
-   * 明示的に手放す（ADR 0003）。
+   * 明示的に手放す（ADR 0003）。結果テーブルで手を入れた列幅も、二度と使われない
+   * ため一緒に忘れる。
    */
   const closeTabAndRelease = useCallback(
     (tabId: string) => {
       if (connection) {
         void releaseTab(connection.id, tabId)
       }
+      clearResultColumnWidths(tabId)
       closeTab(tabId)
     },
-    [closeTab, connection, releaseTab],
+    [clearResultColumnWidths, closeTab, connection, releaseTab],
   )
+
+  /**
+   * 接続を切り、接続を選ぶ画面へ戻す（方針 2・4）。
+   *
+   * エディタのタブと内容はそのまま残す。切断でタブを失うと、書きかけの SQL の
+   * ために接続を切れなくなる。
+   *
+   * 後片付けはここで順に呼ぶ。開いたままの結果セットはデータベース側の資源を
+   * 握るため、接続が生きているうちに `release_tab` で閉じる（ADR 0003）。
+   * ストアの掃除もここで行い、ストア同士を結合させない。
+   *
+   * 実行中の文があるときは切断せず、先に中止するよう促す（方針 5）。
+   */
+  const disconnectAndReset = useCallback(async () => {
+    const active = useConnectionStore.getState().connection
+    if (!active) {
+      return
+    }
+
+    if (selectAnyRunning(useExecutionStore.getState())) {
+      setDisconnectBlocked(true)
+      return
+    }
+
+    for (const tabId of Object.keys(useExecutionStore.getState().byTab)) {
+      try {
+        await releaseTab(active.id, tabId)
+      } catch {
+        // 閉じられなくても切断で接続ごと落ちる。切断そのものは止めない。
+      }
+    }
+
+    clearExecutions()
+    clearSchemas()
+
+    try {
+      await disconnect()
+    } catch {
+      // 切断に失敗しても画面は接続を選ぶところへ戻す。
+    }
+
+    setConnectionView({ mode: 'picker' })
+  }, [clearExecutions, clearSchemas, disconnect, releaseTab])
+
+  /**
+   * 実行中のすべてのタブを中止する（`⌘.` と同じ）。
+   *
+   * 切断できない旨のダイアログから呼ぶ。実行中のタブは選択中のものとは限らない
+   * ため、走っているものをすべて対象にする。
+   */
+  const cancelAllRunning = useCallback(() => {
+    const active = useConnectionStore.getState().connection
+    if (active) {
+      for (const [tabId, execution] of Object.entries(useExecutionStore.getState().byTab)) {
+        if (execution.status === 'running') {
+          void cancel(active.id, tabId)
+        }
+      }
+    }
+    setDisconnectBlocked(false)
+  }, [cancel])
 
   /** `⌘S`。保存先が決まっていなければ選ばせる。 */
   const saveActiveTab = useCallback(async () => {
@@ -520,7 +614,11 @@ export function App() {
 
   if (clientStatus.status === 'unavailable') {
     return (
-      <Shell onOpenSettings={openSettings} overlay={settings}>
+      <Shell
+        onOpenSettings={openSettings}
+        onDisconnect={() => void disconnectAndReset()}
+        overlay={settings}
+      >
         <CenteredPanel>
           <InstantClientNotice
             message={clientStatus.message}
@@ -533,7 +631,11 @@ export function App() {
 
   if (!connection) {
     return (
-      <Shell onOpenSettings={openSettings} overlay={settings}>
+      <Shell
+        onOpenSettings={openSettings}
+        onDisconnect={() => void disconnectAndReset()}
+        overlay={settings}
+      >
         <CenteredPanel>
           {connectionView.mode === 'picker' ? (
             <ConnectionPicker
@@ -578,21 +680,44 @@ export function App() {
           }}
         />
       ) : null}
+      {disconnectBlocked ? (
+        <DisconnectBlockedDialog
+          onCancelExecution={cancelAllRunning}
+          onClose={() => setDisconnectBlocked(false)}
+        />
+      ) : null}
     </>
   )
 
   return (
-    <Shell onOpenSettings={openSettings} overlay={overlay}>
+    <Shell
+      onOpenSettings={openSettings}
+      onDisconnect={() => void disconnectAndReset()}
+      overlay={overlay}
+    >
       <Sidebar
         connectionId={connection.id}
         savedConnectionId={connection.savedId}
         connectionName={connection.name}
         onOpenNewConnection={openNewConnectionWindow}
         onUseHistory={useHistorySql}
+        width={sidebarWidth}
+      />
+      <Splitter
+        orientation="vertical"
+        label="サイドバーの幅"
+        value={sidebarWidth}
+        min={SIDEBAR_WIDTH_MIN}
+        max={SIDEBAR_WIDTH_MAX}
+        defaultValue={SIDEBAR_WIDTH_DEFAULT}
+        onChange={setSidebarWidth}
       />
       <div className="flex-1 min-w-0 flex flex-col gap-6px">
         <TabBar onCloseTab={closeTabAndRelease} />
-        <div className="relative h-268px shrink-0 bg-panel rounded-10px border border-line overflow-hidden">
+        <div
+          style={{ height: `${editorHeight}px` }}
+          className="relative shrink-0 bg-panel rounded-10px border border-line overflow-hidden"
+        >
           <EditorPanel
             onCursorChange={onCursorChange}
             onRunStatement={runStatement}
@@ -609,6 +734,15 @@ export function App() {
             onCancel={cancelExecution}
           />
         </div>
+        <Splitter
+          orientation="horizontal"
+          label="エディタの高さ"
+          value={editorHeight}
+          min={EDITOR_HEIGHT_MIN}
+          max={editorHeightMax(window.innerHeight)}
+          defaultValue={EDITOR_HEIGHT_DEFAULT}
+          onChange={(height) => setEditorHeight(height, window.innerHeight)}
+        />
         <ResultPane
           tabId={activeTabId}
           runningLabel={`${connection.name} · ${activeTabName}`}
@@ -687,14 +821,19 @@ function BindPrompt({
  *
  * タイトルバー・本体・ステータスバーを縦に並べる。本体の中身は呼び出し側が渡す。
  * 設定画面と CSV の保存ダイアログは、この枠の上に重ねる。
+ *
+ * 切断はステータスバーの接続状態から呼ぶ。「切断」と「別の接続へ切り替え…」は
+ * どちらも同じ動きであるため、受け取る手続きは 1 つでよい。
  */
 function Shell({
   children,
   onOpenSettings,
+  onDisconnect,
   overlay,
 }: {
   children: React.ReactNode
   onOpenSettings: () => void
+  onDisconnect: () => void
   overlay?: React.ReactNode
 }) {
   return (
@@ -702,7 +841,11 @@ function Shell({
       <SessionSaver />
       <TitleBar />
       <div className="flex-1 min-h-0 flex gap-6px p-6px">{children}</div>
-      <StatusBar onOpenSettings={onOpenSettings} />
+      <StatusBar
+        onOpenSettings={onOpenSettings}
+        onDisconnect={onDisconnect}
+        onSwitchConnection={onDisconnect}
+      />
       {overlay}
     </div>
   )
@@ -718,18 +861,24 @@ function SessionSaver() {
   const tabs = useTabStore((state) => state.tabs)
   const activeTabId = useTabStore((state) => state.activeTabId)
   const sidebarSegment = useUiStore((state) => state.sidebarSegment)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const editorHeight = useUiStore((state) => state.editorHeight)
 
   // タブの状態が落ち着いたら書き出す。1 打鍵ごとに書かないよう少し待つ。
+  // ペインの寸法も同じ待ちに乗せる。ドラッグ中は 1 フレームごとに変わるためである。
   useEffect(() => {
     const timer = setTimeout(() => {
-      const session = selectSession({ tabs, activeTabId }, sidebarSegment)
+      const session = selectSession(
+        { tabs, activeTabId },
+        { sidebarSegment, sidebarWidth, editorHeight },
+      )
       void getDbApi()
         .saveSession(currentWindowLabel(), session)
         .catch(() => {})
     }, SESSION_SAVE_DELAY)
 
     return () => clearTimeout(timer)
-  }, [activeTabId, sidebarSegment, tabs])
+  }, [activeTabId, editorHeight, sidebarSegment, sidebarWidth, tabs])
 
   return null
 }
