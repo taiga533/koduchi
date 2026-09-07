@@ -8,7 +8,7 @@
 //! 命令のチャネル越しには届かない。`Canceller` は `Send + Sync` であり、
 //! 呼び出し元のスレッドから直接叩ける。
 
-use crate::db::driver::{Canceller, Chunk, Driver, ExecuteOutcome};
+use crate::db::driver::{Bind, Canceller, Chunk, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -19,6 +19,7 @@ enum Command {
     /// SQL を 1 文実行し、結果を返信用チャネルへ返す。
     Execute {
         sql: String,
+        binds: Vec<Bind>,
         chunk_size: usize,
         respond: Sender<DbResult<ExecuteOutcome>>,
     },
@@ -42,11 +43,13 @@ enum Command {
     /// 見積りだけの実行計画を取る（`⌘E`）。
     ExplainPlan {
         sql: String,
+        binds: Vec<Bind>,
         respond: Sender<DbResult<String>>,
     },
     /// 実測付きの実行計画を取る（`⇧⌘E`）。
     ActualPlan {
         sql: String,
+        binds: Vec<Bind>,
         respond: Sender<DbResult<String>>,
     },
     /// スレッドを終了する。
@@ -113,13 +116,20 @@ impl ConnectionHandle {
     /// # 引数
     ///
     /// * `sql` - 実行する SQL
+    /// * `binds` - SQL 中のバインド変数へ与える値
     /// * `chunk_size` - 一度に取り出す行数
-    pub fn execute(&self, sql: &str, chunk_size: usize) -> DbResult<ExecuteOutcome> {
+    pub fn execute(
+        &self,
+        sql: &str,
+        binds: &[Bind],
+        chunk_size: usize,
+    ) -> DbResult<ExecuteOutcome> {
         let (respond, response) = mpsc::channel();
 
         self.commands
             .send(Command::Execute {
                 sql: sql.to_string(),
+                binds: binds.to_vec(),
                 chunk_size,
                 respond,
             })
@@ -200,12 +210,14 @@ impl ConnectionHandle {
     /// # 引数
     ///
     /// * `sql` - 計画を見たい SQL
-    pub fn explain_plan(&self, sql: &str) -> DbResult<String> {
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    pub fn explain_plan(&self, sql: &str, binds: &[Bind]) -> DbResult<String> {
         let (respond, response) = mpsc::channel();
 
         self.commands
             .send(Command::ExplainPlan {
                 sql: sql.to_string(),
+                binds: binds.to_vec(),
                 respond,
             })
             .map_err(|_| DbError::closed())?;
@@ -218,12 +230,14 @@ impl ConnectionHandle {
     /// # 引数
     ///
     /// * `sql` - 計画を見たい SQL
-    pub fn actual_plan(&self, sql: &str) -> DbResult<String> {
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    pub fn actual_plan(&self, sql: &str, binds: &[Bind]) -> DbResult<String> {
         let (respond, response) = mpsc::channel();
 
         self.commands
             .send(Command::ActualPlan {
                 sql: sql.to_string(),
+                binds: binds.to_vec(),
                 respond,
             })
             .map_err(|_| DbError::closed())?;
@@ -280,10 +294,11 @@ fn run_actor<D, F>(
         match command {
             Command::Execute {
                 sql,
+                binds,
                 chunk_size,
                 respond,
             } => {
-                let result = driver.execute(&sql, chunk_size);
+                let result = driver.execute(&sql, &binds, chunk_size);
                 // 返信先が消えていても、実行そのものは完了している。
                 let _ = respond.send(result);
             }
@@ -302,11 +317,19 @@ fn run_actor<D, F>(
             Command::SchemaColumns { owner, respond } => {
                 let _ = respond.send(driver.schema_columns(&owner));
             }
-            Command::ExplainPlan { sql, respond } => {
-                let _ = respond.send(driver.explain_plan(&sql));
+            Command::ExplainPlan {
+                sql,
+                binds,
+                respond,
+            } => {
+                let _ = respond.send(driver.explain_plan(&sql, &binds));
             }
-            Command::ActualPlan { sql, respond } => {
-                let _ = respond.send(driver.actual_plan(&sql));
+            Command::ActualPlan {
+                sql,
+                binds,
+                respond,
+            } => {
+                let _ = respond.send(driver.actual_plan(&sql, &binds));
             }
             Command::Close => break,
         }
@@ -319,7 +342,7 @@ mod tests {
     use crate::db::driver::Column;
     use crate::db::value::{Cell, CellKind};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     /// テスト用のドライバ。
@@ -338,6 +361,8 @@ mod tests {
         読んだ位置: usize,
         /// カーソルが開いているか。
         カーソルを開いている: bool,
+        /// 直前の実行で受け取ったバインド変数。素通しの確認に使う。
+        受け取ったバインド: Arc<Mutex<Vec<Bind>>>,
     }
 
     struct テスト用の中止経路 {
@@ -374,7 +399,14 @@ mod tests {
             })
         }
 
-        fn execute(&mut self, sql: &str, chunk_size: usize) -> DbResult<ExecuteOutcome> {
+        fn execute(
+            &mut self,
+            sql: &str,
+            binds: &[Bind],
+            chunk_size: usize,
+        ) -> DbResult<ExecuteOutcome> {
+            *self.受け取ったバインド.lock().unwrap() = binds.to_vec();
+
             if let Some(遅延) = self.実行を遅らせる {
                 thread::sleep(遅延);
             }
@@ -441,11 +473,13 @@ mod tests {
             }])
         }
 
-        fn explain_plan(&mut self, sql: &str) -> DbResult<String> {
+        fn explain_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String> {
+            *self.受け取ったバインド.lock().unwrap() = binds.to_vec();
             Ok(format!("見積り: {sql}"))
         }
 
-        fn actual_plan(&mut self, sql: &str) -> DbResult<String> {
+        fn actual_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String> {
+            *self.受け取ったバインド.lock().unwrap() = binds.to_vec();
             Ok(format!("実測: {sql}"))
         }
     }
@@ -467,6 +501,7 @@ mod tests {
             用意した行: 行を作る(1),
             読んだ位置: 0,
             カーソルを開いている: false,
+            受け取ったバインド: Arc::new(Mutex::new(Vec::new())),
         };
         (driver, 実行した回数, 中止された)
     }
@@ -509,7 +544,7 @@ mod tests {
         let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
 
         // Act
-        let outcome = handle.execute("select 1 from dual", 1000).unwrap();
+        let outcome = handle.execute("select 1 from dual", &[], 1000).unwrap();
 
         // Assert
         match outcome {
@@ -530,7 +565,7 @@ mod tests {
         let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
 
         // Act
-        let outcome = handle.execute("select * from events", 1000).unwrap();
+        let outcome = handle.execute("select * from events", &[], 1000).unwrap();
 
         // Assert
         match outcome {
@@ -548,7 +583,7 @@ mod tests {
         let (mut driver, _, _) = ドライバを作る();
         driver.用意した行 = 行を作る(2500);
         let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
-        handle.execute("select * from events", 1000).unwrap();
+        handle.execute("select * from events", &[], 1000).unwrap();
 
         // Act
         let 二つ目 = handle.fetch_more(1000).unwrap();
@@ -567,7 +602,7 @@ mod tests {
         // Arrange
         let (driver, _, _) = ドライバを作る();
         let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
-        handle.execute("select 1 from dual", 1000).unwrap();
+        handle.execute("select 1 from dual", &[], 1000).unwrap();
 
         // Act
         let chunk = handle.fetch_more(1000).unwrap();
@@ -583,7 +618,7 @@ mod tests {
         let (mut driver, _, _) = ドライバを作る();
         driver.用意した行 = 行を作る(2500);
         let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
-        handle.execute("select * from events", 1000).unwrap();
+        handle.execute("select * from events", &[], 1000).unwrap();
 
         // Act
         handle.close_cursor().unwrap();
@@ -595,13 +630,33 @@ mod tests {
     }
 
     #[test]
+    fn バインド変数はドライバまでそのまま届く() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let 受け取ったバインド = Arc::clone(&driver.受け取ったバインド);
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+        let binds = vec![
+            (String::from("id"), Some(String::from("42"))),
+            (String::from("memo"), None),
+        ];
+
+        // Act
+        handle
+            .execute("select * from users where id = :id", &binds, 1000)
+            .unwrap();
+
+        // Assert
+        assert_eq!(*受け取ったバインド.lock().unwrap(), binds);
+    }
+
+    #[test]
     fn 実行時のエラーがそのまま返る() {
         // Arrange
         let (driver, _, _) = ドライバを作る();
         let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
 
         // Act
-        let result = handle.execute("失敗する SQL", 1000);
+        let result = handle.execute("失敗する SQL", &[], 1000);
 
         // Assert
         assert_eq!(result.unwrap_err().message, "わざと失敗させた");
@@ -615,7 +670,7 @@ mod tests {
 
         // Act
         for _ in 0..5 {
-            handle.execute("select 1 from dual", 1000).unwrap();
+            handle.execute("select 1 from dual", &[], 1000).unwrap();
         }
 
         // Assert
@@ -634,13 +689,14 @@ mod tests {
             用意した行: 行を作る(1),
             読んだ位置: 0,
             カーソルを開いている: false,
+            受け取ったバインド: Arc::new(Mutex::new(Vec::new())),
         };
         let handle = Arc::new(ConnectionHandle::open(move || Ok(driver)).unwrap());
 
         // Act: 実行中に別スレッドから中止する
         let 実行側 = {
             let handle = Arc::clone(&handle);
-            thread::spawn(move || handle.execute("select 1 from dual", 1000))
+            thread::spawn(move || handle.execute("select 1 from dual", &[], 1000))
         };
         thread::sleep(Duration::from_millis(50));
         handle.cancel().unwrap();

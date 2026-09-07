@@ -8,6 +8,7 @@
 import type { DbApi } from '../api/db'
 import type {
   AppSettings,
+  Bind,
   Cell,
   Chunk,
   ClientStatus,
@@ -31,7 +32,7 @@ import { defaultCsvOptions } from '../types/db'
 export interface FakeCalls {
   connect: { id: string; params: ConnectionParams }[]
   testConnection: ConnectionParams[]
-  execute: { id: string; tabId: string; sql: string }[]
+  execute: { id: string; tabId: string; sql: string; binds: Bind[] }[]
   fetchMore: { id: string; tabId: string }[]
   releaseTab: { id: string; tabId: string }[]
   cancel: { id: string; tabId: string }[]
@@ -43,8 +44,8 @@ export interface FakeCalls {
   saveSession: { windowLabel: string; state: SessionState }[]
   schemaOverview: { id: string; filter: SchemaFilter }[]
   schemaColumns: { id: string; owner: string }[]
-  explainPlan: { id: string; sql: string }[]
-  actualPlan: { id: string; sql: string }[]
+  explainPlan: { id: string; sql: string; binds: Bind[] }[]
+  actualPlan: { id: string; sql: string; binds: Bind[] }[]
   saveConnection: { connection: SavedConnection; password: string | null }[]
   loadConnectionPassword: string[]
   deleteConnection: string[]
@@ -190,8 +191,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return options.testVersion ?? '23.9.0.0.0'
     },
 
-    execute: async (id, tabId, sql) => {
-      calls.execute.push({ id, tabId, sql })
+    execute: async (id, tabId, sql, binds) => {
+      calls.execute.push({ id, tabId, sql, binds })
       return options.onExecute ? options.onExecute(sql) : emptyResponse
     },
 
@@ -276,13 +277,13 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return options.columns?.[owner] ?? []
     },
 
-    explainPlan: async (id, sql) => {
-      calls.explainPlan.push({ id, sql })
+    explainPlan: async (id, sql, binds) => {
+      calls.explainPlan.push({ id, sql, binds })
       return options.planText ?? 'Plan hash value: 0'
     },
 
-    actualPlan: async (id, sql) => {
-      calls.actualPlan.push({ id, sql })
+    actualPlan: async (id, sql, binds) => {
+      calls.actualPlan.push({ id, sql, binds })
       return options.planText ?? 'Plan hash value: 0'
     },
 

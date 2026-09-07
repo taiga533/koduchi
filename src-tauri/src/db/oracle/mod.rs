@@ -3,12 +3,13 @@
 //! `DBMS_OUTPUT` の取得のような Oracle 固有の都合は、`Driver` trait には出さず
 //! このモジュールに閉じ込める。
 
+pub mod bind;
 pub mod convert;
 pub mod instant_client;
 pub mod plan;
 pub mod schema;
 
-use crate::db::driver::{Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome};
+use crate::db::driver::{Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
 use oracle::sql_type::OracleType;
@@ -235,7 +236,12 @@ impl Driver for OracleDriver {
         })
     }
 
-    fn execute(&mut self, sql: &str, chunk_size: usize) -> DbResult<ExecuteOutcome> {
+    fn execute(
+        &mut self,
+        sql: &str,
+        binds: &[Bind],
+        chunk_size: usize,
+    ) -> DbResult<ExecuteOutcome> {
         // 前の結果セットを開いたままにしない（ADR 0003）。
         self.close_cursor()?;
 
@@ -247,9 +253,11 @@ impl Driver for OracleDriver {
             .build()
             .map_err(|error| DbError::execute(error.to_string()))?;
 
+        let bound = bind::bound_values(&statement, binds);
+
         if statement.is_query() {
             let result_set = statement
-                .into_result_set::<Row>(&[])
+                .into_result_set_named::<Row>(&bind::params(&bound))
                 .map_err(|error| DbError::execute(error.to_string()))?;
 
             let columns: Vec<Column> = result_set
@@ -284,7 +292,7 @@ impl Driver for OracleDriver {
         }
 
         statement
-            .execute(&[])
+            .execute_named(&bind::params(&bound))
             .map_err(|error| DbError::execute(error.to_string()))?;
 
         let affected_rows = statement.row_count().unwrap_or(0);
@@ -328,24 +336,24 @@ impl Driver for OracleDriver {
         schema::load_columns(&self.connection, owner)
     }
 
-    fn explain_plan(&mut self, sql: &str) -> DbResult<String> {
+    fn explain_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String> {
         if !self.read_only {
-            return plan::explain(&self.connection, sql);
+            return plan::explain(&self.connection, sql, binds);
         }
 
         // 読み取り専用トランザクションの最中は `PLAN_TABLE` へ書けない。
         // いったん解除し、計画を読み終えてから読み取り専用へ戻す。
         // 解除している間に走る SQL は、この関数が発行するものだけである。
         self.rollback()?;
-        let result = plan::explain(&self.connection, sql);
+        let result = plan::explain(&self.connection, sql, binds);
         self.rollback()?;
         self.begin_read_only_transaction()?;
         result
     }
 
-    fn actual_plan(&mut self, sql: &str) -> DbResult<String> {
+    fn actual_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String> {
         // 実行そのものは読み取り専用トランザクションの中でも行える。
         // 書き込みを伴う文はデータベース側が拒む（ADR 0004）。
-        plan::actual(&self.connection, sql)
+        plan::actual(&self.connection, sql, binds)
     }
 }

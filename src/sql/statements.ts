@@ -7,6 +7,9 @@
  * 誤って切れてしまう。
  *
  * ここでは走査しながら、それらの中に入っている間は区切り文字を無視する。
+ *
+ * 同じ走査は `collectBindVariables` でも使い回す。バインド変数の `:` もまた、
+ * 文字列リテラルやコメントの中では拾ってはならないためである。
  */
 
 /** 切り出された 1 文。 */
@@ -403,4 +406,98 @@ function skipLeadingTrivia(sql: string): string {
 export function isSelectStatement(sql: string): boolean {
   const head = skipLeadingTrivia(sql)
   return /^(select|with)\b/i.test(head)
+}
+
+/** バインド変数の名前に使える文字。 */
+const BIND_NAME_CHARACTER = /[A-Za-z0-9_$#]/
+
+/**
+ * 位置 `index` から始まるバインド変数の名前を読み取る。
+ *
+ * 名前に使える文字が 1 つも無ければ `null` を返す。`:=`（PL/SQL の代入）や
+ * 行末の `:` はこれで弾かれる。
+ *
+ * @param sql 対象の文字列
+ * @param index `:` の次の位置
+ *
+ * @returns 名前と、その次の位置。名前が無ければ `name` は `null`
+ */
+function readBindName(sql: string, index: number): { name: string | null; next: number } {
+  let end = index
+  while (end < sql.length && BIND_NAME_CHARACTER.test(sql[end])) {
+    end += 1
+  }
+  return end === index ? { name: null, next: index } : { name: sql.slice(index, end), next: end }
+}
+
+/**
+ * SQL に出てくるバインド変数の名前を、出てきた順に集める（ADR の「バインド変数」節）。
+ *
+ * `splitStatements` と同じ走査を使い、文字列リテラル・コメント・Oracle の
+ * `q'[...]'` 引用符リテラルの中にある `:` は拾わない。`::` のように `:` が続く形も
+ * 記号であって変数ではないため読み飛ばす。
+ *
+ * Oracle のバインド名は大文字小文字を区別しないため、同じ名前は 1 つにまとめる。
+ * 残すのは最初に出てきた綴りである。
+ *
+ * @param sql 対象の SQL
+ *
+ * @returns 名前の一覧。`:` は含まない
+ */
+export function collectBindVariables(sql: string): string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+  let cursor = 0
+
+  while (cursor < sql.length) {
+    const character = sql[cursor]
+
+    if (character === '-' && sql[cursor + 1] === '-') {
+      const lineEnd = sql.indexOf('\n', cursor)
+      cursor = lineEnd === -1 ? sql.length : lineEnd + 1
+      continue
+    }
+
+    if (character === '/' && sql[cursor + 1] === '*') {
+      const blockEnd = sql.indexOf('*/', cursor + 2)
+      cursor = blockEnd === -1 ? sql.length : blockEnd + 2
+      continue
+    }
+
+    if (isQuotedLiteralStart(sql, cursor)) {
+      cursor = skipQuotedLiteral(sql, cursor)
+      continue
+    }
+
+    if (character === "'" || character === '"') {
+      cursor = skipQuoted(sql, cursor, character)
+      continue
+    }
+
+    if (character === ':') {
+      // `::` は記号であってバインド変数ではない。2 文字まとめて読み飛ばす。
+      if (sql[cursor + 1] === ':') {
+        cursor += 2
+        continue
+      }
+
+      const { name, next } = readBindName(sql, cursor + 1)
+      if (name === null) {
+        cursor += 1
+        continue
+      }
+
+      const key = name.toUpperCase()
+      if (!seen.has(key)) {
+        seen.add(key)
+        names.push(name)
+      }
+      cursor = next
+      continue
+    }
+
+    cursor += 1
+  }
+
+  return names
 }

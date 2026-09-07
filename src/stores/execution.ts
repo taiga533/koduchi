@@ -8,12 +8,13 @@
  * 実行ログはウィンドウに 1 本だけ持ち、メッセージタブに時系列で出す。
  *
  * 実行はすべて履歴に記録する（ADR 0005）。ただし `⌘E` / `⇧⌘E` による実行計画の
- * 生成は記録しない。
+ * 生成は記録しない。バインド変数へ与えた値も記録しない。値には個人情報が入りうる
+ * ためである（ADR の「バインド変数」節）。
  */
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
-import type { Cell, Column, NewHistoryEntry } from '../types/db'
+import type { Bind, Cell, Column, NewHistoryEntry } from '../types/db'
 import { toErrorMessage } from '../types/db'
 
 /** 実行の段階。 */
@@ -99,15 +100,23 @@ interface ExecutionState {
    * SQL を実行する。
    *
    * 成功・失敗を問わず履歴に記録する。記録に失敗しても実行の結果は保つ。
+   * 記録するのは SQL 本体だけで、バインド変数へ与えた値は残さない。
    */
   execute: (
     connectionId: string,
     tabId: string,
     sql: string,
     connectionName: string,
+    binds: Bind[],
   ) => Promise<void>
   /** 実行計画を取る（`⌘E` / `⇧⌘E`）。履歴には記録しない。 */
-  generatePlan: (connectionId: string, tabId: string, sql: string, mode: PlanMode) => Promise<void>
+  generatePlan: (
+    connectionId: string,
+    tabId: string,
+    sql: string,
+    mode: PlanMode,
+    binds: Bind[],
+  ) => Promise<void>
   /** 開いている結果セットから続きを取り出す。 */
   fetchMore: (connectionId: string, tabId: string) => Promise<void>
   /** 実行中の文を中止する（`⌘.`）。 */
@@ -161,7 +170,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   planByTab: {},
   log: [],
 
-  execute: async (connectionId, tabId, sql, connectionName) => {
+  execute: async (connectionId, tabId, sql, connectionName, binds) => {
     if (get().byTab[tabId]?.status === 'running') {
       return
     }
@@ -177,7 +186,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     }))
 
     try {
-      const response = await getDbApi().execute(connectionId, tabId, sql)
+      const response = await getDbApi().execute(connectionId, tabId, sql, binds)
 
       const execution: TabExecution =
         response.kind === 'query'
@@ -266,7 +275,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     }
   },
 
-  generatePlan: async (connectionId, tabId, sql, mode) => {
+  generatePlan: async (connectionId, tabId, sql, mode, binds) => {
     set((state) => ({
       planByTab: {
         ...state.planByTab,
@@ -278,8 +287,8 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       const api = getDbApi()
       const text =
         mode === 'estimate'
-          ? await api.explainPlan(connectionId, sql)
-          : await api.actualPlan(connectionId, sql)
+          ? await api.explainPlan(connectionId, sql, binds)
+          : await api.actualPlan(connectionId, sql, binds)
 
       set((state) => ({
         planByTab: {
