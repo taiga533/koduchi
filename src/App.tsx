@@ -34,13 +34,14 @@ import { StatusBar } from './components/statusbar/StatusBar'
 import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
 import { isSelectStatement, statementAt } from './sql/statements'
-import { useConnectionStore } from './stores/connection'
+import { isManualCommit, useConnectionStore } from './stores/connection'
 import { useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { useSchemaStore } from './stores/schema'
 import { selectActiveTab, selectSession, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
-import { currentWindowLabel } from './window'
+import { askPendingChoice } from './transaction/pendingChanges'
+import { currentWindowLabel, onWindowCloseRequested } from './window'
 import type { ClientStatus, SavedConnection, SchemaFilter } from './types/db'
 
 /** カーソルの初期位置。エディタから通知が来るまでの値。 */
@@ -90,6 +91,8 @@ export function App() {
   const generatePlan = useExecutionStore((state) => state.generatePlan)
   const fetchMore = useExecutionStore((state) => state.fetchMore)
   const cancel = useExecutionStore((state) => state.cancel)
+  const commit = useExecutionStore((state) => state.commit)
+  const rollback = useExecutionStore((state) => state.rollback)
   const releaseTab = useExecutionStore((state) => state.releaseTab)
   const markExhausted = useExecutionStore((state) => state.markExhausted)
 
@@ -236,6 +239,68 @@ export function App() {
       void cancel(connection.id, tabId)
     }
   }, [cancel, connection])
+
+  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
+  const commitTransaction = useCallback(() => {
+    if (connection) {
+      void commit(connection.id)
+    }
+  }, [commit, connection])
+
+  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
+  const rollbackTransaction = useCallback(() => {
+    if (connection) {
+      void rollback(connection.id)
+    }
+  }, [connection, rollback])
+
+  /**
+   * 閉じてよいかを決める（ADR 0012）。
+   *
+   * 未コミットの変更があれば「コミット / 破棄 / やめる」を尋ねる。「やめる」を
+   * 選ばれたら閉じない。コミットに失敗したときも閉じない。失敗を告げないまま
+   * 閉じると、変更は暗黙のロールバックで消える。
+   */
+  const allowClose = useCallback(async (): Promise<boolean> => {
+    const active = useConnectionStore.getState().connection
+    if (!active || !isManualCommit(active) || !useExecutionStore.getState().inTransaction) {
+      return true
+    }
+
+    const choice = await askPendingChoice({
+      confirmClose: () =>
+        confirm('未コミットの変更があります。このまま閉じますか？', {
+          title: '未コミットの変更',
+          kind: 'warning',
+          okLabel: '閉じる',
+          cancelLabel: 'やめる',
+        }),
+      confirmCommit: () =>
+        confirm('変更をコミットしますか？破棄すると失われます。', {
+          title: '未コミットの変更',
+          kind: 'warning',
+          okLabel: 'コミット',
+          cancelLabel: '破棄',
+        }),
+    })
+
+    if (choice === 'cancel') {
+      return false
+    }
+
+    if (choice === 'commit') {
+      await commit(active.id)
+      // コミットできていれば未コミットの表示は消えている。残っていれば失敗した。
+      return !useExecutionStore.getState().inTransaction
+    }
+
+    await rollback(active.id)
+    return true
+  }, [commit, rollback])
+
+  // 未コミットのまま閉じさせない（ADR 0012）。アプリの終了も Rust 側から
+  // 各ウィンドウを閉じにいくため、この関所を通る。
+  useEffect(() => onWindowCloseRequested(allowClose), [allowClose])
 
   /** 結果の続きを取りにいく（ADR 0003）。 */
   const requestMore = useCallback(() => {
@@ -384,6 +449,14 @@ export function App() {
         handled(() => void runPlan(event.shiftKey))
         return
       }
+      if (key === 'c' && event.altKey) {
+        handled(commitTransaction)
+        return
+      }
+      if (key === 'r' && event.altKey) {
+        handled(rollbackTransaction)
+        return
+      }
       if (key === 's' && event.altKey) {
         handled(openCsvDialog)
         return
@@ -418,6 +491,8 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
     closeTabAndRelease,
+    commitTransaction,
+    rollbackTransaction,
     openCsvDialog,
     openNewConnectionWindow,
     openNewTab,
@@ -509,7 +584,12 @@ export function App() {
   )
 
   return (
-    <Shell onOpenSettings={openSettings} overlay={overlay}>
+    <Shell
+      onOpenSettings={openSettings}
+      onCommit={commitTransaction}
+      onRollback={rollbackTransaction}
+      overlay={overlay}
+    >
       <Sidebar
         connectionId={connection.id}
         savedConnectionId={connection.savedId}
@@ -582,10 +662,16 @@ function RunControls({
 function Shell({
   children,
   onOpenSettings,
+  onCommit,
+  onRollback,
   overlay,
 }: {
   children: React.ReactNode
   onOpenSettings: () => void
+  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
+  onCommit?: () => void
+  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
+  onRollback?: () => void
   overlay?: React.ReactNode
 }) {
   return (
@@ -593,7 +679,7 @@ function Shell({
       <SessionSaver />
       <TitleBar />
       <div className="flex-1 min-h-0 flex gap-6px p-6px">{children}</div>
-      <StatusBar onOpenSettings={onOpenSettings} />
+      <StatusBar onOpenSettings={onOpenSettings} onCommit={onCommit} onRollback={onRollback} />
       {overlay}
     </div>
   )

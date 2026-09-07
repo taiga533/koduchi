@@ -59,6 +59,12 @@ pub struct ConnectionParams {
     /// 保証する。`WITH ... INSERT` や無名 PL/SQL ブロックをすり抜けないため。
     #[serde(default)]
     pub read_only: bool,
+    /// 実行のたびに自動でコミットするか（ADR 0012）。
+    ///
+    /// 既定は偽（手動コミット）。Oracle クライアントの慣習に合わせ、誤爆した
+    /// ときに取り返せるほうを既定にしてある。読み取り専用のときは意味を持たない。
+    #[serde(default)]
+    pub auto_commit: bool,
 }
 
 /// 結果セットの列。
@@ -102,6 +108,12 @@ pub enum ExecuteOutcome {
         chunk: Chunk,
         elapsed_ms: u64,
         notices: Vec<String>,
+        /// 未コミットのトランザクションが残っているか（ADR 0012）。
+        ///
+        /// クライアント側で DML を数えるのではなく、実行のたびにデータベースへ
+        /// 聞いた結果である。`WITH ... INSERT` や無名 PL/SQL ブロックを
+        /// すり抜けないため。
+        in_transaction: bool,
     },
     /// 問い合わせ以外（DML・DDL・PL/SQL ブロック）。
     #[serde(rename_all = "camelCase")]
@@ -109,6 +121,8 @@ pub enum ExecuteOutcome {
         affected_rows: u64,
         elapsed_ms: u64,
         notices: Vec<String>,
+        /// 未コミットのトランザクションが残っているか（ADR 0012）。
+        in_transaction: bool,
     },
 }
 
@@ -184,6 +198,16 @@ pub trait Driver: 'static {
     /// * `sql` - 計画を見たい SQL
     fn explain_plan(&mut self, sql: &str) -> DbResult<String>;
 
+    /// トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+    ///
+    /// 未コミットの変更が無いときに呼んでも害は無い。
+    fn commit(&mut self) -> DbResult<()>;
+
+    /// トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。
+    ///
+    /// 未コミットの変更が無いときに呼んでも害は無い。
+    fn rollback(&mut self) -> DbResult<()>;
+
     /// 実測付きの実行計画をテキストで返す（`⇧⌘E`）。
     ///
     /// SQL を実際に最後まで実行する。副作用のある文ではその副作用が起きるため、
@@ -248,6 +272,39 @@ mod tests {
     }
 
     #[test]
+    fn 自動コミットは省略すると偽になる() {
+        // Arrange: 既定は手動コミットである（ADR 0012）
+        let json = r#"{
+            "username": "koduchi",
+            "password": "koduchi_dev",
+            "target": { "method": "ezConnect", "host": "localhost", "port": 1521, "serviceName": "FREEPDB1" }
+        }"#;
+
+        // Act
+        let params: ConnectionParams = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert!(!params.auto_commit);
+    }
+
+    #[test]
+    fn 自動コミットは接続情報から読み取れる() {
+        // Arrange
+        let json = r#"{
+            "username": "koduchi",
+            "password": "koduchi_dev",
+            "autoCommit": true,
+            "target": { "method": "ezConnect", "host": "localhost", "port": 1521, "serviceName": "FREEPDB1" }
+        }"#;
+
+        // Act
+        let params: ConnectionParams = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert!(params.auto_commit);
+    }
+
+    #[test]
     fn 問い合わせ以外の結果は影響行数を持つ() {
         // Arrange
         let notices = vec![String::from("小槌からの通知")];
@@ -257,6 +314,7 @@ mod tests {
             affected_rows: 3,
             elapsed_ms: 12,
             notices: notices.clone(),
+            in_transaction: true,
         };
 
         // Assert
@@ -264,10 +322,12 @@ mod tests {
             ExecuteOutcome::Statement {
                 affected_rows,
                 notices: got,
+                in_transaction,
                 ..
             } => {
                 assert_eq!(affected_rows, 3);
                 assert_eq!(got, notices);
+                assert!(in_transaction);
             }
             _ => panic!("問い合わせ以外の結果になるはず"),
         }
@@ -280,6 +340,7 @@ mod tests {
             affected_rows: 3,
             elapsed_ms: 12,
             notices: Vec::new(),
+            in_transaction: false,
         };
 
         // Act
@@ -288,7 +349,7 @@ mod tests {
         // Assert
         assert_eq!(
             json,
-            r#"{"kind":"statement","affectedRows":3,"elapsedMs":12,"notices":[]}"#
+            r#"{"kind":"statement","affectedRows":3,"elapsedMs":12,"notices":[],"inTransaction":false}"#
         );
     }
 }

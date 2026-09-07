@@ -51,6 +51,7 @@ fn 接続情報を解析する(raw: &str) -> Option<ConnectionParams> {
             service_name: service_name.to_string(),
         },
         read_only: false,
+        auto_commit: false,
     })
 }
 
@@ -92,6 +93,31 @@ fn 接続に使う情報() -> Option<ConnectionParams> {
 /// 既定の設定でプールを開く。
 fn 接続を開く() -> Option<ConnectionPool> {
     プールを開く(false, 1, DEFAULT_CHUNK_SIZE)
+}
+
+/// 自動コミットを有効にしたプールを 1 本開く（ADR 0012）。
+fn 自動コミットの接続を開く() -> Option<ConnectionPool> {
+    let mut params = 接続に使う情報()?;
+    params.auto_commit = true;
+
+    Some(ConnectionPool::open(&params, 1, DEFAULT_CHUNK_SIZE).unwrap())
+}
+
+/// 実行結果から未コミットかどうかを取り出す（ADR 0012）。
+fn 未コミットか(pool: &ConnectionPool, sql: &str) -> bool {
+    match pool.execute(TAB, sql).unwrap().outcome {
+        ExecuteOutcome::Query { in_transaction, .. } => in_transaction,
+        ExecuteOutcome::Statement { in_transaction, .. } => in_transaction,
+    }
+}
+
+/// 統合テストで書き換える 1 行を、テストの前後で元の値へ戻せるよう読み出す。
+fn セグメントを読む(pool: &ConnectionPool) -> String {
+    一つのセル(
+        pool,
+        "select segment from koduchi.user_traits where user_id = 1",
+    )
+    .text
 }
 
 /// 問い合わせを実行し、列と最初のかたまりを取り出す。
@@ -665,4 +691,174 @@ fn テスト接続は誤ったパスワードを接続のエラーとして返�
 
     // Assert
     assert_eq!(error.kind, DbErrorKind::Connect);
+}
+
+#[test]
+#[serial]
+fn 問い合わせだけでは未コミットにならない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(&pool, "select 1 from dual");
+
+    // Assert
+    assert!(!未コミット);
+}
+
+#[test]
+#[serial]
+fn 手動コミットの接続では更新の直後が未コミットになる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(
+        &pool,
+        "update koduchi.user_traits set sessions_28d = sessions_28d where user_id = 1",
+    );
+
+    // Assert
+    assert!(未コミット);
+    pool.rollback().unwrap();
+}
+
+#[test]
+#[serial]
+fn 無名plsqlブロックの書き込みも未コミットとして拾える() {
+    // Arrange: 先頭キーワードの判定ではすり抜ける形（ADR 0012）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(
+        &pool,
+        "begin update koduchi.user_traits set sessions_28d = sessions_28d where user_id = 1; end;",
+    );
+
+    // Assert
+    assert!(未コミット);
+    pool.rollback().unwrap();
+}
+
+#[test]
+#[serial]
+fn ロールバックすると未コミットが解消し変更も消える() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let 元の値 = セグメントを読む(&pool);
+    pool.execute(
+        TAB,
+        "update koduchi.user_traits set segment = 'ロールバックされる' where user_id = 1",
+    )
+    .unwrap();
+
+    // Act
+    pool.rollback().unwrap();
+
+    // Assert
+    assert_eq!(セグメントを読む(&pool), 元の値);
+    assert!(!未コミットか(&pool, "select 1 from dual"));
+}
+
+#[test]
+#[serial]
+fn コミットすると変更が残り未コミットも解消する() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let 元の値 = セグメントを読む(&pool);
+    pool.execute(
+        TAB,
+        "update koduchi.user_traits set segment = 'コミットされる' where user_id = 1",
+    )
+    .unwrap();
+
+    // Act
+    pool.commit().unwrap();
+
+    // Assert
+    assert_eq!(セグメントを読む(&pool), "コミットされる");
+    assert!(!未コミットか(&pool, "select 1 from dual"));
+
+    // 後片付け: 元の値へ戻す
+    pool.execute(
+        TAB,
+        &format!("update koduchi.user_traits set segment = '{元の値}' where user_id = 1"),
+    )
+    .unwrap();
+    pool.commit().unwrap();
+}
+
+#[test]
+#[serial]
+fn 自動コミットの接続では更新の直後も未コミットにならない() {
+    // Arrange
+    let Some(pool) = 自動コミットの接続を開く() else {
+        return;
+    };
+    let 元の値 = セグメントを読む(&pool);
+
+    // Act
+    let 未コミット = 未コミットか(
+        &pool,
+        "update koduchi.user_traits set segment = '自動コミット' where user_id = 1",
+    );
+
+    // Assert
+    assert!(!未コミット);
+    assert_eq!(セグメントを読む(&pool), "自動コミット");
+
+    // 後片付け
+    pool.execute(
+        TAB,
+        &format!("update koduchi.user_traits set segment = '{元の値}' where user_id = 1"),
+    )
+    .unwrap();
+}
+
+#[test]
+#[serial]
+fn 読み取り専用の接続は未コミットにならない() {
+    // Arrange: `SET TRANSACTION READ ONLY` 自体はトランザクションを開くが、
+    // コミットすべき変更は生じない（ADR 0012）
+    let Some(pool) = プールを開く(true, 1, DEFAULT_CHUNK_SIZE) else {
+        return;
+    };
+
+    // Act
+    let 未コミット = 未コミットか(&pool, "select count(*) from koduchi.user_traits");
+
+    // Assert
+    assert!(!未コミット);
+}
+
+#[test]
+#[serial]
+fn 読み取り専用の接続はコミットしても読み取り専用のままである() {
+    // Arrange
+    let Some(pool) = プールを開く(true, 1, DEFAULT_CHUNK_SIZE) else {
+        return;
+    };
+
+    // Act
+    pool.commit().unwrap();
+
+    // Assert
+    let error = pool
+        .execute(TAB, "update koduchi.user_traits set segment = 'power'")
+        .expect_err("読み取り専用なので書き込めないはず");
+    assert!(
+        error.message.contains("ORA-01456"),
+        "想定と違うエラー: {}",
+        error.message
+    );
 }

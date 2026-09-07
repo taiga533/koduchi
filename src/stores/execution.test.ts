@@ -362,6 +362,7 @@ describe('selectResultTabs', () => {
         affectedRows: 0,
         elapsedMs: 3,
         notices: ['小槌からの通知'],
+        inTransaction: false,
         discardedTab: null,
       }),
     })
@@ -550,5 +551,109 @@ describe('markExhausted', () => {
 
     // Assert
     expect(useExecutionStore.getState().byTab).toBe(before)
+  })
+})
+
+describe('トランザクションの制御（ADR 0012）', () => {
+  it('未コミットは実行結果の申告で置き換わる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => queryResponse(列, 行を作る(1), { inTransaction: true }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'insert into t values (1)', '開発')
+
+    // Assert
+    expect(useExecutionStore.getState().inTransaction).toBe(true)
+  })
+
+  it('未コミットでない実行の後は未コミットが立たない', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => queryResponse(列, 行を作る(1), { inTransaction: false }),
+    })
+    setDbApi(api)
+    useExecutionStore.setState({ inTransaction: true })
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発')
+
+    // Assert
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+  })
+
+  it('コミットすると未コミットが解消しログに 1 行残る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    useExecutionStore.setState({ inTransaction: true })
+
+    // Act
+    await useExecutionStore.getState().commit('c1')
+
+    // Assert
+    expect(calls.commit).toEqual(['c1'])
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+    const log = useExecutionStore.getState().log
+    expect(log).toHaveLength(1)
+    expect(log[0].sql).toBe('コミット')
+    expect(log[0].notices).toEqual(['コミットしました'])
+    expect(log[0].error).toBeNull()
+  })
+
+  it('ロールバックすると未コミットが解消しログに 1 行残る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    useExecutionStore.setState({ inTransaction: true })
+
+    // Act
+    await useExecutionStore.getState().rollback('c1')
+
+    // Assert
+    expect(calls.rollback).toEqual(['c1'])
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+    expect(useExecutionStore.getState().log[0].sql).toBe('ロールバック')
+  })
+
+  it('コミットに失敗したときは未コミットのままエラーをログへ残す', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      commitError: { kind: 'execute', message: 'ORA-02091: transaction rolled back' },
+    })
+    setDbApi(api)
+    useExecutionStore.setState({ inTransaction: true })
+
+    // Act
+    await useExecutionStore.getState().commit('c1')
+
+    // Assert
+    expect(useExecutionStore.getState().inTransaction).toBe(true)
+    expect(useExecutionStore.getState().log[0].error).toBe('ORA-02091: transaction rolled back')
+  })
+
+  it('コミットとロールバックのログはメッセージタブを呼び出す', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().commit('c1')
+
+    // Assert
+    expect(selectResultTabs(useExecutionStore.getState(), TAB)).toEqual(['result', 'messages'])
+  })
+
+  it('結果を捨てると未コミットの記憶も消える', async () => {
+    // Arrange
+    useExecutionStore.setState({ inTransaction: true })
+
+    // Act
+    useExecutionStore.getState().clear()
+
+    // Assert
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
   })
 })

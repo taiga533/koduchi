@@ -12,6 +12,7 @@ const 開発: SavedConnection = {
   name: '開発',
   username: 'koduchi',
   readOnly: false,
+  autoCommit: false,
   schemaFilter: { excludeSystem: true, hideEmpty: true },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }
@@ -21,6 +22,7 @@ const 本番: SavedConnection = {
   name: '本番',
   username: 'app',
   readOnly: true,
+  autoCommit: false,
   schemaFilter: { excludeSystem: false, hideEmpty: true },
   target: { method: 'tns', directory: '/etc/oracle', alias: 'PROD' },
 }
@@ -95,6 +97,7 @@ describe('ConnectionPicker', () => {
       password: 'koduchi_dev',
       target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
       readOnly: false,
+      autoCommit: false,
     })
     expect(onConnected).toHaveBeenCalledWith(expect.any(String), 開発.schemaFilter)
   })

@@ -143,6 +143,33 @@ pub async fn cancel(state: State<'_, AppState>, id: ConnectionId, tab_id: String
     run_blocking(move || pool.cancel(&tab_id)).await
 }
 
+/// トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+///
+/// 自動コミットが偽の接続では、`INSERT` などの変更は明示的にコミットするまで
+/// 確定しない。切断時に暗黙のロールバックで消えるのを防ぐための経路である。
+///
+/// # 引数
+///
+/// * `id` - 接続の識別子
+#[tauri::command]
+pub async fn commit(state: State<'_, AppState>, id: ConnectionId) -> DbResult<()> {
+    let pool = state.get(&id).ok_or_else(DbError::closed)?;
+
+    run_blocking(move || pool.commit()).await
+}
+
+/// トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。
+///
+/// # 引数
+///
+/// * `id` - 接続の識別子
+#[tauri::command]
+pub async fn rollback(state: State<'_, AppState>, id: ConnectionId) -> DbResult<()> {
+    let pool = state.get(&id).ok_or_else(DbError::closed)?;
+
+    run_blocking(move || pool.rollback()).await
+}
+
 /// 接続を閉じる。
 ///
 /// 登録から外すだけでプールの全接続とアクタースレッドが終了する。既に

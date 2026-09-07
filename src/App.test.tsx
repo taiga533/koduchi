@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { resetDbApi, setDbApi } from './api/db'
@@ -25,6 +25,31 @@ const 二行の結果 = queryResponse(
     ],
   ],
 )
+
+/**
+ * 接続中の状態にする。
+ *
+ * @param readOnly 読み取り専用で接続したことにするか
+ * @param autoCommit 自動コミットで接続したことにするか（ADR 0012）
+ */
+function 繋いだことにする(readOnly = false, autoCommit = false) {
+  useConnectionStore.setState({
+    status: 'connected',
+    connection: {
+      id: 'c1',
+      savedId: null,
+      name: 'dev',
+      params: {
+        username: 'koduchi',
+        password: '',
+        target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
+        readOnly,
+        autoCommit,
+      },
+    },
+    error: null,
+  })
+}
 
 /** 選択中のタブの ID を返す。 */
 function 選択中のタブ(): string {
@@ -205,6 +230,7 @@ describe('App', () => {
           password: '',
           target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
           readOnly: false,
+          autoCommit: false,
         },
       },
       error: null,
@@ -240,6 +266,7 @@ describe('App', () => {
           password: '',
           target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
           readOnly: false,
+          autoCommit: false,
         },
       },
       error: null,
@@ -255,5 +282,69 @@ describe('App', () => {
     // Assert
     expect(await screen.findByRole('button', { name: /メッセージ/ })).toBeInTheDocument()
     expect(screen.getByText('ORA-00942: table or view does not exist')).toBeInTheDocument()
+  })
+
+  it('⌥⌘C でコミットが呼ばれる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    繋いだことにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'c', metaKey: true, altKey: true })
+
+    // Assert
+    await waitFor(() => expect(calls.commit).toEqual(['c1']))
+  })
+
+  it('⌥⌘R でロールバックが呼ばれる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    繋いだことにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'r', metaKey: true, altKey: true })
+
+    // Assert
+    await waitFor(() => expect(calls.rollback).toEqual(['c1']))
+  })
+
+  it('ステータスバーのコミットを押すとコミットが呼ばれる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    繋いだことにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'コミット' }))
+
+    // Assert
+    await waitFor(() => expect(calls.commit).toEqual(['c1']))
+  })
+
+  it('未コミットの実行の後はステータスバーに未コミットが出る', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => ({ ...二行の結果, inTransaction: true }),
+    })
+    setDbApi(api)
+    繋いだことにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .execute('c1', 選択中のタブ(), 'insert into t values (1)', '開発')
+
+    // Assert
+    expect(await screen.findByText('未コミット')).toBeInTheDocument()
   })
 })

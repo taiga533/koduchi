@@ -38,6 +38,11 @@ pub struct OracleDriver {
     /// `EXPLAIN PLAN` は `PLAN_TABLE` への書き込みを伴うため、この最中は
     /// 実行できない。計画を取る前後で解除と再開が要る。
     read_only: bool,
+    /// 実行のたびに自動でコミットするか（ADR 0012）。
+    ///
+    /// 真のときは未コミットの状態が生じないため、データベースへ問い合わせずに
+    /// 「未コミットではない」と答えられる。
+    auto_commit: bool,
 }
 
 /// 実行中の文を中止する経路。
@@ -67,21 +72,30 @@ impl OracleDriver {
     ///    クライアント側の SQL 判定では `WITH ... INSERT` などをすり抜けるため、
     ///    データベース側に保証させる（ADR 0004）。
     ///
+    /// 自動コミットが指定されていれば、その設定は接続直後に入れる（ADR 0012）。
+    /// 読み取り専用とは併用しない。読み取り専用トランザクションの中では
+    /// そもそもコミットする変更が生じないためである。
+    ///
     /// # 引数
     ///
-    /// * `params` - 接続先とユーザー、読み取り専用の指定
+    /// * `params` - 接続先とユーザー、読み取り専用と自動コミットの指定
     pub fn connect(params: &ConnectionParams) -> DbResult<Self> {
-        let connection = Connection::connect(
+        let mut connection = Connection::connect(
             &params.username,
             &params.password,
             params.target.to_connect_string(),
         )
         .map_err(|error| DbError::connect(error.to_string()))?;
 
+        let auto_commit = params.auto_commit && !params.read_only;
+        // `set_autocommit` は `&mut Connection` を要するため、`Arc` に包む前に呼ぶ。
+        connection.set_autocommit(auto_commit);
+
         let driver = OracleDriver {
             connection: Arc::new(connection),
             cursor: None,
             read_only: params.read_only,
+            auto_commit,
         };
 
         driver.enable_dbms_output()?;
@@ -132,14 +146,43 @@ impl OracleDriver {
             })
     }
 
-    /// トランザクションを終わらせる。
+    /// トランザクションを戻して終わらせる。
     ///
     /// `SET TRANSACTION` はトランザクションの先頭でしか使えないため、
     /// 読み取り専用へ戻す前にこれを呼ぶ必要がある。
-    fn rollback(&self) -> DbResult<()> {
+    fn rollback_transaction(&self) -> DbResult<()> {
         self.connection.rollback().map_err(|error| {
             DbError::execute(format!("トランザクションを戻せませんでした: {error}"))
         })
+    }
+
+    /// 未コミットのトランザクションが残っているかをデータベースに聞く（ADR 0012）。
+    ///
+    /// クライアント側で「DML を実行したから未コミット」と数えると、
+    /// `WITH ... INSERT` や無名 PL/SQL ブロックをすり抜ける。読み取り専用を
+    /// データベース側のトランザクションで保証しているのと同じ理由である。
+    ///
+    /// `DBMS_TRANSACTION.LOCAL_TRANSACTION_ID` は、トランザクションが始まって
+    /// いれば識別子を、無ければ `NULL` を返す。この問い合わせ自体は
+    /// トランザクションを開始しない。
+    ///
+    /// 読み取り専用と自動コミットの接続では、コミットすべき変更がそもそも
+    /// 生じないため、往復せずに偽を返す。読み取り専用は
+    /// `SET TRANSACTION READ ONLY` 自体がトランザクションを開くため、
+    /// 聞けば必ず真になってしまう。
+    ///
+    /// 取得に失敗しても実行そのものは成功しているため、エラーにはせず偽を返す。
+    fn in_transaction(&self) -> bool {
+        if self.read_only || self.auto_commit {
+            return false;
+        }
+
+        const LOCAL_TRANSACTION_ID: &str = "select dbms_transaction.local_transaction_id from dual";
+
+        self.connection
+            .query_row_as::<Option<String>>(LOCAL_TRANSACTION_ID, &[])
+            .map(|id| id.is_some())
+            .unwrap_or(false)
     }
 
     /// 直前の実行が `DBMS_OUTPUT` へ書いた行をすべて取り出す。
@@ -269,6 +312,7 @@ impl Driver for OracleDriver {
             let chunk = take_chunk(&mut cursor, chunk_size)?;
             let elapsed_ms = started.elapsed().as_millis() as u64;
             let notices = self.fetch_dbms_output();
+            let in_transaction = self.in_transaction();
 
             // 1 回で尽きたならカーソルを持ち続ける意味がない。
             if !chunk.exhausted {
@@ -280,6 +324,7 @@ impl Driver for OracleDriver {
                 chunk,
                 elapsed_ms,
                 notices,
+                in_transaction,
             });
         }
 
@@ -294,6 +339,7 @@ impl Driver for OracleDriver {
             affected_rows,
             elapsed_ms,
             notices: self.fetch_dbms_output(),
+            in_transaction: self.in_transaction(),
         })
     }
 
@@ -328,6 +374,30 @@ impl Driver for OracleDriver {
         schema::load_columns(&self.connection, owner)
     }
 
+    fn commit(&mut self) -> DbResult<()> {
+        self.connection
+            .commit()
+            .map_err(|error| DbError::execute(format!("コミットできませんでした: {error}")))?;
+
+        // 読み取り専用の保証はトランザクションが続く間だけ効く（ADR 0004）。
+        // コミットで切れてしまうため、その場で張り直す。
+        if self.read_only {
+            self.begin_read_only_transaction()?;
+        }
+
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> DbResult<()> {
+        self.rollback_transaction()?;
+
+        if self.read_only {
+            self.begin_read_only_transaction()?;
+        }
+
+        Ok(())
+    }
+
     fn explain_plan(&mut self, sql: &str) -> DbResult<String> {
         if !self.read_only {
             return plan::explain(&self.connection, sql);
@@ -336,9 +406,9 @@ impl Driver for OracleDriver {
         // 読み取り専用トランザクションの最中は `PLAN_TABLE` へ書けない。
         // いったん解除し、計画を読み終えてから読み取り専用へ戻す。
         // 解除している間に走る SQL は、この関数が発行するものだけである。
-        self.rollback()?;
+        self.rollback_transaction()?;
         let result = plan::explain(&self.connection, sql);
-        self.rollback()?;
+        self.rollback_transaction()?;
         self.begin_read_only_transaction()?;
         result
     }

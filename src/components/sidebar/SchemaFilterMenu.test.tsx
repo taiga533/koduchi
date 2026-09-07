@@ -12,6 +12,7 @@ const 保存済み: SavedConnection = {
   name: '開発',
   username: 'koduchi',
   readOnly: false,
+  autoCommit: false,
   schemaFilter: { excludeSystem: true, hideEmpty: true },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }

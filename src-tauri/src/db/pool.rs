@@ -315,6 +315,45 @@ impl ConnectionPool {
         self.background_handle()?.actual_plan(sql)
     }
 
+    /// トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+    ///
+    /// プールの全接続へ送る。DML はカーソルを残さないため実行後に割り当てが
+    /// 外れ、どの接続で走ったかを割り当ての表から辿れない。未コミットの変更が
+    /// 無い接続でコミットしても害は無いため、取りこぼさないほうを採る。
+    pub fn commit(&self) -> DbResult<()> {
+        self.全接続へ(|handle| handle.commit())
+    }
+
+    /// トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。
+    ///
+    /// コミットと同じ理由でプールの全接続へ送る。
+    pub fn rollback(&self) -> DbResult<()> {
+        self.全接続へ(|handle| handle.rollback())
+    }
+
+    /// プールの全接続に同じ操作を行う。
+    ///
+    /// 途中で失敗しても残りの接続へは送り切る。1 本目で止めると、2 本目以降に
+    /// 未コミットの変更が残ったままになるためである。最初のエラーを返す。
+    ///
+    /// # 引数
+    ///
+    /// * `操作` - 各接続に対して行うこと
+    fn 全接続へ(&self, 操作: impl Fn(&ConnectionHandle) -> DbResult<()>) -> DbResult<()> {
+        let mut 最初のエラー = None;
+
+        for handle in &self.handles {
+            if let Err(error) = 操作(handle) {
+                最初のエラー.get_or_insert(error);
+            }
+        }
+
+        match 最初のエラー {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// 実行中の文を中止する（`⌘.`）。
     ///
     /// # 引数
@@ -346,4 +385,137 @@ where
         handles.push(Arc::new(ConnectionHandle::open(connect)?));
     }
     Ok(ConnectionPool::from_handles(handles, chunk_size))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::driver::{Canceller, Column};
+    use crate::db::value::CellKind;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// コミットとロールバックの回数だけを数えるドライバ。
+    ///
+    /// プールが全接続へ命令を配っているかを、実データベース抜きで確かめる。
+    struct 数えるドライバ {
+        コミットした回数: Arc<AtomicUsize>,
+        ロールバックした回数: Arc<AtomicUsize>,
+    }
+
+    struct 何もしない中止経路;
+
+    impl Canceller for 何もしない中止経路 {
+        fn cancel(&self) -> DbResult<()> {
+            Ok(())
+        }
+    }
+
+    impl Driver for 数えるドライバ {
+        fn canceller(&self) -> Box<dyn Canceller> {
+            Box::new(何もしない中止経路)
+        }
+
+        fn execute(&mut self, _sql: &str, _chunk_size: usize) -> DbResult<ExecuteOutcome> {
+            Ok(ExecuteOutcome::Query {
+                columns: vec![Column {
+                    name: String::from("N"),
+                    type_name: String::from("NUMBER"),
+                    kind: CellKind::Number,
+                }],
+                chunk: Chunk {
+                    rows: Vec::new(),
+                    exhausted: true,
+                },
+                elapsed_ms: 0,
+                notices: Vec::new(),
+                in_transaction: false,
+            })
+        }
+
+        fn fetch_more(&mut self, _chunk_size: usize) -> DbResult<Chunk> {
+            Ok(Chunk {
+                rows: Vec::new(),
+                exhausted: true,
+            })
+        }
+
+        fn close_cursor(&mut self) -> DbResult<()> {
+            Ok(())
+        }
+
+        fn schema_overview(&mut self, _filter: &SchemaFilter) -> DbResult<Vec<SchemaNode>> {
+            Ok(Vec::new())
+        }
+
+        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+            Ok(Vec::new())
+        }
+
+        fn commit(&mut self) -> DbResult<()> {
+            self.コミットした回数.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn rollback(&mut self) -> DbResult<()> {
+            self.ロールバックした回数.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn explain_plan(&mut self, _sql: &str) -> DbResult<String> {
+            Ok(String::new())
+        }
+
+        fn actual_plan(&mut self, _sql: &str) -> DbResult<String> {
+            Ok(String::new())
+        }
+    }
+
+    /// 数を数えるドライバを `本数` ぶん載せたプールを作る。
+    fn 数えるプールを作る(
+        本数: usize,
+    ) -> (ConnectionPool, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let コミットした回数 = Arc::new(AtomicUsize::new(0));
+        let ロールバックした回数 = Arc::new(AtomicUsize::new(0));
+
+        let drivers: Vec<_> = (0..本数)
+            .map(|_| {
+                let コミット = Arc::clone(&コミットした回数);
+                let ロールバック = Arc::clone(&ロールバックした回数);
+                move || {
+                    Ok(数えるドライバ {
+                        コミットした回数: コミット,
+                        ロールバックした回数: ロールバック,
+                    })
+                }
+            })
+            .collect();
+
+        let pool = pool_from_drivers(drivers, DEFAULT_CHUNK_SIZE).unwrap();
+        (pool, コミットした回数, ロールバックした回数)
+    }
+
+    #[test]
+    fn コミットはプールの全接続へ届く() {
+        // Arrange: DML はカーソルを残さず割り当ての表から消えるため、
+        // どの接続で走ったかを辿れない（ADR 0012）
+        let (pool, コミットした回数, _) = 数えるプールを作る(4);
+
+        // Act
+        pool.commit().unwrap();
+
+        // Assert
+        assert_eq!(コミットした回数.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn ロールバックはプールの全接続へ届く() {
+        // Arrange
+        let (pool, _, ロールバックした回数) = 数えるプールを作る(4);
+
+        // Act
+        pool.rollback().unwrap();
+
+        // Assert
+        assert_eq!(ロールバックした回数.load(Ordering::SeqCst), 4);
+    }
 }

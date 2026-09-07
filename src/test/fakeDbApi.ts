@@ -35,6 +35,8 @@ export interface FakeCalls {
   fetchMore: { id: string; tabId: string }[]
   releaseTab: { id: string; tabId: string }[]
   cancel: { id: string; tabId: string }[]
+  commit: string[]
+  rollback: string[]
   disconnect: string[]
   recordHistory: NewHistoryEntry[]
   listHistory: HistoryQuery[]
@@ -88,6 +90,10 @@ export interface FakeDbApiOptions {
   tnsnames?: TnsnamesFile
   /** アプリ設定。 */
   appSettings?: AppSettings
+  /** コミットで投げるエラー（ADR 0012）。 */
+  commitError?: unknown
+  /** ロールバックで投げるエラー（ADR 0012）。 */
+  rollbackError?: unknown
 }
 
 /** 何も指定しないときに返す、行を持たない結果。 */
@@ -96,6 +102,7 @@ export const emptyResponse: ExecuteResponse = {
   affectedRows: 0,
   elapsedMs: 0,
   notices: [],
+  inTransaction: false,
   discardedTab: null,
 }
 
@@ -115,7 +122,7 @@ const defaultAppSettings: AppSettings = {
 export function queryResponse(
   columns: Column[],
   rows: Cell[][],
-  options: { exhausted?: boolean; discardedTab?: string | null } = {},
+  options: { exhausted?: boolean; discardedTab?: string | null; inTransaction?: boolean } = {},
 ): ExecuteResponse {
   return {
     kind: 'query',
@@ -123,6 +130,7 @@ export function queryResponse(
     chunk: { rows, exhausted: options.exhausted ?? true },
     elapsedMs: 84,
     notices: [],
+    inTransaction: options.inTransaction ?? false,
     discardedTab: options.discardedTab ?? null,
   }
 }
@@ -145,6 +153,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     fetchMore: [],
     releaseTab: [],
     cancel: [],
+    commit: [],
+    rollback: [],
     disconnect: [],
     recordHistory: [],
     listHistory: [],
@@ -206,6 +216,20 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
 
     cancel: async (id, tabId) => {
       calls.cancel.push({ id, tabId })
+    },
+
+    commit: async (id) => {
+      calls.commit.push(id)
+      if (options.commitError !== undefined) {
+        throw options.commitError
+      }
+    },
+
+    rollback: async (id) => {
+      calls.rollback.push(id)
+      if (options.rollbackError !== undefined) {
+        throw options.rollbackError
+      }
     },
 
     disconnect: async (id) => {

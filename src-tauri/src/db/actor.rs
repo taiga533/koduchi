@@ -49,6 +49,10 @@ enum Command {
         sql: String,
         respond: Sender<DbResult<String>>,
     },
+    /// トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+    Commit { respond: Sender<DbResult<()>> },
+    /// トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。
+    Rollback { respond: Sender<DbResult<()>> },
     /// スレッドを終了する。
     Close,
 }
@@ -231,6 +235,32 @@ impl ConnectionHandle {
         response.recv().map_err(|_| DbError::closed())?
     }
 
+    /// トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+    ///
+    /// 未コミットの変更が無いときに呼んでも害は無い。
+    pub fn commit(&self) -> DbResult<()> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::Commit { respond })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
+    /// トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。
+    ///
+    /// 未コミットの変更が無いときに呼んでも害は無い。
+    pub fn rollback(&self) -> DbResult<()> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::Rollback { respond })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
     /// 実行中の文を中止する。
     ///
     /// アクタースレッドが実行で塞がっている最中でも効く。
@@ -308,6 +338,12 @@ fn run_actor<D, F>(
             Command::ActualPlan { sql, respond } => {
                 let _ = respond.send(driver.actual_plan(&sql));
             }
+            Command::Commit { respond } => {
+                let _ = respond.send(driver.commit());
+            }
+            Command::Rollback { respond } => {
+                let _ = respond.send(driver.rollback());
+            }
             Command::Close => break,
         }
     }
@@ -338,6 +374,10 @@ mod tests {
         読んだ位置: usize,
         /// カーソルが開いているか。
         カーソルを開いている: bool,
+        /// 未コミットのトランザクションがあるか。実行すると真になる。
+        未コミット: Arc<AtomicBool>,
+        /// コミットされた回数。
+        コミットした回数: Arc<AtomicUsize>,
     }
 
     struct テスト用の中止経路 {
@@ -386,6 +426,7 @@ mod tests {
 
             self.読んだ位置 = 0;
             self.カーソルを開いている = true;
+            self.未コミット.store(true, Ordering::SeqCst);
             let chunk = self.かたまりを取る(chunk_size);
 
             Ok(ExecuteOutcome::Query {
@@ -397,6 +438,7 @@ mod tests {
                 chunk,
                 elapsed_ms: 1,
                 notices: Vec::new(),
+                in_transaction: self.未コミット.load(Ordering::SeqCst),
             })
         }
 
@@ -441,6 +483,17 @@ mod tests {
             }])
         }
 
+        fn commit(&mut self) -> DbResult<()> {
+            self.コミットした回数.fetch_add(1, Ordering::SeqCst);
+            self.未コミット.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn rollback(&mut self) -> DbResult<()> {
+            self.未コミット.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+
         fn explain_plan(&mut self, sql: &str) -> DbResult<String> {
             Ok(format!("見積り: {sql}"))
         }
@@ -467,6 +520,8 @@ mod tests {
             用意した行: 行を作る(1),
             読んだ位置: 0,
             カーソルを開いている: false,
+            未コミット: Arc::new(AtomicBool::new(false)),
+            コミットした回数: Arc::new(AtomicUsize::new(0)),
         };
         (driver, 実行した回数, 中止された)
     }
@@ -634,6 +689,8 @@ mod tests {
             用意した行: 行を作る(1),
             読んだ位置: 0,
             カーソルを開いている: false,
+            未コミット: Arc::new(AtomicBool::new(false)),
+            コミットした回数: Arc::new(AtomicUsize::new(0)),
         };
         let handle = Arc::new(ConnectionHandle::open(move || Ok(driver)).unwrap());
 
@@ -648,6 +705,52 @@ mod tests {
 
         // Assert
         assert!(中止された.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn コミットはアクタースレッドへ届く() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let コミットした回数 = Arc::clone(&driver.コミットした回数);
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+
+        // Act
+        handle.commit().unwrap();
+
+        // Assert
+        assert_eq!(コミットした回数.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn 実行のあとにロールバックすると未コミットが解消する() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let 未コミット = Arc::clone(&driver.未コミット);
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+        handle.execute("select 1 from dual", 1000).unwrap();
+        assert!(未コミット.load(Ordering::SeqCst));
+
+        // Act
+        handle.rollback().unwrap();
+
+        // Assert
+        assert!(!未コミット.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn 実行結果は未コミットかどうかを伴って返る() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+
+        // Act
+        let outcome = handle.execute("select 1 from dual", 1000).unwrap();
+
+        // Assert
+        match outcome {
+            ExecuteOutcome::Query { in_transaction, .. } => assert!(in_transaction),
+            _ => panic!("問い合わせの結果になるはず"),
+        }
     }
 
     #[test]

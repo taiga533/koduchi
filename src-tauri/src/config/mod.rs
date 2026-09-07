@@ -41,6 +41,11 @@ pub struct SavedConnection {
     /// 読み取り専用で接続するか。データベース側のトランザクションで保証する。
     #[serde(default)]
     pub read_only: bool,
+    /// 実行のたびに自動でコミットするか（ADR 0012）。
+    ///
+    /// 既定は偽（手動コミット）。読み取り専用のときは意味を持たない。
+    #[serde(default)]
+    pub auto_commit: bool,
     #[serde(default)]
     pub schema_filter: SchemaFilter,
     pub target: SavedTarget,
@@ -150,6 +155,7 @@ mod tests {
             name: String::from("開発"),
             username: String::from("koduchi"),
             read_only: false,
+            auto_commit: false,
             schema_filter: SchemaFilter::default(),
             target: SavedTarget::EzConnect {
                 host: String::from("localhost"),
@@ -157,6 +163,44 @@ mod tests {
                 service_name: String::from("FREEPDB1"),
             },
         }
+    }
+
+    #[test]
+    fn 自動コミットの項目が無い設定ファイルは手動コミットとして読める() {
+        // Arrange: 0012 より前に書かれた connections.toml を模す
+        let toml_text = r#"
+[[connection]]
+id = "id-1"
+name = "開発"
+username = "koduchi"
+
+[connection.target]
+method = "ezConnect"
+host = "localhost"
+port = 1521
+serviceName = "FREEPDB1"
+"#;
+
+        // Act
+        let file = ConnectionsFile::from_toml(toml_text);
+
+        // Assert
+        assert!(!file.connections[0].auto_commit);
+    }
+
+    #[test]
+    fn 自動コミットの指定は書き出して読み戻しても保たれる() {
+        // Arrange
+        let mut connection = 接続を作る("id-auto");
+        connection.auto_commit = true;
+        let mut file = ConnectionsFile::default();
+        file.upsert(connection);
+
+        // Act
+        let restored = ConnectionsFile::from_toml(&file.to_toml());
+
+        // Assert
+        assert!(restored.connections[0].auto_commit);
     }
 
     #[test]
