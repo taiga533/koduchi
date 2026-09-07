@@ -75,6 +75,7 @@ export function ResultPane({ tabId, runningLabel, onCancel, onRequestMore }: Res
       </div>
 
       <PaneBody
+        tabId={tabId}
         execution={execution}
         plan={plan}
         currentTab={currentTab}
@@ -88,6 +89,8 @@ export function ResultPane({ tabId, runningLabel, onCancel, onRequestMore }: Res
 }
 
 interface PaneBodyProps {
+  /** 表示中のエディタタブ。結果テーブルの作り直しに使う。 */
+  tabId: string | null
   execution: TabExecution
   plan: TabPlan | null
   currentTab: string
@@ -99,6 +102,7 @@ interface PaneBodyProps {
 
 /** ペインの本文。状態に応じて実行中・エラー・結果・空状態を出し分ける。 */
 function PaneBody({
+  tabId,
   execution,
   plan,
   currentTab,
@@ -146,7 +150,8 @@ function PaneBody({
     )
   }
 
-  return <ResultTable execution={execution} onRequestMore={onRequestMore} />
+  // タブを切り替えたら結果テーブルを作り直し、セル選択を捨てる。
+  return <ResultTable key={tabId ?? 'none'} execution={execution} onRequestMore={onRequestMore} />
 }
 
 /**
