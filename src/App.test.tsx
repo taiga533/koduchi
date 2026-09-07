@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, queryResponse } from './test/fakeDbApi'
+import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingChanges'
 import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
 import { useConnectionStore } from './stores/connection'
 import { emptyExecution, useExecutionStore } from './stores/execution'
@@ -55,17 +56,48 @@ const 接続済み = {
         serviceName: 'FREEPDB1',
       },
       readOnly: false,
+      autoCommit: false,
     },
   },
   error: null,
 }
 
-/** 接続済みの状態にする。接続を経由せずに 3 パネル構成から始めるために使う。 */
-function 接続済みにする(): void {
-  useConnectionStore.setState(接続済み)
+/**
+ * 接続済みの状態にする。接続を経由せずに 3 パネル構成から始めるために使う。
+ *
+ * @param readOnly 読み取り専用で接続したことにするか
+ * @param autoCommit 自動コミットで接続したことにするか（ADR 0012）
+ */
+function 接続済みにする(readOnly = false, autoCommit = false): void {
+  useConnectionStore.setState({
+    ...接続済み,
+    connection: {
+      ...接続済み.connection,
+      params: { ...接続済み.connection.params, readOnly, autoCommit },
+    },
+  })
 }
 
+/**
+ * 未コミットの確認に返す答え。先頭から順に使う（ADR 0012）。
+ *
+ * ネイティブのダイアログは jsdom では開けないため、確認の境界を差し替える。
+ */
+let 確認の答え: boolean[] = []
+
+/** 差し替えた確認へ実際に渡された問いかけ。 */
+let 確認した問い: string[] = []
+
 beforeEach(() => {
+  確認の答え = []
+  確認した問い = []
+  setPendingDialogs((wording) => ({
+    confirmProceed: async () => {
+      確認した問い.push(wording.question)
+      return 確認の答え.shift() ?? false
+    },
+    confirmCommit: async () => 確認の答え.shift() ?? false,
+  }))
   useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
   useExecutionStore.getState().clear()
   useTabStore.setState({ bindValues: {} })
@@ -78,6 +110,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetDbApi()
+  resetPendingDialogs()
 })
 
 describe('App', () => {
@@ -241,6 +274,7 @@ describe('App', () => {
           password: '',
           target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
           readOnly: false,
+          autoCommit: false,
         },
       },
       error: null,
@@ -414,6 +448,7 @@ describe('App', () => {
           password: '',
           target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
           readOnly: false,
+          autoCommit: false,
         },
       },
       error: null,
@@ -643,5 +678,164 @@ describe('App', () => {
       const 最後 = calls.saveSession.at(-1)
       expect(最後?.state.sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT + 8)
     })
+  })
+
+  it('⌥⌘C でコミットが呼ばれる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'c', metaKey: true, altKey: true })
+
+    // Assert
+    await waitFor(() => expect(calls.commit).toEqual(['c1']))
+  })
+
+  it('⌥⌘R でロールバックが呼ばれる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'r', metaKey: true, altKey: true })
+
+    // Assert
+    await waitFor(() => expect(calls.rollback).toEqual(['c1']))
+  })
+
+  it('ステータスバーのコミットを押すとコミットが呼ばれる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'コミット' }))
+
+    // Assert
+    await waitFor(() => expect(calls.commit).toEqual(['c1']))
+  })
+
+  it('未コミットの実行の後はステータスバーに未コミットが出る', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => ({ ...二行の結果, inTransaction: true }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .execute('c1', 選択中のタブ(), 'insert into t values (1)', '開発', [])
+
+    // Assert
+    expect(await screen.findByText('未コミット')).toBeInTheDocument()
+  })
+
+  it('未コミットのまま切断しようとすると確認が出て、やめると切断しない', async () => {
+    // Arrange: 確認は「閉じるか / やめるか」を先に尋ねる（ADR 0012）
+    const { api, calls } = createFakeDbApi({
+      onExecute: () => ({ ...二行の結果, inTransaction: true }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    確認の答え = [false]
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    await useExecutionStore
+      .getState()
+      .execute('c1', 選択中のタブ(), 'insert into t values (1)', '開発', [])
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    await waitFor(() => expect(確認した問い).toHaveLength(1))
+    expect(確認した問い[0]).toContain('未コミットの変更があります')
+    expect(calls.disconnect).toEqual([])
+    expect(screen.queryByText('接続を選ぶ')).not.toBeInTheDocument()
+  })
+
+  it('未コミットのまま切断してコミットを選ぶと、コミットしてから切断する', async () => {
+    // Arrange: 1 段目で「切断」、2 段目で「コミット」を選ぶ
+    const { api, calls } = createFakeDbApi({
+      onExecute: () => ({ ...二行の結果, inTransaction: true }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    確認の答え = [true, true]
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    await useExecutionStore
+      .getState()
+      .execute('c1', 選択中のタブ(), 'insert into t values (1)', '開発', [])
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
+    expect(calls.commit).toEqual(['c1'])
+    expect(calls.disconnect).toEqual(['c1'])
+  })
+
+  it('未コミットのまま切断して破棄を選ぶと、ロールバックしてから切断する', async () => {
+    // Arrange: 1 段目で「切断」、2 段目で「破棄」を選ぶ
+    const { api, calls } = createFakeDbApi({
+      onExecute: () => ({ ...二行の結果, inTransaction: true }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    確認の答え = [true, false]
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    await useExecutionStore
+      .getState()
+      .execute('c1', 選択中のタブ(), 'insert into t values (1)', '開発', [])
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
+    expect(calls.rollback).toEqual(['c1'])
+    expect(calls.disconnect).toEqual(['c1'])
+  })
+
+  it('未コミットが無ければ切断で確認を出さない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
+    expect(確認した問い).toEqual([])
+    expect(calls.disconnect).toEqual(['c1'])
   })
 })

@@ -52,12 +52,21 @@ export type ExecuteOutcome =
       chunk: Chunk
       elapsedMs: number
       notices: string[]
+      /**
+       * 未コミットのトランザクションが残っているか（ADR 0012）。
+       *
+       * 実行のたびにデータベースへ聞いた結果である。クライアント側で DML を
+       * 数えると `WITH ... INSERT` や無名 PL/SQL ブロックをすり抜ける。
+       */
+      inTransaction: boolean
     }
   | {
       kind: 'statement'
       affectedRows: number
       elapsedMs: number
       notices: string[]
+      /** 未コミットのトランザクションが残っているか（ADR 0012）。 */
+      inTransaction: boolean
     }
 
 /** 実行結果と、その巻き添えで結果セットを閉じられたタブ。 */
@@ -90,6 +99,12 @@ export interface ConnectionParams {
   target: ConnectTarget
   /** 読み取り専用で接続するか（ADR 0004）。データベース側で保証される。 */
   readOnly: boolean
+  /**
+   * 実行のたびに自動でコミットするか（ADR 0012）。
+   *
+   * 既定は偽（手動コミット）。読み取り専用のときは意味を持たない。
+   */
+  autoCommit: boolean
 }
 
 /** エラーの区分。 */
@@ -200,6 +215,8 @@ export interface SavedConnection {
   name: string
   username: string
   readOnly: boolean
+  /** 実行のたびに自動でコミットするか（ADR 0012）。既定は偽。 */
+  autoCommit: boolean
   schemaFilter: SchemaFilter
   target: SavedTarget
 }

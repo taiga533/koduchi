@@ -12,6 +12,7 @@ const 保存済み: SavedConnection = {
   name: '開発',
   username: 'koduchi',
   readOnly: false,
+  autoCommit: false,
   schemaFilter: { excludeSystem: true, hideEmpty: true },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }
@@ -159,6 +160,7 @@ describe('ConnectionForm', () => {
         password: 'koduchi_dev',
         target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
         readOnly: false,
+        autoCommit: false,
       },
     ])
     expect(
@@ -226,6 +228,7 @@ describe('ConnectionForm', () => {
       password: 'koduchi_dev',
       target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
       readOnly: false,
+      autoCommit: false,
     })
   })
 
@@ -272,5 +275,70 @@ describe('ConnectionForm', () => {
     // Assert
     await waitFor(() => expect(calls.connect).toHaveLength(1))
     expect(calls.saveConnection).toHaveLength(0)
+  })
+
+  it('自動コミットの既定は切ってある', () => {
+    // Arrange: 誤爆したときに取り返せるほうを既定にしてある（ADR 0012）
+    描く()
+
+    // Act
+    const 自動コミット = screen.getByLabelText('実行のたびに自動でコミットする')
+
+    // Assert
+    expect(自動コミット).not.toBeChecked()
+  })
+
+  it('読み取り専用を選ぶと自動コミットの項目が押せなくなる', async () => {
+    // Arrange
+    描く()
+
+    // Act
+    await userEvent.click(screen.getByLabelText('読み取り専用で接続する'))
+
+    // Assert
+    expect(screen.getByLabelText('実行のたびに自動でコミットする')).toBeDisabled()
+  })
+
+  it('自動コミットを入れて接続すると接続情報にその指定が乗る', async () => {
+    // Arrange
+    描く()
+    await userEvent.type(screen.getByLabelText('名前'), '開発')
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+
+    // Act
+    await userEvent.click(screen.getByLabelText('実行のたびに自動でコミットする'))
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
+
+    // Assert
+    await waitFor(() => expect(calls.connect).toHaveLength(1))
+    expect(calls.connect[0].params.autoCommit).toBe(true)
+  })
+
+  it('自動コミットの指定は保存する接続にも乗る', async () => {
+    // Arrange
+    描く()
+    await userEvent.type(screen.getByLabelText('名前'), '開発')
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+
+    // Act
+    await userEvent.click(screen.getByLabelText('実行のたびに自動でコミットする'))
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
+
+    // Assert
+    await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
+    expect(calls.saveConnection[0].connection.autoCommit).toBe(true)
+  })
+
+  it('編集で開くと保存されていた自動コミットの指定が入っている', () => {
+    // Arrange
+    描く({}, { initial: { ...保存済み, autoCommit: true } })
+
+    // Act
+    const 自動コミット = screen.getByLabelText('実行のたびに自動でコミットする')
+
+    // Assert
+    expect(自動コミット).toBeChecked()
   })
 })

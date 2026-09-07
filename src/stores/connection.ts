@@ -50,6 +50,18 @@ function createConnectionId(): string {
   return crypto.randomUUID()
 }
 
+/**
+ * トランザクションを手で終わらせる接続かどうかを返す（ADR 0012）。
+ *
+ * 読み取り専用の接続と自動コミットの接続には未コミットの状態が生じないため、
+ * 未コミットの表示もコミット / ロールバックのボタンも出さない。
+ *
+ * @param connection 接続中のデータベース。未接続なら `null`
+ */
+export function isManualCommit(connection: ActiveConnection | null): boolean {
+  return connection !== null && !connection.params.readOnly && !connection.params.autoCommit
+}
+
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
   status: 'disconnected',
   connection: null,

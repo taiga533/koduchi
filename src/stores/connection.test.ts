@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi } from '../test/fakeDbApi'
-import { useConnectionStore } from './connection'
+import { isManualCommit, useConnectionStore } from './connection'
 import type { ConnectionParams } from '../types/db'
 
 const params: ConnectionParams = {
@@ -9,6 +9,7 @@ const params: ConnectionParams = {
   password: 'koduchi_dev',
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
   readOnly: false,
+  autoCommit: false,
 }
 
 beforeEach(() => {
@@ -93,5 +94,59 @@ describe('useConnectionStore', () => {
 
     // Assert
     expect(calls.disconnect).toEqual([])
+  })
+})
+
+describe('isManualCommit', () => {
+  /** 接続中の状態を組み立てる。 */
+  const 接続 = (readOnly: boolean, autoCommit: boolean) => ({
+    id: 'c1',
+    savedId: null,
+    name: '開発',
+    params: { ...params, readOnly, autoCommit },
+  })
+
+  it('読み取り専用でも自動コミットでもない接続は手動コミットである', () => {
+    // Arrange
+    const connection = 接続(false, false)
+
+    // Act
+    const 手動 = isManualCommit(connection)
+
+    // Assert
+    expect(手動).toBe(true)
+  })
+
+  it('読み取り専用の接続は手動コミットではない', () => {
+    // Arrange
+    const connection = 接続(true, false)
+
+    // Act
+    const 手動 = isManualCommit(connection)
+
+    // Assert
+    expect(手動).toBe(false)
+  })
+
+  it('自動コミットの接続は手動コミットではない', () => {
+    // Arrange
+    const connection = 接続(false, true)
+
+    // Act
+    const 手動 = isManualCommit(connection)
+
+    // Assert
+    expect(手動).toBe(false)
+  })
+
+  it('未接続は手動コミットではない', () => {
+    // Arrange
+    const connection = null
+
+    // Act
+    const 手動 = isManualCommit(connection)
+
+    // Assert
+    expect(手動).toBe(false)
   })
 })

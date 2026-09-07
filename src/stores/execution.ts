@@ -88,6 +88,15 @@ export interface LogEntry {
   notices: string[]
 }
 
+/** トランザクションの操作。ログの見出しに使う。 */
+export type TransactionAction = 'commit' | 'rollback'
+
+/** トランザクションの操作をログに出す文言（ADR 0012）。 */
+const TRANSACTION_LABELS: Record<TransactionAction, string> = {
+  commit: 'コミット',
+  rollback: 'ロールバック',
+}
+
 interface ExecutionState {
   /** タブごとの実行状態。 */
   byTab: Record<string, TabExecution>
@@ -95,6 +104,13 @@ interface ExecutionState {
   planByTab: Record<string, TabPlan>
   /** メッセージタブに出す実行ログ。新しいものが後ろに積まれる。 */
   log: LogEntry[]
+  /**
+   * 未コミットのトランザクションが残っているか（ADR 0012）。
+   *
+   * 実行のたびにデータベースへ聞いた結果で置き換える。接続はウィンドウに
+   * 1 つであるため、タブごとではなくウィンドウに 1 つ持つ。
+   */
+  inTransaction: boolean
 
   /**
    * SQL を実行する。
@@ -121,6 +137,14 @@ interface ExecutionState {
   fetchMore: (connectionId: string, tabId: string) => Promise<void>
   /** 実行中の文を中止する（`⌘.`）。 */
   cancel: (connectionId: string, tabId: string) => Promise<void>
+  /**
+   * トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+   *
+   * 結果はメッセージタブのログへ 1 行として残す。
+   */
+  commit: (connectionId: string) => Promise<void>
+  /** トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。 */
+  rollback: (connectionId: string) => Promise<void>
   /** タブの結果セットを手放す。タブを閉じたときに呼ぶ。 */
   releaseTab: (connectionId: string, tabId: string) => Promise<void>
   /**
@@ -169,6 +193,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   byTab: {},
   planByTab: {},
   log: [],
+  inTransaction: false,
 
   execute: async (connectionId, tabId, sql, connectionName, binds) => {
     if (get().byTab[tabId]?.status === 'running') {
@@ -217,6 +242,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 
         return {
           byTab,
+          inTransaction: response.inTransaction,
           log: [
             ...state.log,
             {
@@ -345,6 +371,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     await getDbApi().cancel(connectionId, tabId)
   },
 
+  commit: async (connectionId) => {
+    await 終わらせる(set, connectionId, 'commit')
+  },
+
+  rollback: async (connectionId) => {
+    await 終わらせる(set, connectionId, 'rollback')
+  },
+
   releaseTab: async (connectionId, tabId) => {
     await getDbApi().releaseTab(connectionId, tabId)
     set((state) => {
@@ -361,8 +395,64 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
         : state,
     ),
 
-  clear: () => set({ byTab: {}, planByTab: {}, log: [] }),
+  clear: () => set({ byTab: {}, planByTab: {}, log: [], inTransaction: false }),
 }))
+
+/**
+ * トランザクションを終わらせ、その結果をログへ 1 行として残す（ADR 0012）。
+ *
+ * 成功したら未コミットの表示を消す。失敗したときは未コミットのままにする。
+ * 「コミットしました」と出しながら変更が残っているほうが害が大きい。
+ *
+ * @param set ストアの更新関数
+ * @param connectionId 対象の接続
+ * @param action コミットかロールバックか
+ */
+async function 終わらせる(
+  set: (updater: (state: ExecutionState) => Partial<ExecutionState>) => void,
+  connectionId: string,
+  action: TransactionAction,
+): Promise<void> {
+  const label = TRANSACTION_LABELS[action]
+  const startedAt = new Date()
+  const entryId = crypto.randomUUID()
+
+  try {
+    const api = getDbApi()
+    await (action === 'commit' ? api.commit(connectionId) : api.rollback(connectionId))
+
+    set((state) => ({
+      inTransaction: false,
+      log: [
+        ...state.log,
+        {
+          id: entryId,
+          startedAt,
+          sql: label,
+          elapsedMs: Date.now() - startedAt.getTime(),
+          rowCount: null,
+          error: null,
+          notices: [`${label}しました`],
+        },
+      ],
+    }))
+  } catch (error) {
+    set((state) => ({
+      log: [
+        ...state.log,
+        {
+          id: entryId,
+          startedAt,
+          sql: label,
+          elapsedMs: Date.now() - startedAt.getTime(),
+          rowCount: null,
+          error: toErrorMessage(error),
+          notices: [],
+        },
+      ],
+    }))
+  }
+}
 
 /**
  * タブの実行状態を返す。まだ実行していなければ空の状態を返す。

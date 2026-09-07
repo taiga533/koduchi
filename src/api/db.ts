@@ -52,6 +52,10 @@ export interface DbApi {
   releaseTab(id: string, tabId: string): Promise<void>
   /** 実行中の文を中止する。 */
   cancel(id: string, tabId: string): Promise<void>
+  /** トランザクションをコミットする（`⌥⌘C`、ADR 0012）。 */
+  commit(id: string): Promise<void>
+  /** トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。 */
+  rollback(id: string): Promise<void>
   /** 接続を閉じる。 */
   disconnect(id: string): Promise<void>
 
@@ -122,6 +126,8 @@ const tauriDbApi: DbApi = {
   fetchMore: (id, tabId) => invoke('fetch_more', { id, tabId }),
   releaseTab: (id, tabId) => invoke('release_tab', { id, tabId }),
   cancel: (id, tabId) => invoke('cancel', { id, tabId }),
+  commit: (id) => invoke('commit', { id }),
+  rollback: (id) => invoke('rollback', { id }),
   disconnect: (id) => invoke('disconnect', { id }),
 
   listSavedConnections: () => invoke('list_saved_connections'),

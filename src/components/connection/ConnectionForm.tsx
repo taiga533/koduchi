@@ -58,6 +58,9 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
   const [username, setUsername] = useState(initial?.username ?? '')
   const [password, setPassword] = useState('')
   const [readOnly, setReadOnly] = useState(initial?.readOnly ?? false)
+  // 既定は手動コミット。Oracle クライアントの慣習に合わせ、誤爆したときに
+  // 取り返せるほうを既定にしてある（ADR 0012）。
+  const [autoCommit, setAutoCommit] = useState(initial?.autoCommit ?? false)
   const [remember, setRemember] = useState(true)
   const [filter] = useState<SchemaFilter>(initial?.schemaFilter ?? defaultSchemaFilter)
   const [testing, setTesting] = useState(false)
@@ -142,6 +145,7 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
             descriptor: entries.find((entry) => entry.aliases.includes(alias))?.descriptor ?? '',
           },
     readOnly,
+    autoCommit,
   })
 
   /**
@@ -192,6 +196,7 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
             name: name.trim(),
             username: username.trim(),
             readOnly,
+            autoCommit,
             schemaFilter: filter,
             target:
               method === 'ezConnect'
@@ -343,6 +348,20 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
             onChange={(event) => setReadOnly(event.target.checked)}
           />
           読み取り専用で接続する
+        </label>
+        {/* 読み取り専用のときは書き込みが起きないため、自動コミットは意味を持たない */}
+        <label
+          className={`flex items-center gap-8px text-12.5px cursor-pointer ${
+            readOnly ? 'text-fg5 cursor-default' : 'text-fg'
+          }`}
+        >
+          <input
+            type="checkbox"
+            checked={autoCommit && !readOnly}
+            disabled={readOnly}
+            onChange={(event) => setAutoCommit(event.target.checked)}
+          />
+          実行のたびに自動でコミットする
         </label>
         <label className="flex items-center gap-8px text-12.5px text-fg cursor-pointer">
           <input

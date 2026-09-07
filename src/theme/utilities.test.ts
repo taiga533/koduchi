@@ -84,4 +84,26 @@ describe('UnoCSS のユーティリティ', () => {
     expect(css).toContain('var(--fg3)')
     expect(css).toContain('var(--line)')
   })
+
+  it('注意の色は CSS 変数を参照する', async () => {
+    // Arrange: 未コミットの表示に使う（ADR 0012）
+    const generator = await ジェネレータを作る()
+
+    // Act
+    const { css } = await generator.generate('text-warn', { preflights: false })
+
+    // Assert
+    expect(css).toContain('var(--warn)')
+  })
+
+  it('注意の色はライトとダークの両方で定義されている', async () => {
+    // Arrange
+    const tokens = readFileSync(resolve(process.cwd(), 'src/theme/tokens.css'), 'utf8')
+
+    // Act: ライト・システム追従のダーク・ダーク固定の 3 箇所
+    const 定義の数 = [...tokens.matchAll(/--warn:/g)].length
+
+    // Assert
+    expect(定義の数).toBe(3)
+  })
 })
