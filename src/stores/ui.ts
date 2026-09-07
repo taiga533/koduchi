@@ -1,13 +1,23 @@
 /**
  * 画面の見た目に関する状態を持つストア。
  *
- * サイドバーの選択セグメントと外観設定（ADR 0008）、および設定画面と CSV 保存
- * ダイアログの開閉を扱う。外観設定はルート要素の属性へ反映し、同時にファイルへ
- * 保存する。CSV の書式も「次回のために保存する」対象である。
+ * サイドバーの選択セグメントと外観設定（ADR 0008）、ペインの寸法、および設定画面と
+ * CSV 保存ダイアログの開閉を扱う。外観設定はルート要素の属性へ反映し、同時に
+ * ファイルへ保存する。CSV の書式も「次回のために保存する」対象である。
+ *
+ * ペインの寸法（サイドバーの幅・エディタの高さ）だけは `settings.toml` ではなく
+ * ウィンドウごとのセッションへ保存する（ADR 0005）。ウィンドウごとに違ってよい
+ * 値だからである。書き出しは `App` の `SessionSaver` が担う。
  */
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
+import {
+  EDITOR_HEIGHT_DEFAULT,
+  SIDEBAR_WIDTH_DEFAULT,
+  clampEditorHeight,
+  clampSidebarWidth,
+} from '../components/layout/paneSizes'
 import type { Appearance, RowHeight, ThemePreference } from '../theme/appearance'
 import { applyAppearance, defaultAppearance } from '../theme/appearance'
 import type { AppSettings, CsvOptions } from '../types/db'
@@ -39,6 +49,10 @@ interface UiState {
   cursor: CursorPosition
   /** 選択範囲があるか。「選択範囲のみ実行」を押せるかの判定に使う。 */
   hasSelection: boolean
+  /** サイドバーの幅（px）。 */
+  sidebarWidth: number
+  /** エディタの高さ（px）。 */
+  editorHeight: number
   appearance: Appearance
   csvOptions: CsvOptions
   /** 設定画面を開いているか。 */
@@ -63,6 +77,25 @@ interface UiState {
   setResultColumnWidth: (tabId: string, columnName: string, width: number) => void
   /** タブぶんの列幅を忘れる。タブを閉じたときに呼ぶ。 */
   clearResultColumnWidths: (tabId: string) => void
+  /** サイドバーの幅を変える。値は許される範囲へ丸める。 */
+  setSidebarWidth: (width: number) => void
+  /**
+   * エディタの高さを変える。値は許される範囲へ丸める。
+   *
+   * 上限はウィンドウの高さに依存するため、丸めに使う高さを受け取る。
+   */
+  setEditorHeight: (height: number, windowHeight: number) => void
+  /**
+   * ウィンドウの高さが変わったときに、寸法を今の上限へ丸め直す。
+   *
+   * ウィンドウを縮めたときにエディタが画面を埋め尽くさないようにする。
+   */
+  clampToWindow: (windowHeight: number) => void
+  /** セッションから読んだ寸法を反映する。持っていない値は既定値のままにする。 */
+  restoreLayout: (
+    layout: { sidebarWidth: number | null; editorHeight: number | null },
+    windowHeight: number,
+  ) => void
   openSettings: () => void
   closeSettings: () => void
   /** 保存済みの設定を読み込んで反映する。起動時に 1 度呼ぶ。 */
@@ -112,6 +145,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   resultTab: 'result',
   cursor: { line: 1, column: 1 },
   hasSelection: false,
+  sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
+  editorHeight: EDITOR_HEIGHT_DEFAULT,
   appearance: defaultAppearance,
   csvOptions: defaultCsvOptions,
   settingsOpen: false,
@@ -181,6 +216,28 @@ export const useUiStore = create<UiState>((set, get) => ({
       )
       return { resultColumnWidths: rest }
     }),
+
+  setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
+
+  setEditorHeight: (height, windowHeight) =>
+    set({ editorHeight: clampEditorHeight(height, windowHeight) }),
+
+  clampToWindow: (windowHeight) =>
+    set((state) => {
+      const editorHeight = clampEditorHeight(state.editorHeight, windowHeight)
+      // 丸めが効かないときは同じ状態を返し、購読側を描き直さない。
+      return editorHeight === state.editorHeight ? state : { editorHeight }
+    }),
+
+  restoreLayout: (layout, windowHeight) =>
+    set((state) => ({
+      sidebarWidth:
+        layout.sidebarWidth === null ? state.sidebarWidth : clampSidebarWidth(layout.sidebarWidth),
+      editorHeight:
+        layout.editorHeight === null
+          ? clampEditorHeight(state.editorHeight, windowHeight)
+          : clampEditorHeight(layout.editorHeight, windowHeight),
+    })),
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),

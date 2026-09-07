@@ -89,6 +89,7 @@ export function ResultPane({ tabId, runningLabel, onCancel, onRequestMore }: Res
 }
 
 interface PaneBodyProps {
+  /** 表示中のエディタタブ。結果テーブルの作り直しと列幅の記憶に使う。 */
   tabId: string | null
   execution: TabExecution
   plan: TabPlan | null
@@ -149,7 +150,16 @@ function PaneBody({
     )
   }
 
-  return <ResultTable tabId={tabId} execution={execution} onRequestMore={onRequestMore} />
+  // タブを切り替えたら結果テーブルを作り直し、セル選択を捨てる。列幅は `ui` ストア
+  // にタブごとに残るため、作り直しても保たれる。
+  return (
+    <ResultTable
+      key={tabId ?? 'none'}
+      tabId={tabId}
+      execution={execution}
+      onRequestMore={onRequestMore}
+    />
+  )
 }
 
 /**

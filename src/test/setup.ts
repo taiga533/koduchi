@@ -38,6 +38,17 @@ Range.prototype.getBoundingClientRect ??= function (): DOMRect {
   return new DOMRect(0, 0, 0, 0)
 }
 
+/**
+ * jsdom の `navigator.platform` は空である。CodeMirror は読み込みの時点でこれを
+ * 見て `Mod` を `⌘` と `Ctrl` のどちらへ割り当てるかを決めるため、そのままでは
+ * `⌘F` などの macOS 向けのキーバインドがテストから叩けない。このアプリは macOS
+ * だけを対象とする（CLAUDE.md）ので、実機と同じ Mac を名乗らせる。
+ *
+ * 設定ファイル（`setupFiles`）はテスト本体より先に走るため、CodeMirror が
+ * 読み込まれる前に間に合う。
+ */
+Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+
 afterEach(() => {
   cleanup()
 })

@@ -38,8 +38,13 @@ interface TabState {
   openFile: (filePath: string, content: string) => void
   /** 保存し終えたタブに保存先を記録し、未保存の印を消す（`⌘S`）。 */
   markSaved: (id: string, filePath: string) => void
-  /** 保存しておいたセッションからタブを組み直す（ADR 0005）。 */
-  restore: (session: SessionState) => void
+  /**
+   * 保存しておいたセッションからタブを組み直す（ADR 0005）。
+   *
+   * 見るのはタブとその選択だけである。サイドバーのセグメントとペインの寸法は
+   * `ui` ストアが受け取る。
+   */
+  restore: (session: Pick<SessionState, 'tabs' | 'activeTabId'>) => void
 }
 
 /**
@@ -188,6 +193,16 @@ export function selectActiveTab(state: TabState): EditorTab | null {
   return state.tabs.find((tab) => tab.id === state.activeTabId) ?? null
 }
 
+/** タブ以外にセッションへ書き出すもの。 */
+export interface SessionLayout {
+  /** サイドバーの選択セグメント。 */
+  sidebarSegment: string
+  /** サイドバーの幅（px）。 */
+  sidebarWidth: number
+  /** エディタの高さ（px）。 */
+  editorHeight: number
+}
+
 /**
  * セッションに保存する形へ変換する（ADR 0005）。
  *
@@ -195,11 +210,11 @@ export function selectActiveTab(state: TabState): EditorTab | null {
  * 前提にした設計である。
  *
  * @param state タブストアの状態
- * @param sidebarSegment サイドバーの選択セグメント
+ * @param layout サイドバーの選択セグメントとペインの寸法
  */
 export function selectSession(
   state: Pick<TabState, 'tabs' | 'activeTabId'>,
-  sidebarSegment: string,
+  layout: SessionLayout,
 ): SessionState {
   return {
     tabs: state.tabs.map((tab) => ({
@@ -210,6 +225,8 @@ export function selectSession(
       dirty: tab.dirty,
     })),
     activeTabId: state.activeTabId,
-    sidebarSegment,
+    sidebarSegment: layout.sidebarSegment,
+    sidebarWidth: layout.sidebarWidth,
+    editorHeight: layout.editorHeight,
   }
 }
