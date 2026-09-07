@@ -501,3 +501,32 @@ export function collectBindVariables(sql: string): string[] {
 
   return names
 }
+
+/**
+ * 複数の文からバインド変数の名前を集める（`⌥⌘⏎`）。
+ *
+ * スクリプト実行では 1 文ごとに尋ねると煩わしいため、実行を始める前に全文ぶんを
+ * まとめて 1 度だけ尋ねる。同じ名前は 1 度しか出さず、値は全文で使い回す。
+ * 並びは先に出てきた文の順である。
+ *
+ * @param statements 実行する文の並び
+ *
+ * @returns 変数の名前。`:` は含まない
+ */
+export function collectBindVariablesAcross(statements: string[]): string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+
+  for (const statement of statements) {
+    for (const name of collectBindVariables(statement)) {
+      // Oracle のバインド名は大文字小文字を区別しない。
+      const key = name.toUpperCase()
+      if (!seen.has(key)) {
+        seen.add(key)
+        names.push(name)
+      }
+    }
+  }
+
+  return names
+}

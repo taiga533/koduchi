@@ -7,7 +7,7 @@
  * 2. 未接続（デザイン 5g） … 保存した接続を選ぶ画面と、接続を作成する画面
  * 3. 接続中 … エディタと結果ペイン
  *
- * キーバインドのうち、エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌘.` は
+ * キーバインドのうち、エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` は
  * CodeMirror 側に置く。それ以外はウィンドウ全体で効かせる。
  *
  * 打鍵のたびに描き直る範囲を狭く保つ。カーソル位置は `ui` ストアへ逃がし、
@@ -44,7 +44,13 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
 import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
-import { collectBindVariables, isSelectStatement, statementAt } from './sql/statements'
+import {
+  collectBindVariables,
+  collectBindVariablesAcross,
+  isSelectStatement,
+  splitStatements,
+  statementAt,
+} from './sql/statements'
 import { isManualCommit, useConnectionStore } from './stores/connection'
 import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
@@ -88,9 +94,26 @@ type ConnectionView = { mode: 'picker' } | { mode: 'form'; connection: SavedConn
 /**
  * バインド変数の値が揃うのを待っている実行（ADR の「バインド変数」節）。
  *
- * `⌘⏎` / `⇧⌘⏎` の実行と、`⌘E` / `⇧⌘E` の実行計画のどちらもここへ載せる。
+ * `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` の実行と、`⌘E` / `⇧⌘E` の実行計画のどれもここへ載せる。
  */
-type PendingRun = { kind: 'execute'; sql: string } | { kind: 'plan'; sql: string; actual: boolean }
+type PendingRun =
+  | { kind: 'execute'; sql: string }
+  | { kind: 'plan'; sql: string; actual: boolean }
+  /** `⌥⌘⏎`。切り出した文を順に実行する。値は全文で使い回す。 */
+  | { kind: 'script'; statements: string[] }
+
+/**
+ * 実行の対象からバインド変数の名前を集める。
+ *
+ * スクリプト実行では、1 文ごとに尋ねずに全文ぶんをまとめて 1 度だけ尋ねる。
+ *
+ * @param run 値が揃うのを待っている実行
+ */
+function bindVariablesOf(run: PendingRun): string[] {
+  return run.kind === 'script'
+    ? collectBindVariablesAcross(run.statements)
+    : collectBindVariables(run.sql)
+}
 
 export function App() {
   const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
@@ -117,6 +140,7 @@ export function App() {
   const restoreTabs = useTabStore((state) => state.restore)
 
   const execute = useExecutionStore((state) => state.execute)
+  const executeScript = useExecutionStore((state) => state.executeScript)
   const generatePlan = useExecutionStore((state) => state.generatePlan)
   const fetchMore = useExecutionStore((state) => state.fetchMore)
   const cancel = useExecutionStore((state) => state.cancel)
@@ -223,10 +247,17 @@ export function App() {
         return
       }
 
+      if (run.kind === 'script') {
+        selectResultTab('result')
+        await executeScript(connection.id, tabId, run.statements, connection.name, binds)
+        await useHistoryStore.getState().reload()
+        return
+      }
+
       selectResultTab('plan')
       await generatePlan(connection.id, tabId, run.sql, run.actual ? 'actual' : 'estimate', binds)
     },
-    [connection, execute, generatePlan, selectResultTab],
+    [connection, execute, executeScript, generatePlan, selectResultTab],
   )
 
   /**
@@ -237,7 +268,7 @@ export function App() {
    */
   const startRun = useCallback(
     (run: PendingRun) => {
-      const names = collectBindVariables(run.sql)
+      const names = bindVariablesOf(run)
       if (names.length === 0) {
         void runPending(run, [])
         return
@@ -298,6 +329,26 @@ export function App() {
       runSql(sql)
     }
   }, [currentSql, runSql])
+
+  /**
+   * `⌥⌘⏎`。タブ全体の文を順に実行する。
+   *
+   * 選択範囲があるときは、その中の文だけを順に実行する。バインド変数があれば
+   * 実行を始める前に全文ぶんまとめて尋ねる。途中で失敗したら以降の文は
+   * 実行しない（`executeScript` が判断する）。
+   */
+  const runScript = useCallback(() => {
+    const tab = selectActiveTab(useTabStore.getState())
+    if (!tab) {
+      return
+    }
+
+    const source = positionRef.current.selectedText ?? tab.content
+    const statements = splitStatements(source).map((statement) => statement.text)
+    if (statements.length > 0) {
+      startRun({ kind: 'script', statements })
+    }
+  }, [startRun])
 
   /**
    * `⌘E` / `⇧⌘E`。実行計画を出す。
@@ -804,12 +855,14 @@ export function App() {
             onCursorChange={onCursorChange}
             onRunStatement={runStatement}
             onRunSelection={runSelection}
+            onRunScript={runScript}
             onCancel={cancelExecution}
           />
           <RunControls
             tabId={activeTabId}
             onRun={runStatement}
             onRunSelection={runSelection}
+            onRunScript={runScript}
             onExplain={() => void runPlan(false)}
             onExplainActual={() => void runPlan(true)}
             onSaveCsv={openCsvDialog}
@@ -849,6 +902,7 @@ function RunControls({
   tabId: string | null
   onRun: () => void
   onRunSelection: () => void
+  onRunScript: () => void
   onExplain: () => void
   onExplainActual: () => void
   onSaveCsv: () => void

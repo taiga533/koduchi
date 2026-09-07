@@ -12,6 +12,7 @@ function 描く() {
       onCursorChange={() => {}}
       onRunStatement={() => {}}
       onRunSelection={() => {}}
+      onRunScript={() => {}}
       onCancel={() => {}}
     />,
   )

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
-import { createFakeDbApi, queryResponse } from '../test/fakeDbApi'
+import { createFakeDbApi, emptyResponse, queryResponse } from '../test/fakeDbApi'
 import {
   emptyExecution,
   formatResultSummary,
@@ -8,7 +8,7 @@ import {
   selectResultTabs,
   useExecutionStore,
 } from './execution'
-import type { Bind, Cell, Column } from '../types/db'
+import type { Bind, Cell, Column, ExecuteResponse } from '../types/db'
 
 const TAB = 'tab-1'
 
@@ -23,6 +23,35 @@ function 行を作る(件数: number, 開始 = 0): Cell[][] {
     { text: String(開始 + index), kind: 'number' as const },
     { text: 'あ', kind: 'text' as const },
   ])
+}
+
+/**
+ * 応答を後から決められる実行を作る。
+ *
+ * 実行の最中の状態（進み具合や中止）を確かめるために使う。
+ */
+function 保留の応答(): {
+  promise: Promise<ExecuteResponse>
+  応える: (response: ExecuteResponse) => void
+  呼ばれるまで待つ: () => Promise<void>
+} {
+  let 応える!: (response: ExecuteResponse) => void
+  let 呼ばれた!: () => void
+  const 呼び出し = new Promise<void>((resolve) => {
+    呼ばれた = resolve
+  })
+  const promise = new Promise<ExecuteResponse>((resolve) => {
+    応える = (response) => resolve(response)
+  })
+
+  return {
+    get promise() {
+      呼ばれた()
+      return promise
+    },
+    応える,
+    呼ばれるまで待つ: () => 呼び出し,
+  }
 }
 
 beforeEach(() => {
@@ -194,6 +223,236 @@ describe('fetchMore', () => {
 
     // Assert
     expect(selectExecution(useExecutionStore.getState(), TAB).status).toBe('discarded')
+  })
+})
+
+describe('executeScript（スクリプト実行）', () => {
+  it('複数の文を順に実行する', async () => {
+    // Arrange
+    const 実行した順: string[] = []
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => {
+        実行した順.push(sql)
+        return emptyResponse
+      },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .executeScript(
+        'c1',
+        TAB,
+        ['create table t (n number)', 'insert into t values (1)'],
+        '開発',
+        [],
+      )
+
+    // Assert
+    expect(実行した順).toEqual(['create table t (n number)', 'insert into t values (1)'])
+  })
+
+  it('途中で失敗すると以降の文は実行しない', async () => {
+    // Arrange
+    const 実行した順: string[] = []
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => {
+        実行した順.push(sql)
+        if (sql === '文2') {
+          throw { kind: 'execute', message: 'ORA-00942: table or view does not exist' }
+        }
+        return emptyResponse
+      },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2', '文3'], '開発', [])
+
+    // Assert
+    expect(実行した順).toEqual(['文1', '文2'])
+  })
+
+  it('失敗した文が何文目かを保持する', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => {
+        if (sql === '文2') {
+          throw { kind: 'execute', message: 'ORA-00942' }
+        }
+        return emptyResponse
+      },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2', '文3'], '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.status).toBe('failed')
+    expect(execution.progress).toEqual({ index: 2, total: 3 })
+    expect(execution.error).toBe('ORA-00942')
+  })
+
+  it('途中で失敗しても未コミットの状態は最後の応答のまま残る', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => {
+        if (sql === '文2') {
+          throw { kind: 'execute', message: 'ORA-00001' }
+        }
+        return { ...emptyResponse, affectedRows: 1, inTransaction: true }
+      },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2', '文3'], '開発', [])
+
+    // Assert
+    expect(useExecutionStore.getState().inTransaction).toBe(true)
+  })
+
+  it('履歴には 1 文ずつ記録する', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2'], '開発', [])
+
+    // Assert
+    expect(calls.recordHistory.map((entry) => entry.sql)).toEqual(['文1', '文2'])
+  })
+
+  it('バインド変数の値は全文で使い回す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const binds: Bind[] = [
+      ['id', '7'],
+      ['name', null],
+    ]
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2'], '開発', binds)
+
+    // Assert
+    expect(calls.execute.map((call) => call.binds)).toEqual([binds, binds])
+  })
+
+  it('ログには何文目かを添えて 1 文ずつ積む', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2'], '開発', [])
+
+    // Assert
+    const log = useExecutionStore.getState().log
+    expect(log.map((entry) => entry.sql)).toEqual(['文1', '文2'])
+    expect(log.map((entry) => entry.statement)).toEqual([
+      { index: 1, total: 2 },
+      { index: 2, total: 2 },
+    ])
+  })
+
+  it('最後に結果セットを返した文の結果を残す', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: (sql) =>
+        sql === 'select 2' ? queryResponse(列, 行を作る(2)) : { ...emptyResponse, affectedRows: 5 },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .executeScript('c1', TAB, ['update t', 'select 2'], '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.status).toBe('succeeded')
+    expect(execution.rows).toHaveLength(2)
+    expect(execution.progress).toBeNull()
+  })
+
+  it('問い合わせを含まないスクリプトでは影響行数を足し上げる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => ({ ...emptyResponse, affectedRows: 3, elapsedMs: 10 }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2', '文3'], '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.affectedRows).toBe(9)
+    expect(execution.elapsedMs).toBe(30)
+  })
+
+  it('実行中は何文目かを進み具合として持つ', async () => {
+    // Arrange
+    const 二文目 = 保留の応答()
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => (sql === '文2' ? 二文目.promise : emptyResponse),
+    })
+    setDbApi(api)
+
+    // Act
+    const 実行 = useExecutionStore
+      .getState()
+      .executeScript('c1', TAB, ['文1', '文2', '文3'], '開発', [])
+    await 二文目.呼ばれるまで待つ()
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.progress).toEqual({ index: 2, total: 3 })
+    expect(formatResultSummary(execution)).toBe('2 / 3 文目を実行中')
+    二文目.応える(emptyResponse)
+    await 実行
+  })
+
+  it('中止すると残りの文を実行しない', async () => {
+    // Arrange
+    const 一文目 = 保留の応答()
+    const 実行した順: string[] = []
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => {
+        実行した順.push(sql)
+        return sql === '文1' ? 一文目.promise : emptyResponse
+      },
+    })
+    setDbApi(api)
+    const 実行 = useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2'], '開発', [])
+    await 一文目.呼ばれるまで待つ()
+
+    // Act
+    await useExecutionStore.getState().cancel('c1', TAB)
+    一文目.応える(emptyResponse)
+    await 実行
+
+    // Assert
+    expect(実行した順).toEqual(['文1'])
+    expect(selectExecution(useExecutionStore.getState(), TAB).error).toBe('実行を中止しました')
+  })
+
+  it('文が 1 つも無ければ何もしない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, [], '開発', [])
+
+    // Assert
+    expect(calls.execute).toEqual([])
+    expect(selectExecution(useExecutionStore.getState(), TAB)).toEqual(emptyExecution)
   })
 })
 

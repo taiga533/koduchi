@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { resetDbApi, setDbApi } from './api/db'
-import { createFakeDbApi, queryResponse } from './test/fakeDbApi'
+import { createFakeDbApi, emptyResponse, queryResponse } from './test/fakeDbApi'
 import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingChanges'
 import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
 import { useConnectionStore } from './stores/connection'
@@ -465,7 +465,6 @@ describe('App', () => {
     expect(await screen.findByRole('button', { name: /メッセージ/ })).toBeInTheDocument()
     expect(screen.getByText('ORA-00942: table or view does not exist')).toBeInTheDocument()
   })
-
   it('切断すると接続を選ぶ画面へ戻り、エディタのタブは残る', async () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
@@ -837,5 +836,96 @@ describe('App', () => {
     expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
     expect(確認した問い).toEqual([])
     expect(calls.disconnect).toEqual(['c1'])
+  })
+  it('すべて実行を選ぶとタブの文が順に実行される', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore
+      .getState()
+      .updateContent(選択中のタブ(), 'create table t (n number);\ninsert into t values (1);')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行のメニュー' }))
+    await userEvent.click(screen.getByRole('button', { name: /すべて実行/ }))
+
+    // Assert
+    await waitFor(() =>
+      expect(calls.execute.map((call) => call.sql)).toEqual([
+        'create table t (n number)',
+        'insert into t values (1)',
+      ]),
+    )
+  })
+
+  it('すべて実行のバインド変数は全文ぶんまとめて 1 度だけ尋ねる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore
+      .getState()
+      .updateContent(
+        選択中のタブ(),
+        'insert into t values (:id);\nupdate t set name = :name where id = :id;',
+      )
+    const user = userEvent.setup()
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '実行のメニュー' }))
+    await user.click(screen.getByRole('button', { name: /すべて実行/ }))
+    await screen.findByText('バインド変数の値')
+    await user.type(screen.getByLabelText(':id'), '7')
+    await user.type(screen.getByLabelText(':name'), 'あ')
+    await user.click(screen.getByRole('button', { name: 'この値で実行' }))
+
+    // Assert
+    await waitFor(() => expect(calls.execute).toHaveLength(2))
+    expect(screen.queryByText('バインド変数の値')).not.toBeInTheDocument()
+    for (const call of calls.execute) {
+      expect(call.binds).toEqual([
+        ['id', '7'],
+        ['name', 'あ'],
+      ])
+    }
+  })
+
+  it('すべて実行が途中で失敗すると未コミットのまま止まる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({
+      onExecute: (sql) => {
+        if (sql === 'insert into t values (2)') {
+          throw { kind: 'execute', message: 'ORA-00001: unique constraint violated' }
+        }
+        return { ...emptyResponse, affectedRows: 1, inTransaction: true }
+      },
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore
+      .getState()
+      .updateContent(
+        選択中のタブ(),
+        'insert into t values (1);\ninsert into t values (2);\ninsert into t values (3);',
+      )
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行のメニュー' }))
+    await userEvent.click(screen.getByRole('button', { name: /すべて実行/ }))
+
+    // Assert
+    expect(await screen.findByText('未コミット')).toBeInTheDocument()
+    expect(calls.execute.map((call) => call.sql)).toEqual([
+      'insert into t values (1)',
+      'insert into t values (2)',
+    ])
+    expect(screen.getByText(/3 文中 2 文目で失敗しました/)).toBeInTheDocument()
   })
 })

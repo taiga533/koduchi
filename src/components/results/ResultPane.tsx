@@ -6,7 +6,7 @@
  */
 
 import { useShallow } from 'zustand/react/shallow'
-import type { LogEntry, TabExecution, TabPlan } from '../../stores/execution'
+import type { LogEntry, ScriptProgress, TabExecution, TabPlan } from '../../stores/execution'
 import {
   formatResultSummary,
   selectExecution,
@@ -116,7 +116,7 @@ function PaneBody({
   }
 
   if (execution.status === 'running') {
-    return <RunningState label={runningLabel} onCancel={onCancel} />
+    return <RunningState label={runningLabel} progress={execution.progress} onCancel={onCancel} />
   }
 
   if (currentTab === 'messages') {
@@ -128,7 +128,7 @@ function PaneBody({
   }
 
   if (execution.status === 'failed') {
-    return <FailureNotice error={execution.error} />
+    return <FailureNotice error={execution.error} progress={execution.progress} />
   }
 
   if (execution.status === 'idle') {
@@ -195,14 +195,28 @@ function PlanView({ plan }: { plan: TabPlan | null }) {
   )
 }
 
-/** 実行中の表示（デザイン 5a）。 */
-function RunningState({ label, onCancel }: { label: string; onCancel: () => void }) {
+/**
+ * 実行中の表示（デザイン 5a）。
+ *
+ * スクリプト実行（`⌥⌘⏎`）では、何文目を投げているところかを出す。
+ */
+function RunningState({
+  label,
+  progress,
+  onCancel,
+}: {
+  label: string
+  progress: ScriptProgress | null
+  onCancel: () => void
+}) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-11px">
       <div className="w-232px h-3px rounded-2px bg-line2 overflow-hidden">
         <div className="w-96px h-3px rounded-2px bg-ac" />
       </div>
-      <p className="text-12.5px text-fg m-0">クエリを実行中</p>
+      <p className="text-12.5px text-fg m-0">
+        {progress ? `${progress.index} / ${progress.total} 文目を実行中` : 'クエリを実行中'}
+      </p>
       <p className="text-11px text-fg4 m-0">{label}</p>
       <button
         type="button"
@@ -238,9 +252,20 @@ function DiscardedNotice() {
  * 詳細はメッセージタブに出るため、ここでは要点だけを示す。エラー表示は
  * テキストのみとし、波線や候補の提示は行わない（ADR の機能スコープ）。
  */
-function FailureNotice({ error }: { error: string | null }) {
+function FailureNotice({
+  error,
+  progress,
+}: {
+  error: string | null
+  progress: ScriptProgress | null
+}) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-9px px-24px">
+      {progress ? (
+        <p className="text-12.5px text-fg m-0">
+          {progress.total} 文中 {progress.index} 文目で失敗しました。以降の文は実行していません。
+        </p>
+      ) : null}
       <p className="text-12px text-err text-center m-0 max-w-560px break-words">{error}</p>
       <p className="text-11.5px text-fg4 m-0">詳細はメッセージタブに残ります</p>
     </div>
@@ -263,6 +288,11 @@ function MessageLog({ log, error }: { log: LogEntry[]; error: string | null }) {
         <div key={entry.id} className="flex flex-col gap-5px">
           <div className="flex items-center gap-10px text-10.5px text-fg4">
             <span>{entry.startedAt.toLocaleTimeString('ja-JP')}</span>
+            {entry.statement ? (
+              <span>
+                {entry.statement.index} / {entry.statement.total} 文目
+              </span>
+            ) : null}
             {entry.elapsedMs !== null ? <span>{entry.elapsedMs} ms</span> : null}
             {entry.rowCount !== null ? (
               <span>{entry.rowCount.toLocaleString('ja-JP')} 行</span>

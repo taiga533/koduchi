@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { collectBindVariables, isSelectStatement, splitStatements, statementAt } from './statements'
+import {
+  collectBindVariables,
+  collectBindVariablesAcross,
+  isSelectStatement,
+  splitStatements,
+  statementAt,
+} from './statements'
 
 describe('splitStatements', () => {
   it('セミコロンで区切られた複数の文を切り出す', () => {
@@ -567,5 +573,40 @@ describe('collectBindVariables', () => {
 
     // Assert
     expect(names).toEqual(['user_id$1'])
+  })
+})
+
+describe('collectBindVariablesAcross', () => {
+  it('複数の文から名前を出てきた順に集める', () => {
+    // Arrange
+    const statements = ['insert into t values (:id)', 'update t set name = :name where id = :id']
+
+    // Act
+    const names = collectBindVariablesAcross(statements)
+
+    // Assert
+    expect(names).toEqual(['id', 'name'])
+  })
+
+  it('大文字小文字が違うだけの名前は 1 つにまとめる', () => {
+    // Arrange
+    const statements = ['select * from t where id = :ID', 'delete from t where id = :id']
+
+    // Act
+    const names = collectBindVariablesAcross(statements)
+
+    // Assert
+    expect(names).toEqual(['ID'])
+  })
+
+  it('バインド変数が無ければ空になる', () => {
+    // Arrange
+    const statements = ['select 1 from dual', 'commit']
+
+    // Act
+    const names = collectBindVariablesAcross(statements)
+
+    // Assert
+    expect(names).toEqual([])
   })
 })

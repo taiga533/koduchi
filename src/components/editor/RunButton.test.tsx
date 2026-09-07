@@ -11,6 +11,7 @@ function 描く(overrides: Partial<React.ComponentProps<typeof RunButton>> = {})
     hasSelection: false,
     onRun: () => 押された.push('run'),
     onRunSelection: () => 押された.push('runSelection'),
+    onRunScript: () => 押された.push('runScript'),
     onExplain: () => 押された.push('explain'),
     onExplainActual: () => 押された.push('explainActual'),
     onSaveCsv: () => 押された.push('saveCsv'),
@@ -66,6 +67,7 @@ describe('RunButton', () => {
     // Assert
     for (const label of [
       '選択範囲のみ実行',
+      'すべて実行',
       '実行計画を生成',
       '実測付きで生成',
       '結果を CSV で保存',
@@ -95,6 +97,29 @@ describe('RunButton', () => {
 
     // Assert
     expect(押された).toEqual(['runSelection'])
+  })
+
+  it('すべて実行を押すとスクリプト実行が呼ばれる', async () => {
+    // Arrange
+    const 押された = 描く()
+    await userEvent.click(screen.getByRole('button', { name: '実行のメニュー' }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /すべて実行/ }))
+
+    // Assert
+    expect(押された).toEqual(['runScript'])
+  })
+
+  it('選択があればすべて実行に選択範囲と添える', async () => {
+    // Arrange
+    描く({ hasSelection: true })
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行のメニュー' }))
+
+    // Assert
+    expect(screen.getByRole('button', { name: /すべて実行選択範囲/ })).toBeInTheDocument()
   })
 
   it('実行計画の項目を押すと見積りが呼ばれメニューが閉じる', async () => {

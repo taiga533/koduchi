@@ -13,6 +13,7 @@ function 描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {})
     onCursorChange: (position) => 通知.position.push(position),
     onRunStatement: () => {},
     onRunSelection: () => {},
+    onRunScript: () => {},
     onCancel: () => {},
     ...overrides,
   }
@@ -94,6 +95,19 @@ describe('SqlEditor', () => {
 
     // Assert
     expect(通知.position.at(-1)).toMatchObject({ line: 1, column: 4, offset: 3 })
+  })
+
+  it('⌥⌘⏎ でスクリプト実行が呼ばれる', async () => {
+    // Arrange
+    const 呼ばれた: string[] = []
+    描く({ value: 'select 1;', onRunScript: () => 呼ばれた.push('script') })
+
+    // Act
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Alt>}{Meta>}{Enter}{/Meta}{/Alt}')
+
+    // Assert
+    expect(呼ばれた).toEqual(['script'])
   })
 
   it('外から内容を差し替えると反映される', () => {
