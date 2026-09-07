@@ -7,6 +7,9 @@
  * ため、届くたびに `Compartment` で言語設定だけを差し替える。エディタを作り直すと
  * 取り消し履歴とカーソル位置が飛ぶ。
  *
+ * `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` はここでしか意味を持たないため、CodeMirror の
+ * keymap に置く（CLAUDE.md の「キーバインドの置き場所」）。
+ *
  * 日本語入力（IME）の変換中はエディタの外へ何も伝えない。変換中に React の
  * 再描画を起こすと、CodeMirror が編集領域の DOM を組み直し、その拍子に
  * 入力ソースの表示が切り替わって画面中央にインジケータが出る。確定した時点で
@@ -74,6 +77,8 @@ interface SqlEditorProps {
   onRunStatement: () => void
   /** `⇧⌘⏎`。選択範囲を実行する。 */
   onRunSelection: () => void
+  /** `⌥⌘⏎`。タブ全体（選択範囲があればその中）の文を順に実行する。 */
+  onRunScript: () => void
   /** `⌘.`。実行を中止する。 */
   onCancel: () => void
 }
@@ -85,6 +90,7 @@ export function SqlEditor({
   onCursorChange,
   onRunStatement,
   onRunSelection,
+  onRunScript,
   onCancel,
 }: SqlEditorProps) {
   const container = useRef<HTMLDivElement>(null)
@@ -101,8 +107,22 @@ export function SqlEditor({
 
   // 各コールバックは再描画のたびに新しくなるため、拡張を作り直さずに済むよう
   // ref 越しに最新のものを呼ぶ。
-  const handlers = useRef({ onChange, onCursorChange, onRunStatement, onRunSelection, onCancel })
-  handlers.current = { onChange, onCursorChange, onRunStatement, onRunSelection, onCancel }
+  const handlers = useRef({
+    onChange,
+    onCursorChange,
+    onRunStatement,
+    onRunSelection,
+    onRunScript,
+    onCancel,
+  })
+  handlers.current = {
+    onChange,
+    onCursorChange,
+    onRunStatement,
+    onRunSelection,
+    onRunScript,
+    onCancel,
+  }
 
   useEffect(() => {
     if (!container.current) {
@@ -143,6 +163,14 @@ export function SqlEditor({
             preventDefault: true,
             run: () => {
               handlers.current.onRunSelection()
+              return true
+            },
+          },
+          {
+            key: 'Alt-Mod-Enter',
+            preventDefault: true,
+            run: () => {
+              handlers.current.onRunScript()
               return true
             },
           },

@@ -40,6 +40,20 @@ export interface TabExecution {
   error: string | null
   /** 続きを取り出している最中か。二重に取りにいかないための見張り。 */
   loadingMore: boolean
+  /**
+   * スクリプト実行（`⌥⌘⏎`）の位置。単発の実行では `null`。
+   *
+   * 実行中は今どの文を投げているかを、失敗したときはどの文で止まったかを指す。
+   */
+  progress: ScriptProgress | null
+}
+
+/** スクリプト実行における文の位置。 */
+export interface ScriptProgress {
+  /** 何文目か（1 始まり）。 */
+  index: number
+  /** 実行する文の総数。 */
+  total: number
 }
 
 /** 実行計画の取り方。 */
@@ -68,6 +82,7 @@ export const emptyExecution: TabExecution = {
   affectedRows: null,
   error: null,
   loadingMore: false,
+  progress: null,
 }
 
 /** メッセージタブに時系列で積む 1 件。 */
@@ -85,6 +100,8 @@ export interface LogEntry {
   error: string | null
   /** データベースからの通知（`DBMS_OUTPUT`）。 */
   notices: string[]
+  /** スクリプト実行の何文目か。単発の実行では `null`。 */
+  statement: ScriptProgress | null
 }
 
 interface ExecutionState {
@@ -106,11 +123,27 @@ interface ExecutionState {
     sql: string,
     connectionName: string,
   ) => Promise<void>
+  /**
+   * 複数の文を順に実行する（`⌥⌘⏎`）。
+   *
+   * 前の文が終わってから次を投げる。途中で失敗したら以降の文は実行しない。
+   * 履歴とログには 1 文ずつ記録する。
+   */
+  executeScript: (
+    connectionId: string,
+    tabId: string,
+    statements: string[],
+    connectionName: string,
+  ) => Promise<void>
   /** 実行計画を取る（`⌘E` / `⇧⌘E`）。履歴には記録しない。 */
   generatePlan: (connectionId: string, tabId: string, sql: string, mode: PlanMode) => Promise<void>
   /** 開いている結果セットから続きを取り出す。 */
   fetchMore: (connectionId: string, tabId: string) => Promise<void>
-  /** 実行中の文を中止する（`⌘.`）。 */
+  /**
+   * 実行中の文を中止する（`⌘.`）。
+   *
+   * スクリプト実行では、走っている文を中止したうえで残りの文も実行しない。
+   */
   cancel: (connectionId: string, tabId: string) => Promise<void>
   /** タブの結果セットを手放す。タブを閉じたときに呼ぶ。 */
   releaseTab: (connectionId: string, tabId: string) => Promise<void>
@@ -124,6 +157,31 @@ interface ExecutionState {
   /** すべての結果とログを捨てる。接続を切り替えたときに使う。 */
   clear: () => void
 }
+
+/**
+ * 中止（`⌘.`）を求められたタブ。
+ *
+ * スクリプト実行の途中で中止されたことを、走っている文の外側へ伝えるために使う。
+ * 描画には関わらないためストアの状態には持たせない。
+ */
+const cancelRequests = new Set<string>()
+
+/** 1 文を実行した結末。 */
+type StatementOutcome =
+  | {
+      ok: true
+      /** 成功した文の結果。 */
+      execution: TabExecution
+      /** 接続を明け渡すために結果セットを閉じられたタブ（ADR 0003）。 */
+      discardedTab: string | null
+    }
+  | {
+      ok: false
+      /** 失敗の内容。 */
+      message: string
+      /** 失敗するまでに要したミリ秒。 */
+      elapsedMs: number
+    }
 
 /**
  * タブの状態を差し替える。
@@ -156,25 +214,28 @@ async function recordHistory(entry: NewHistoryEntry): Promise<void> {
   }
 }
 
-export const useExecutionStore = create<ExecutionState>((set, get) => ({
-  byTab: {},
-  planByTab: {},
-  log: [],
-
-  execute: async (connectionId, tabId, sql, connectionName) => {
-    if (get().byTab[tabId]?.status === 'running') {
-      return
-    }
-
+export const useExecutionStore = create<ExecutionState>((set, get) => {
+  /**
+   * 1 文を実行し、ログと履歴へ 1 件ずつ記録する。
+   *
+   * タブの表示状態は呼び出し側が決める。単発の実行とスクリプト実行とで、
+   * 何を残すかが違うためである。
+   *
+   * @param connectionId 接続の ID
+   * @param tabId 実行するタブ
+   * @param sql 実行する 1 文
+   * @param connectionName 履歴に残す接続名
+   * @param progress スクリプト実行の何文目か。単発の実行では `null`
+   */
+  const runStatement = async (
+    connectionId: string,
+    tabId: string,
+    sql: string,
+    connectionName: string,
+    progress: ScriptProgress | null,
+  ): Promise<StatementOutcome> => {
     const startedAt = new Date()
     const entryId = crypto.randomUUID()
-
-    set((state) => ({
-      byTab: patchTab(state.byTab, tabId, {
-        ...emptyExecution,
-        status: 'running',
-      }),
-    }))
 
     try {
       const response = await getDbApi().execute(connectionId, tabId, sql)
@@ -182,14 +243,12 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       const execution: TabExecution =
         response.kind === 'query'
           ? {
+              ...emptyExecution,
               status: 'succeeded',
               columns: response.columns,
               rows: response.chunk.rows,
               exhausted: response.chunk.exhausted,
               elapsedMs: response.elapsedMs,
-              affectedRows: null,
-              error: null,
-              loadingMore: false,
             }
           : {
               ...emptyExecution,
@@ -198,58 +257,20 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
               affectedRows: response.affectedRows,
             }
 
-      set((state) => {
-        let byTab = patchTab(state.byTab, tabId, execution)
+      const rowCount = execution.affectedRows ?? execution.rows.length
 
-        // 接続を明け渡すために閉じられたタブには、再実行を促す状態を残す。
-        if (response.discardedTab) {
-          byTab = patchTab(byTab, response.discardedTab, { status: 'discarded' })
-        }
-
-        return {
-          byTab,
-          log: [
-            ...state.log,
-            {
-              id: entryId,
-              startedAt,
-              sql,
-              elapsedMs: response.elapsedMs,
-              rowCount: execution.affectedRows ?? execution.rows.length,
-              error: null,
-              notices: response.notices,
-            },
-          ],
-        }
-      })
-
-      await recordHistory({
-        sql,
-        connectionName,
-        startedAt: startedAt.getTime(),
-        elapsedMs: response.elapsedMs,
-        rowCount: execution.affectedRows ?? execution.rows.length,
-        succeeded: true,
-        errorMessage: null,
-      })
-    } catch (error) {
-      const message = toErrorMessage(error)
       set((state) => ({
-        byTab: patchTab(state.byTab, tabId, {
-          ...emptyExecution,
-          status: 'failed',
-          error: message,
-        }),
         log: [
           ...state.log,
           {
             id: entryId,
             startedAt,
             sql,
-            elapsedMs: Date.now() - startedAt.getTime(),
-            rowCount: null,
-            error: message,
-            notices: [],
+            elapsedMs: response.elapsedMs,
+            rowCount,
+            error: null,
+            notices: response.notices,
+            statement: progress,
           },
         ],
       }))
@@ -258,102 +279,273 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
         sql,
         connectionName,
         startedAt: startedAt.getTime(),
-        elapsedMs: Date.now() - startedAt.getTime(),
+        elapsedMs: response.elapsedMs,
+        rowCount,
+        succeeded: true,
+        errorMessage: null,
+      })
+
+      return { ok: true, execution, discardedTab: response.discardedTab }
+    } catch (error) {
+      const message = toErrorMessage(error)
+      const elapsedMs = Date.now() - startedAt.getTime()
+
+      set((state) => ({
+        log: [
+          ...state.log,
+          {
+            id: entryId,
+            startedAt,
+            sql,
+            elapsedMs,
+            rowCount: null,
+            error: message,
+            notices: [],
+            statement: progress,
+          },
+        ],
+      }))
+
+      await recordHistory({
+        sql,
+        connectionName,
+        startedAt: startedAt.getTime(),
+        elapsedMs,
         rowCount: null,
         succeeded: false,
         errorMessage: message,
       })
+
+      return { ok: false, message, elapsedMs }
     }
-  },
+  }
 
-  generatePlan: async (connectionId, tabId, sql, mode) => {
-    set((state) => ({
-      planByTab: {
-        ...state.planByTab,
-        [tabId]: { status: 'running', mode, text: '', error: null },
-      },
-    }))
+  return {
+    byTab: {},
+    planByTab: {},
+    log: [],
 
-    try {
-      const api = getDbApi()
-      const text =
-        mode === 'estimate'
-          ? await api.explainPlan(connectionId, sql)
-          : await api.actualPlan(connectionId, sql)
+    execute: async (connectionId, tabId, sql, connectionName) => {
+      if (get().byTab[tabId]?.status === 'running') {
+        return
+      }
 
       set((state) => ({
-        planByTab: {
-          ...state.planByTab,
-          [tabId]: { status: 'succeeded', mode, text, error: null },
-        },
+        byTab: patchTab(state.byTab, tabId, { ...emptyExecution, status: 'running' }),
       }))
-    } catch (error) {
-      set((state) => ({
-        planByTab: {
-          ...state.planByTab,
-          [tabId]: { status: 'failed', mode, text: '', error: toErrorMessage(error) },
-        },
-      }))
-    }
-  },
 
-  fetchMore: async (connectionId, tabId) => {
-    const current = get().byTab[tabId]
-    if (!current || current.exhausted || current.loadingMore || current.status !== 'succeeded') {
-      return
-    }
+      const outcome = await runStatement(connectionId, tabId, sql, connectionName, null)
 
-    set((state) => ({ byTab: patchTab(state.byTab, tabId, { loadingMore: true }) }))
-
-    try {
-      const chunk = await getDbApi().fetchMore(connectionId, tabId)
       set((state) => {
-        const tab = state.byTab[tabId] ?? emptyExecution
-        return {
-          byTab: patchTab(state.byTab, tabId, {
-            rows: [...tab.rows, ...chunk.rows],
-            exhausted: chunk.exhausted,
-            loadingMore: false,
-          }),
+        if (!outcome.ok) {
+          return {
+            byTab: patchTab(state.byTab, tabId, {
+              ...emptyExecution,
+              status: 'failed',
+              error: outcome.message,
+            }),
+          }
         }
+
+        let byTab = patchTab(state.byTab, tabId, outcome.execution)
+
+        // 接続を明け渡すために閉じられたタブには、再実行を促す状態を残す。
+        if (outcome.discardedTab) {
+          byTab = patchTab(byTab, outcome.discardedTab, { status: 'discarded' })
+        }
+
+        return { byTab }
       })
-    } catch (error) {
-      // 結果セットが閉じられていた場合はここへ来る。再実行を促す状態にする。
+    },
+
+    executeScript: async (connectionId, tabId, statements, connectionName) => {
+      if (get().byTab[tabId]?.status === 'running' || statements.length === 0) {
+        return
+      }
+
+      const total = statements.length
+      cancelRequests.delete(tabId)
+
       set((state) => ({
         byTab: patchTab(state.byTab, tabId, {
-          status: 'discarded',
-          loadingMore: false,
-          error: toErrorMessage(error),
+          ...emptyExecution,
+          status: 'running',
+          progress: { index: 1, total },
         }),
       }))
-    }
-  },
 
-  cancel: async (connectionId, tabId) => {
-    if (get().byTab[tabId]?.status !== 'running') {
-      return
-    }
-    await getDbApi().cancel(connectionId, tabId)
-  },
+      /** 最後に結果セットを返した文の結果。無ければ影響行数を足し上げる。 */
+      let lastQuery: TabExecution | null = null
+      let affectedRows = 0
+      let elapsedMs = 0
+      let discardedTab: string | null = null
 
-  releaseTab: async (connectionId, tabId) => {
-    await getDbApi().releaseTab(connectionId, tabId)
-    set((state) => {
-      const { [tabId]: _removed, ...rest } = state.byTab
-      const { [tabId]: _removedPlan, ...restPlans } = state.planByTab
-      return { byTab: rest, planByTab: restPlans }
-    })
-  },
+      for (let index = 0; index < total; index += 1) {
+        const progress: ScriptProgress = { index: index + 1, total }
 
-  markExhausted: (tabId) =>
-    set((state) =>
-      state.byTab[tabId]
-        ? { byTab: patchTab(state.byTab, tabId, { exhausted: true, loadingMore: false }) }
-        : state,
-    ),
+        // 文と文の間で中止された場合。走っている文の中止は実行そのものが失敗する。
+        if (cancelRequests.has(tabId)) {
+          set((state) => ({
+            byTab: patchTab(state.byTab, tabId, {
+              ...emptyExecution,
+              status: 'failed',
+              error: '実行を中止しました',
+              elapsedMs,
+            }),
+          }))
+          cancelRequests.delete(tabId)
+          return
+        }
 
-  clear: () => set({ byTab: {}, planByTab: {}, log: [] }),
-}))
+        if (index > 0) {
+          set((state) => ({ byTab: patchTab(state.byTab, tabId, { progress }) }))
+        }
+
+        const outcome = await runStatement(
+          connectionId,
+          tabId,
+          statements[index],
+          connectionName,
+          progress,
+        )
+
+        if (!outcome.ok) {
+          // 途中で失敗したら以降の文は実行しない。何文目で止まったかを残す。
+          set((state) => ({
+            byTab: patchTab(state.byTab, tabId, {
+              ...emptyExecution,
+              status: 'failed',
+              error: outcome.message,
+              elapsedMs: elapsedMs + outcome.elapsedMs,
+              progress,
+            }),
+          }))
+          cancelRequests.delete(tabId)
+          return
+        }
+
+        elapsedMs += outcome.execution.elapsedMs ?? 0
+        if (outcome.execution.columns.length > 0) {
+          lastQuery = outcome.execution
+        } else {
+          affectedRows += outcome.execution.affectedRows ?? 0
+        }
+        if (outcome.discardedTab && outcome.discardedTab !== tabId) {
+          discardedTab = outcome.discardedTab
+        }
+      }
+
+      cancelRequests.delete(tabId)
+
+      // 結果ペインには最後の結果セットを出す。問い合わせが 1 つも無ければ
+      // 影響行数の合計を出す。所要時間はどちらも全体の合計とする。
+      const execution: TabExecution = lastQuery
+        ? { ...lastQuery, elapsedMs }
+        : { ...emptyExecution, status: 'succeeded', elapsedMs, affectedRows }
+
+      set((state) => {
+        let byTab = patchTab(state.byTab, tabId, execution)
+        if (discardedTab) {
+          byTab = patchTab(byTab, discardedTab, { status: 'discarded' })
+        }
+        return { byTab }
+      })
+    },
+
+    generatePlan: async (connectionId, tabId, sql, mode) => {
+      set((state) => ({
+        planByTab: {
+          ...state.planByTab,
+          [tabId]: { status: 'running', mode, text: '', error: null },
+        },
+      }))
+
+      try {
+        const api = getDbApi()
+        const text =
+          mode === 'estimate'
+            ? await api.explainPlan(connectionId, sql)
+            : await api.actualPlan(connectionId, sql)
+
+        set((state) => ({
+          planByTab: {
+            ...state.planByTab,
+            [tabId]: { status: 'succeeded', mode, text, error: null },
+          },
+        }))
+      } catch (error) {
+        set((state) => ({
+          planByTab: {
+            ...state.planByTab,
+            [tabId]: { status: 'failed', mode, text: '', error: toErrorMessage(error) },
+          },
+        }))
+      }
+    },
+
+    fetchMore: async (connectionId, tabId) => {
+      const current = get().byTab[tabId]
+      if (!current || current.exhausted || current.loadingMore || current.status !== 'succeeded') {
+        return
+      }
+
+      set((state) => ({ byTab: patchTab(state.byTab, tabId, { loadingMore: true }) }))
+
+      try {
+        const chunk = await getDbApi().fetchMore(connectionId, tabId)
+        set((state) => {
+          const tab = state.byTab[tabId] ?? emptyExecution
+          return {
+            byTab: patchTab(state.byTab, tabId, {
+              rows: [...tab.rows, ...chunk.rows],
+              exhausted: chunk.exhausted,
+              loadingMore: false,
+            }),
+          }
+        })
+      } catch (error) {
+        // 結果セットが閉じられていた場合はここへ来る。再実行を促す状態にする。
+        set((state) => ({
+          byTab: patchTab(state.byTab, tabId, {
+            status: 'discarded',
+            loadingMore: false,
+            error: toErrorMessage(error),
+          }),
+        }))
+      }
+    },
+
+    cancel: async (connectionId, tabId) => {
+      if (get().byTab[tabId]?.status !== 'running') {
+        return
+      }
+      // スクリプト実行の途中なら、残りの文を投げないための目印にもなる。
+      cancelRequests.add(tabId)
+      await getDbApi().cancel(connectionId, tabId)
+    },
+
+    releaseTab: async (connectionId, tabId) => {
+      await getDbApi().releaseTab(connectionId, tabId)
+      set((state) => {
+        const { [tabId]: _removed, ...rest } = state.byTab
+        const { [tabId]: _removedPlan, ...restPlans } = state.planByTab
+        return { byTab: rest, planByTab: restPlans }
+      })
+    },
+
+    markExhausted: (tabId) =>
+      set((state) =>
+        state.byTab[tabId]
+          ? { byTab: patchTab(state.byTab, tabId, { exhausted: true, loadingMore: false }) }
+          : state,
+      ),
+
+    clear: () => {
+      cancelRequests.clear()
+      set({ byTab: {}, planByTab: {}, log: [] })
+    },
+  }
+})
 
 /**
  * タブの実行状態を返す。まだ実行していなければ空の状態を返す。
@@ -381,7 +573,9 @@ export function formatResultSummary(execution: TabExecution): string {
     case 'idle':
       return ''
     case 'running':
-      return '実行中'
+      return execution.progress
+        ? `${execution.progress.index} / ${execution.progress.total} 文目を実行中`
+        : '実行中'
     case 'failed':
       return execution.elapsedMs === null ? '失敗' : `失敗 · ${execution.elapsedMs} ms`
     case 'discarded':

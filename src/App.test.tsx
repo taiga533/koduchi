@@ -256,4 +256,41 @@ describe('App', () => {
     expect(await screen.findByRole('button', { name: /メッセージ/ })).toBeInTheDocument()
     expect(screen.getByText('ORA-00942: table or view does not exist')).toBeInTheDocument()
   })
+  it('すべて実行を選ぶとタブの文が順に実行される', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    useConnectionStore.setState({
+      status: 'connected',
+      connection: {
+        id: 'c1',
+        savedId: null,
+        name: 'dev',
+        params: {
+          username: 'koduchi',
+          password: '',
+          target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
+          readOnly: false,
+        },
+      },
+      error: null,
+    })
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore
+      .getState()
+      .updateContent(選択中のタブ(), 'create table t (n number);\ninsert into t values (1);')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行のメニュー' }))
+    await userEvent.click(screen.getByRole('button', { name: /すべて実行/ }))
+
+    // Assert
+    await waitFor(() =>
+      expect(calls.execute.map((call) => call.sql)).toEqual([
+        'create table t (n number)',
+        'insert into t values (1)',
+      ]),
+    )
+  })
 })

@@ -23,6 +23,8 @@ interface EditorPanelProps {
   onRunStatement: () => void
   /** `⇧⌘⏎`。選択範囲を実行する。 */
   onRunSelection: () => void
+  /** `⌥⌘⏎`。タブ全体（選択範囲があればその中）の文を順に実行する。 */
+  onRunScript: () => void
   /** `⌘.`。実行を中止する。 */
   onCancel: () => void
 }
@@ -36,6 +38,7 @@ export function EditorPanel({
   onCursorChange,
   onRunStatement,
   onRunSelection,
+  onRunScript,
   onCancel,
 }: EditorPanelProps) {
   const activeTab = useTabStore(selectActiveTab)
@@ -80,6 +83,7 @@ export function EditorPanel({
       onCursorChange={onCursorChange}
       onRunStatement={onRunStatement}
       onRunSelection={onRunSelection}
+      onRunScript={onRunScript}
       onCancel={onCancel}
     />
   )

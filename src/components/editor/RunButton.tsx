@@ -18,6 +18,8 @@ interface RunButtonProps {
   onRun: () => void
   /** `⇧⌘⏎`。選択範囲を実行する。選択が無ければ押せない。 */
   onRunSelection: () => void
+  /** `⌥⌘⏎`。タブ全体（選択範囲があればその中）の文を順に実行する。 */
+  onRunScript: () => void
   /** 選択範囲があるか。 */
   hasSelection: boolean
   /** `⌘E`。見積りの実行計画を生成する。 */
@@ -34,6 +36,7 @@ export function RunButton({
   running,
   onRun,
   onRunSelection,
+  onRunScript,
   hasSelection,
   onExplain,
   onExplainActual,
@@ -86,6 +89,13 @@ export function RunButton({
           </MenuItem>
           <MenuItem shortcut="⇧⌘⏎" disabled={!hasSelection} onClick={() => pick(onRunSelection)}>
             選択範囲のみ実行
+          </MenuItem>
+          <MenuItem
+            shortcut="⌥⌘⏎"
+            note={hasSelection ? '選択範囲' : undefined}
+            onClick={() => pick(onRunScript)}
+          >
+            すべて実行
           </MenuItem>
           <Divider />
           <MenuItem shortcut="⌘E" note="EXPLAIN" onClick={() => pick(onExplain)}>

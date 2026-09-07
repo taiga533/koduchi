@@ -7,7 +7,7 @@
  * 2. 未接続（デザイン 5g） … 保存した接続を選ぶ画面と、接続を作成する画面
  * 3. 接続中 … エディタと結果ペイン
  *
- * キーバインドのうち、エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌘.` は
+ * キーバインドのうち、エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` は
  * CodeMirror 側に置く。それ以外はウィンドウ全体で効かせる。
  *
  * 打鍵のたびに描き直る範囲を狭く保つ。カーソル位置は `ui` ストアへ逃がし、
@@ -33,7 +33,7 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
 import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
-import { isSelectStatement, statementAt } from './sql/statements'
+import { isSelectStatement, splitStatements, statementAt } from './sql/statements'
 import { useConnectionStore } from './stores/connection'
 import { useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
@@ -87,6 +87,7 @@ export function App() {
   const restoreTabs = useTabStore((state) => state.restore)
 
   const execute = useExecutionStore((state) => state.execute)
+  const executeScript = useExecutionStore((state) => state.executeScript)
   const generatePlan = useExecutionStore((state) => state.generatePlan)
   const fetchMore = useExecutionStore((state) => state.fetchMore)
   const cancel = useExecutionStore((state) => state.cancel)
@@ -196,6 +197,29 @@ export function App() {
       void runSql(sql)
     }
   }, [currentSql, runSql])
+
+  /**
+   * `⌥⌘⏎`。タブ全体の文を順に実行する。
+   *
+   * 選択範囲があるときは、その中の文だけを順に実行する。途中で失敗したら
+   * 以降の文は実行しない（executeScript が判断する）。
+   */
+  const runScript = useCallback(async () => {
+    const tab = selectActiveTab(useTabStore.getState())
+    if (!connection || !tab) {
+      return
+    }
+
+    const source = positionRef.current.selectedText ?? tab.content
+    const statements = splitStatements(source).map((statement) => statement.text)
+    if (statements.length === 0) {
+      return
+    }
+
+    selectResultTab('result')
+    await executeScript(connection.id, tab.id, statements, connection.name)
+    await useHistoryStore.getState().reload()
+  }, [connection, executeScript, selectResultTab])
 
   /**
    * `⌘E` / `⇧⌘E`。実行計画を出す。
@@ -524,12 +548,14 @@ export function App() {
             onCursorChange={onCursorChange}
             onRunStatement={runStatement}
             onRunSelection={runSelection}
+            onRunScript={() => void runScript()}
             onCancel={cancelExecution}
           />
           <RunControls
             tabId={activeTabId}
             onRun={runStatement}
             onRunSelection={runSelection}
+            onRunScript={() => void runScript()}
             onExplain={() => void runPlan(false)}
             onExplainActual={() => void runPlan(true)}
             onSaveCsv={openCsvDialog}
@@ -560,6 +586,7 @@ function RunControls({
   tabId: string | null
   onRun: () => void
   onRunSelection: () => void
+  onRunScript: () => void
   onExplain: () => void
   onExplainActual: () => void
   onSaveCsv: () => void
