@@ -13,6 +13,7 @@
 //! `oracle::InitParams::init()` がプロセス 1 回きりであるため、テストは
 //! `serial_test` で直列に走らせる。
 
+use koduchi_lib::db::definition::ConstraintKind;
 use koduchi_lib::db::driver::{
     Bind, BindKind, Chunk, ConnectTarget, ConnectionParams, ExecuteOutcome,
 };
@@ -1366,6 +1367,387 @@ fn 読み取り専用の接続ではkillできない() {
     let error = pool
         .kill_session(1, 1)
         .expect_err("読み取り専用なので落とせないはず");
+
+    // Assert
+    assert_eq!(error.kind, DbErrorKind::Permission);
+}
+
+#[test]
+#[serial]
+fn テーブルの定義に列と制約と索引が揃う() {
+    // Arrange: 定義はプールの結果セットを保持していない接続で読む（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    assert!(definition
+        .columns
+        .iter()
+        .any(|column| column.name == "TRACKING_NO"));
+    assert!(definition
+        .constraints
+        .iter()
+        .any(|c| c.name == "PK_SHIPMENTS"));
+    assert!(definition
+        .indexes
+        .iter()
+        .any(|index| index.name == "IX_SHIPMENTS_ORDER_STATUS"));
+}
+
+#[test]
+#[serial]
+fn 外部キーは参照先の表と列まで分かる() {
+    // Arrange: 複合の外部キーを持つ表で確かめる（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENT_LEGS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let fk = definition
+        .constraints
+        .iter()
+        .find(|c| c.name == "FK_SHIPMENT_LEGS_RATE")
+        .expect("複合の外部キーが並ぶはず");
+    assert_eq!(fk.kind, ConstraintKind::ForeignKey);
+    assert_eq!(fk.columns, vec!["CARRIER", "ZONE"]);
+    assert_eq!(fk.referenced_table.as_deref(), Some("CARRIER_RATES"));
+    assert_eq!(fk.referenced_columns, vec!["CARRIER", "ZONE"]);
+}
+
+#[test]
+#[serial]
+fn 削除規則まで含めて外部キーが読める() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let fk = definition
+        .constraints
+        .iter()
+        .find(|c| c.name == "FK_SHIPMENTS_ORDER")
+        .expect("外部キーが並ぶはず");
+    assert_eq!(fk.delete_rule.as_deref(), Some("CASCADE"));
+    assert_eq!(fk.referenced_table.as_deref(), Some("ORDERS"));
+}
+
+#[test]
+#[serial]
+fn 名前を付けた検査制約は条件つきで並ぶ() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let check = definition
+        .constraints
+        .iter()
+        .find(|c| c.name == "CK_SHIPMENTS_STATUS")
+        .expect("検査制約が並ぶはず");
+    assert_eq!(check.kind, ConstraintKind::Check);
+    assert!(check
+        .search_condition
+        .as_deref()
+        .unwrap_or_default()
+        .contains("delivered"));
+}
+
+#[test]
+#[serial]
+fn not_nullだけの検査制約は定義ビューに並ばない() {
+    // Arrange: 列の一覧が「NULL 可」を既に出している（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    assert!(
+        !definition
+            .constraints
+            .iter()
+            .any(|c| c.name.starts_with("SYS_C") && c.kind == ConstraintKind::Check),
+        "NOT NULL だけの検査制約が残っている: {:?}",
+        definition
+            .constraints
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+#[serial]
+fn 複合索引の列は定義した順に並ぶ() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let index = definition
+        .indexes
+        .iter()
+        .find(|index| index.name == "IX_SHIPMENTS_ORDER_STATUS")
+        .expect("複合索引が並ぶはず");
+    let 並び: Vec<&str> = index
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect();
+    assert_eq!(並び, vec!["ORDER_ID", "STATUS"]);
+    assert!(!index.unique);
+}
+
+#[test]
+#[serial]
+fn 主キーの索引は自動生成でも定義ビューに並ぶ() {
+    // Arrange: ツリー（ADR 0014）では落とすが、定義ビューでは出す（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "USERS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    assert!(
+        definition.indexes.iter().any(|index| index.generated),
+        "自動生成の索引が 1 つも並んでいない"
+    );
+}
+
+#[test]
+#[serial]
+fn ビューは列だけを持ち制約も索引も持たない() {
+    // Arrange: 問い合わせにも行かない（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SESSION_ROLLUP", ObjectKind::View)
+        .unwrap();
+
+    // Assert
+    assert!(!definition.columns.is_empty());
+    assert!(definition.constraints.is_empty());
+    assert!(definition.indexes.is_empty());
+}
+
+#[test]
+#[serial]
+fn 定義を読んでも結果セットは壊れない() {
+    // Arrange: 開いたままのカーソルを持たせてから定義を読む（ADR 0003・0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    pool.execute(TAB, "select event_id from koduchi.events", &[])
+        .unwrap();
+
+    // Act
+    pool.object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+    pool.object_ddl("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let chunk = pool.fetch_more(TAB).unwrap();
+    assert_eq!(chunk.rows.len(), DEFAULT_CHUNK_SIZE);
+}
+
+#[test]
+#[serial]
+fn テーブルのddlを取得できる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let ddl = pool
+        .object_ddl("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    assert_eq!(ddl.parts.len(), 1);
+    let sql = &ddl.parts[0].sql;
+    assert!(sql.contains("CREATE TABLE"), "想定と違う DDL: {sql}");
+    assert!(sql.contains("TRACKING_NO"), "想定と違う DDL: {sql}");
+}
+
+#[test]
+#[serial]
+fn ddlから記憶域の属性が落ちている() {
+    // Arrange: 素のままでは本文の倍近くを占め、読めない（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let ddl = pool
+        .object_ddl("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let sql = &ddl.parts[0].sql;
+    assert!(!sql.contains("PCTFREE"), "記憶域の属性が残っている: {sql}");
+    assert!(!sql.contains("STORAGE"), "記憶域の属性が残っている: {sql}");
+    assert!(!sql.contains("TABLESPACE"), "表領域が残っている: {sql}");
+}
+
+#[test]
+#[serial]
+fn ddlは文の区切りで終わる() {
+    // Arrange: そのままエディタへ貼って実行できる形にする（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let ddl = pool
+        .object_ddl("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    assert!(
+        ddl.parts[0].sql.ends_with(';'),
+        "SQLTERMINATOR が効いていない: {}",
+        ddl.parts[0].sql
+    );
+}
+
+#[test]
+#[serial]
+fn ビューのddlを取得できる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let ddl = pool
+        .object_ddl("KODUCHI", "SESSION_ROLLUP", ObjectKind::View)
+        .unwrap();
+
+    // Assert
+    assert!(
+        ddl.parts[0].sql.contains("SESSION_ROLLUP"),
+        "想定と違う DDL: {}",
+        ddl.parts[0].sql
+    );
+}
+
+#[test]
+#[serial]
+fn パッケージのddlは仕様と本体の二つになる() {
+    // Arrange: GET_DDL('PACKAGE', …) は仕様しか返さない（ADR 0019）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let ddl = pool
+        .object_ddl("KODUCHI", "ORDER_STATS", ObjectKind::Package)
+        .unwrap();
+
+    // Assert
+    assert_eq!(ddl.parts.len(), 2);
+    assert_eq!(ddl.parts[0].label, "パッケージ仕様");
+    assert_eq!(ddl.parts[1].label, "パッケージ本体");
+    assert!(ddl.parts[1].sql.to_uppercase().contains("PACKAGE BODY"));
+}
+
+#[test]
+#[serial]
+fn 手続のddlを取得できる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let ddl = pool
+        .object_ddl("KODUCHI", "SAY_HELLO", ObjectKind::Procedure)
+        .unwrap();
+
+    // Assert
+    assert!(
+        ddl.parts[0].sql.to_uppercase().contains("PROCEDURE"),
+        "想定と違う DDL: {}",
+        ddl.parts[0].sql
+    );
+}
+
+#[test]
+#[serial]
+fn 索引のddlを取得できる() {
+    // Arrange: 型名がアンダースコア繋ぎでない種別の確認も兼ねる
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let ddl = pool
+        .object_ddl("KODUCHI", "IX_SHIPMENTS_ORDER_STATUS", ObjectKind::Index)
+        .unwrap();
+
+    // Assert
+    assert!(
+        ddl.parts[0].sql.to_uppercase().contains("CREATE INDEX"),
+        "想定と違う DDL: {}",
+        ddl.parts[0].sql
+    );
+}
+
+#[test]
+#[serial]
+fn 存在しないオブジェクトのddlは権限として弾かれる() {
+    // Arrange: 名前は ALL_OBJECTS から取っている。届かないのは権限の話である
+    // （ADR 0019）。空の定義を返して「定義が無い」と読ませてはならない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let error = pool
+        .object_ddl("KODUCHI", "NOT_A_REAL_TABLE", ObjectKind::Table)
+        .expect_err("取得できないはず");
 
     // Assert
     assert_eq!(error.kind, DbErrorKind::Permission);

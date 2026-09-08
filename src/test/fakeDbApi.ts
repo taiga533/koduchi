@@ -20,6 +20,9 @@ import type {
   HistoryQuery,
   NewHistoryEntry,
   NewSavedQuery,
+  ObjectDdl,
+  ObjectDefinition,
+  ObjectKind,
   SavedConnection,
   SavedQuery,
   SavedQueryQuery,
@@ -55,6 +58,8 @@ export interface FakeCalls {
   saveSession: { windowLabel: string; state: SessionState }[]
   schemaOverview: { id: string; filter: SchemaFilter }[]
   schemaColumns: { id: string; owner: string }[]
+  objectDefinition: { id: string; owner: string; name: string; kind: ObjectKind }[]
+  objectDdl: { id: string; owner: string; name: string; kind: ObjectKind }[]
   listSessions: string[]
   killSession: { id: string; sid: number; serial: number }[]
   explainPlan: { id: string; sql: string; binds: Bind[] }[]
@@ -96,6 +101,14 @@ export interface FakeDbApiOptions {
   schemas?: SchemaNode[]
   /** スキーマごとの列情報。 */
   columns?: Record<string, TableColumn[]>
+  /** テーブル定義ビューの応答（ADR 0019）。 */
+  definition?: ObjectDefinition
+  /** 定義の取得で投げるエラー。権限不足の表示を確かめるのに使う。 */
+  definitionError?: unknown
+  /** DDL の応答（ADR 0019）。 */
+  ddl?: ObjectDdl
+  /** DDL の取得で投げるエラー。 */
+  ddlError?: unknown
   /** 復元するセッション。 */
   session?: SessionState
   /** 実行計画のテキスト。 */
@@ -163,6 +176,36 @@ export function sessionRow(row: Partial<SessionRow> & { sid: number }): SessionR
   }
 }
 
+/**
+ * 何も指定しないときのテーブル定義（ADR 0019）。
+ *
+ * 列も制約も索引も持たない。何かを見せたいテストは `definition` で差し替える。
+ *
+ * @param owner 所有者のスキーマ名
+ * @param name オブジェクト名
+ * @param kind オブジェクトの種類
+ */
+function emptyDefinition(owner: string, name: string, kind: ObjectKind): ObjectDefinition {
+  return { owner, name, kind, columns: [], constraints: [], indexes: [] }
+}
+
+/**
+ * 列 1 つを組み立てる。
+ *
+ * 指定しなかった項目は `NUMBER(12)` の NULL 可な列になる。
+ *
+ * @param column 差し替える項目。`name` は必須
+ */
+export function tableColumn(column: Partial<TableColumn> & { name: string }): TableColumn {
+  return {
+    objectName: 'SHIPMENTS',
+    typeName: 'NUMBER(12)',
+    nullable: true,
+    kind: 'number',
+    ...column,
+  }
+}
+
 /** 何も指定しないときのアプリ設定。 */
 const defaultAppSettings: AppSettings = {
   appearance: { theme: 'system', gridLines: true, rowHeight: 'compact' },
@@ -224,6 +267,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     saveSession: [],
     schemaOverview: [],
     schemaColumns: [],
+    objectDefinition: [],
+    objectDdl: [],
     listSessions: [],
     killSession: [],
     explainPlan: [],
@@ -396,6 +441,29 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     schemaColumns: async (id, owner) => {
       calls.schemaColumns.push({ id, owner })
       return options.columns?.[owner] ?? []
+    },
+
+    objectDefinition: async (id, owner, name, kind) => {
+      calls.objectDefinition.push({ id, owner, name, kind })
+      if (options.definitionError !== undefined) {
+        throw options.definitionError
+      }
+      return options.definition ?? emptyDefinition(owner, name, kind)
+    },
+
+    objectDdl: async (id, owner, name, kind) => {
+      calls.objectDdl.push({ id, owner, name, kind })
+      if (options.ddlError !== undefined) {
+        throw options.ddlError
+      }
+      return (
+        options.ddl ?? {
+          owner,
+          name,
+          kind,
+          parts: [{ label: '定義', sql: `create table ${owner}.${name} (id number);` }],
+        }
+      )
     },
 
     listSessions: async (id) => {

@@ -210,6 +210,60 @@ impl ObjectKind {
             ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView
         )
     }
+
+    /// 制約と索引を持ちうる種類か（ADR 0019）。
+    ///
+    /// テーブル定義ビューが `ALL_CONSTRAINTS` と `ALL_INDEXES` を引きにいくかの
+    /// 判定に使う。ビューは列を持つが制約も索引も持たないため、`has_columns` とは
+    /// 別の判定が要る。マテリアライズドビューは実体が表であり、索引を張れる。
+    pub fn has_table_details(self) -> bool {
+        matches!(self, ObjectKind::Table | ObjectKind::MaterializedView)
+    }
+
+    /// `DBMS_METADATA.GET_DDL` に渡す型名（ADR 0019）。
+    ///
+    /// `ALL_OBJECTS.OBJECT_TYPE` の綴りとは一致しない。`MATERIALIZED VIEW` は
+    /// `MATERIALIZED_VIEW`、`DATABASE LINK` は `DB_LINK` であり、どちらも
+    /// 空白ではなくアンダースコアで繋ぐ。`object_type()` を渡すと
+    /// `ORA-31600`（無効な入力値）で落ちる。
+    pub fn ddl_object_type(self) -> &'static str {
+        match self {
+            ObjectKind::Table => "TABLE",
+            ObjectKind::View => "VIEW",
+            ObjectKind::MaterializedView => "MATERIALIZED_VIEW",
+            ObjectKind::Index => "INDEX",
+            ObjectKind::Trigger => "TRIGGER",
+            ObjectKind::Sequence => "SEQUENCE",
+            ObjectKind::Synonym => "SYNONYM",
+            ObjectKind::Type => "TYPE",
+            ObjectKind::Function => "FUNCTION",
+            ObjectKind::Procedure => "PROCEDURE",
+            ObjectKind::Package => "PACKAGE",
+            ObjectKind::DatabaseLink => "DB_LINK",
+        }
+    }
+
+    /// 仕様とは別に本体を取る必要がある種類の、本体側の型名（ADR 0019）。
+    ///
+    /// パッケージだけが該当する。`GET_DDL('PACKAGE', …)` は仕様しか返さない。
+    /// ADR 0014 が `PACKAGE BODY` をツリーから落としているぶん、本体を見る道は
+    /// ここにしかない。
+    pub fn ddl_body_type(self) -> Option<&'static str> {
+        match self {
+            ObjectKind::Package => Some("PACKAGE_BODY"),
+            _ => None,
+        }
+    }
+
+    /// DDL の断片に付ける見出し（ADR 0019）。
+    ///
+    /// 断片が 1 つしか無い種別では、その 1 つの見出しになる。
+    pub fn ddl_label(self) -> &'static str {
+        match self {
+            ObjectKind::Package => "パッケージ仕様",
+            _ => "定義",
+        }
+    }
 }
 
 /// スキーマ内のオブジェクト 1 件。
@@ -399,6 +453,69 @@ mod tests {
         assert!(!ObjectKind::Synonym.has_columns());
         assert!(!ObjectKind::Type.has_columns());
         assert!(!ObjectKind::DatabaseLink.has_columns());
+    }
+
+    #[test]
+    fn 制約と索引を持つのはテーブルとマテビューだけである() {
+        // Arrange & Act & Assert: ビューは列を持つが制約も索引も持たない
+        assert!(ObjectKind::Table.has_table_details());
+        assert!(ObjectKind::MaterializedView.has_table_details());
+        assert!(!ObjectKind::View.has_table_details());
+        assert!(!ObjectKind::Function.has_table_details());
+    }
+
+    #[test]
+    fn get_ddlの型名は空白ではなくアンダースコアで繋ぐ() {
+        // Arrange & Act & Assert: `object_type()` の綴りでは ORA-31600 になる
+        assert_eq!(
+            ObjectKind::MaterializedView.ddl_object_type(),
+            "MATERIALIZED_VIEW"
+        );
+        assert_eq!(ObjectKind::DatabaseLink.ddl_object_type(), "DB_LINK");
+    }
+
+    #[test]
+    fn 全種別がget_ddlの型名を持つ() {
+        // Arrange: 種別を足したとき DDL の型名を忘れないための歯止め
+        let kinds = [
+            (ObjectKind::Table, "TABLE"),
+            (ObjectKind::View, "VIEW"),
+            (ObjectKind::MaterializedView, "MATERIALIZED_VIEW"),
+            (ObjectKind::Index, "INDEX"),
+            (ObjectKind::Trigger, "TRIGGER"),
+            (ObjectKind::Sequence, "SEQUENCE"),
+            (ObjectKind::Synonym, "SYNONYM"),
+            (ObjectKind::Type, "TYPE"),
+            (ObjectKind::Function, "FUNCTION"),
+            (ObjectKind::Procedure, "PROCEDURE"),
+            (ObjectKind::Package, "PACKAGE"),
+            (ObjectKind::DatabaseLink, "DB_LINK"),
+        ];
+
+        // Act & Assert
+        for (kind, expected) in kinds {
+            assert_eq!(kind.ddl_object_type(), expected, "{kind:?} の型名が違う");
+            // 空白を含む綴りは DBMS_METADATA が受け付けない。
+            assert!(
+                !kind.ddl_object_type().contains(' '),
+                "{kind:?} の型名に空白が入っている"
+            );
+        }
+    }
+
+    #[test]
+    fn パッケージだけが本体を別に取る() {
+        // Arrange & Act & Assert: GET_DDL('PACKAGE', …) は仕様しか返さない
+        assert_eq!(ObjectKind::Package.ddl_body_type(), Some("PACKAGE_BODY"));
+        assert_eq!(ObjectKind::Table.ddl_body_type(), None);
+        assert_eq!(ObjectKind::Type.ddl_body_type(), None);
+    }
+
+    #[test]
+    fn パッケージのddlの見出しは仕様と分かる文言になる() {
+        // Arrange & Act & Assert
+        assert_eq!(ObjectKind::Package.ddl_label(), "パッケージ仕様");
+        assert_eq!(ObjectKind::Table.ddl_label(), "定義");
     }
 
     #[test]

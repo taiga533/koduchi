@@ -8,8 +8,9 @@
 //! 実装が 1 つしかない段階で広い trait を定義すると境界を必ず外すため、
 //! 実装済みの操作だけを載せている。
 
+use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::error::DbResult;
-use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::value::{Cell, CellKind};
 use serde::{Deserialize, Serialize};
@@ -297,6 +298,40 @@ pub trait Driver: 'static {
     /// * `sql` - 計画を見たい SQL
     /// * `binds` - SQL 中のバインド変数へ与える値
     fn actual_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String>;
+
+    /// テーブル定義ビュー 1 枚ぶんの内容を取る（ADR 0019）。
+    ///
+    /// 列・制約・索引をまとめて返す。DDL は含まない。
+    /// `DBMS_METADATA.GET_DDL` は重く権限にも敏感であるため、DDL タブを開いた
+    /// ときに `object_ddl` で別に取る。定義ビュー全体が DDL の権限不足で
+    /// 開けなくなるのを避けるためである。
+    ///
+    /// 結果セットのカーソルは開かない。利用者が見ている結果は壊れない。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    fn object_definition(
+        &mut self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<ObjectDefinition>;
+
+    /// オブジェクト 1 つの DDL を取る（ADR 0019）。
+    ///
+    /// パッケージは仕様と本体の 2 つを返す。権限が無い場合は
+    /// `DbErrorKind::Permission` のエラーを返す。空の定義を返してはならない。
+    /// 「見えない」と「定義が空」は別物である。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    fn object_ddl(&mut self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl>;
 
     /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
     ///
