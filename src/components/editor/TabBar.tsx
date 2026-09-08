@@ -2,10 +2,14 @@
  * エディタタブの並び（デザイン 3a の 34px 帯）。
  *
  * 未保存のタブには `●` 印を出す（ADR 0005）。
+ *
+ * 並ぶのは SQL タブと定義タブの 2 種類である（ADR 0022）。定義タブは編集
+ * できないため `●` 印を持たず、代わりに種類の分かるアイコンを名前の左へ添える。
  */
 
-import { Plus, X } from 'lucide-react'
+import { Plus, TableProperties, X } from 'lucide-react'
 import { useTabStore } from '../../stores/tab'
+import { isDirty, isDefinitionTab } from '../../stores/tabKinds'
 
 interface TabBarProps {
   /**
@@ -37,11 +41,15 @@ export function TabBar({ onCloseTab }: TabBarProps) {
             <button
               type="button"
               onClick={() => selectTab(tab.id)}
-              className="bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
+              aria-label={isDefinitionTab(tab) ? `${tab.name} の定義` : undefined}
+              className="flex items-center gap-5px bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
             >
+              {isDefinitionTab(tab) ? (
+                <TableProperties size={12} className="text-fg5 shrink-0" aria-hidden />
+              ) : null}
               {tab.name}
             </button>
-            {tab.dirty ? (
+            {isDirty(tab) ? (
               <span
                 className="w-7px h-7px rounded-full bg-ac shrink-0"
                 aria-label="未保存"

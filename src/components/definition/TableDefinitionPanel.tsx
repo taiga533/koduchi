@@ -1,23 +1,25 @@
 /**
- * テーブル定義ビュー（ADR 0019）。
+ * テーブル定義ビュー（ADR 0019・0022）。
  *
- * スキーマツリーの行から開く。列・制約・索引・DDL の 4 タブを 1 枚に収めてある。
- * 設定画面やセッションパネル（ADR 0017）と同じオーバーレイであり、結果ペインの
- * 動的タブ（ADR 0009）にはしていない。あのタブはエディタタブごとの実行結果に
- * 紐付いており、どのエディタタブにも属さない定義を置くと器の意味が壊れる。
+ * スキーマツリーの右クリックメニューから**エディタのタブ帯に定義タブとして**
+ * 開く（ADR 0022）。列・制約・索引・DDL の 4 つの内訳を 1 枚に収めてある。
+ * 定義タブを選んでいる間はエディタも結果ペインも出さず、本体の領域をまるごと
+ * ここが使う。オーバーレイに出す作り（ADR 0019）は 0022 で覆した。
  *
- * 絞り込みは 4 タブのうち列・制約・索引に効く。列が数百ある表は珍しくないため、
- * 開いてからスクロールで探させるのでは用を成さない。
+ * 絞り込みは 4 つの内訳のうち列・制約・索引に効く。列が数百ある表は珍しくない
+ * ため、開いてからスクロールで探させるのでは用を成さない。
  *
- * DDL は DDL タブを開いたときに初めて取る（ADR 0019）。`DBMS_METADATA.GET_DDL`
- * の権限が無いというだけで、列も制約も索引も見られなくなってはいけない。
+ * DDL は DDL の内訳を開いたときに初めて取る（ADR 0019）。
+ * `DBMS_METADATA.GET_DDL` の権限が無いというだけで、列も制約も索引も
+ * 見られなくなってはいけない。
  */
 
-import { useEffect, useMemo } from 'react'
-import { Search, X } from 'lucide-react'
+import { useMemo } from 'react'
+import { Search } from 'lucide-react'
 import {
   DEFINITION_TABS,
   DEFINITION_TAB_LABELS,
+  selectDefinition,
   useDefinitionStore,
   type DefinitionTab,
 } from '../../stores/definition'
@@ -32,104 +34,79 @@ import {
 } from './definitionSearch'
 
 interface TableDefinitionPanelProps {
-  /** 接続の識別子。DDL タブを開いたときの取得に使う。 */
+  /** 接続の識別子。DDL の内訳を開いたときの取得に使う。 */
   connectionId: string
+  /** どの定義タブを描くか（ADR 0022）。 */
+  tabId: string
 }
 
-export function TableDefinitionPanel({ connectionId }: TableDefinitionPanelProps) {
-  const target = useDefinitionStore((state) => state.target)
-  const definition = useDefinitionStore((state) => state.definition)
-  const status = useDefinitionStore((state) => state.status)
-  const error = useDefinitionStore((state) => state.error)
-  const permissionDenied = useDefinitionStore((state) => state.permissionDenied)
-  const search = useDefinitionStore((state) => state.search)
+export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPanelProps) {
+  const entry = useDefinitionStore((state) => selectDefinition(state, tabId))
   const setSearch = useDefinitionStore((state) => state.setSearch)
-  const tab = useDefinitionStore((state) => state.tab)
   const selectTab = useDefinitionStore((state) => state.selectTab)
-  const close = useDefinitionStore((state) => state.close)
 
-  // `esc` で閉じる。設定画面やセッションパネルと同じ振る舞いに揃える。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        close()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [close])
-
-  if (target === null) {
+  if (entry === null) {
     return null
   }
 
+  const { target, definition, status, error, permissionDenied, search, tab } = entry
+
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-[rgba(24,28,38,.28)] p-24px">
-      <section
-        role="dialog"
-        aria-label="テーブル定義"
-        className="w-880px max-w-full max-h-full overflow-hidden bg-panel rounded-10px border border-line p-18px flex flex-col gap-12px"
-      >
-        <div className="flex items-center gap-10px">
-          <h2 className="text-14px font-600 text-fg m-0 truncate">
-            {target.owner}.{target.name}
-          </h2>
-          <span className="text-10.5px text-fg5 shrink-0">{OBJECT_KIND_LABELS[target.kind]}</span>
-          <span className="flex-1" />
+    <section
+      data-testid="table-definition"
+      aria-label="テーブル定義"
+      className="flex-1 min-h-0 overflow-hidden bg-panel rounded-10px border border-line p-18px flex flex-col gap-12px"
+    >
+      <div className="flex items-center gap-10px">
+        <h2 className="text-14px font-600 text-fg m-0 truncate">
+          {target.owner}.{target.name}
+        </h2>
+        <span className="text-10.5px text-fg5 shrink-0">{OBJECT_KIND_LABELS[target.kind]}</span>
+      </div>
+
+      <div className="flex items-center gap-2px" role="tablist" aria-label="定義の内訳">
+        {DEFINITION_TABS.map((each) => (
           <button
+            key={each}
             type="button"
-            onClick={close}
-            aria-label="テーブル定義を閉じる"
-            className="flex items-center bg-transparent border-none p-0 text-fg4 cursor-pointer font-inherit"
+            role="tab"
+            aria-selected={tab === each}
+            onClick={() => selectTab(connectionId, tabId, each)}
+            className={`px-11px py-5px rounded-7px border-none text-11.5px cursor-pointer font-inherit ${
+              tab === each ? 'bg-fill text-fg' : 'bg-transparent text-fg4'
+            }`}
           >
-            <X size={15} />
+            {DEFINITION_TAB_LABELS[each]}
+            {each !== 'ddl' ? (
+              <span className="ml-6px text-10.5px text-fg5">{数える(definition, each)}</span>
+            ) : null}
           </button>
+        ))}
+      </div>
+
+      {tab === 'ddl' ? null : (
+        <div className="flex items-center gap-8px px-9px py-4px rounded-7px bg-fill">
+          <Search size={14} className="text-fg5 shrink-0" />
+          <input
+            value={search}
+            onChange={(event) => setSearch(tabId, event.target.value)}
+            placeholder="列名・制約名・索引名で絞り込む"
+            aria-label="定義を絞り込む"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-12px text-fg font-inherit placeholder:text-fg4"
+          />
         </div>
+      )}
 
-        <div className="flex items-center gap-2px" role="tablist" aria-label="定義の内訳">
-          {DEFINITION_TABS.map((each) => (
-            <button
-              key={each}
-              type="button"
-              role="tab"
-              aria-selected={tab === each}
-              onClick={() => selectTab(connectionId, each)}
-              className={`px-11px py-5px rounded-7px border-none text-11.5px cursor-pointer font-inherit ${
-                tab === each ? 'bg-fill text-fg' : 'bg-transparent text-fg4'
-              }`}
-            >
-              {DEFINITION_TAB_LABELS[each]}
-              {each !== 'ddl' ? (
-                <span className="ml-6px text-10.5px text-fg5">{数える(definition, each)}</span>
-              ) : null}
-            </button>
-          ))}
-        </div>
-
-        {tab === 'ddl' ? null : (
-          <div className="flex items-center gap-8px px-9px py-4px rounded-7px bg-fill">
-            <Search size={14} className="text-fg5 shrink-0" />
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="列名・制約名・索引名で絞り込む"
-              aria-label="定義を絞り込む"
-              className="flex-1 min-w-0 bg-transparent border-none outline-none text-12px text-fg font-inherit placeholder:text-fg4"
-            />
-          </div>
-        )}
-
-        <PanelBody
-          status={status}
-          error={error}
-          permissionDenied={permissionDenied}
-          definition={definition}
-          tab={tab}
-          search={search}
-        />
-      </section>
-    </div>
+      <PanelBody
+        tabId={tabId}
+        status={status}
+        error={error}
+        permissionDenied={permissionDenied}
+        definition={definition}
+        tab={tab}
+        search={search}
+      />
+    </section>
   )
 }
 
@@ -160,6 +137,8 @@ function 数える(definition: ObjectDefinition | null, tab: DefinitionTab): num
 }
 
 interface PanelBodyProps {
+  /** どの定義タブを描くか。DDL の内訳がストアを引くのに要る。 */
+  tabId: string
   status: string
   error: string | null
   permissionDenied: boolean
@@ -169,7 +148,15 @@ interface PanelBodyProps {
 }
 
 /** パネルの本文。権限不足・失敗・読み込み中・タブの中身を出し分ける。 */
-function PanelBody({ status, error, permissionDenied, definition, tab, search }: PanelBodyProps) {
+function PanelBody({
+  tabId,
+  status,
+  error,
+  permissionDenied,
+  definition,
+  tab,
+  search,
+}: PanelBodyProps) {
   if (permissionDenied) {
     return (
       <Centered>
@@ -204,7 +191,7 @@ function PanelBody({ status, error, permissionDenied, definition, tab, search }:
         <ConstraintTable constraints={definition.constraints} search={search} />
       ) : null}
       {tab === 'indexes' ? <IndexTable indexes={definition.indexes} search={search} /> : null}
-      {tab === 'ddl' ? <DdlView /> : null}
+      {tab === 'ddl' ? <DdlView tabId={tabId} /> : null}
     </div>
   )
 }
@@ -375,16 +362,17 @@ function IndexTable({ indexes, search }: { indexes: TableIndex[]; search: string
 }
 
 /**
- * DDL タブ（ADR 0019）。
+ * DDL の内訳（ADR 0019）。
  *
  * `DBMS_METADATA.GET_DDL` の結果をそのまま等幅で出す。パッケージは仕様と本体の
  * 2 つが並ぶ。権限が無いことを「定義が空」と混同させない。
  */
-function DdlView() {
-  const ddl = useDefinitionStore((state) => state.ddl)
-  const ddlStatus = useDefinitionStore((state) => state.ddlStatus)
-  const ddlError = useDefinitionStore((state) => state.ddlError)
-  const ddlPermissionDenied = useDefinitionStore((state) => state.ddlPermissionDenied)
+function DdlView({ tabId }: { tabId: string }) {
+  const entry = useDefinitionStore((state) => selectDefinition(state, tabId))
+  const ddl = entry?.ddl ?? null
+  const ddlStatus = entry?.ddlStatus ?? 'idle'
+  const ddlError = entry?.ddlError ?? null
+  const ddlPermissionDenied = entry?.ddlPermissionDenied ?? false
 
   if (ddlPermissionDenied) {
     return (

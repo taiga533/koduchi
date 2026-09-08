@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { resetDbApi, setDbApi } from './api/db'
@@ -8,8 +8,10 @@ import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingCha
 import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
 import { useConnectionStore } from './stores/connection'
 import { emptyExecution, useExecutionStore } from './stores/execution'
+import { useDefinitionStore } from './stores/definition'
 import { useSchemaStore } from './stores/schema'
-import { selectActiveTab, useTabStore } from './stores/tab'
+import type { SchemaNode } from './types/db'
+import { selectActiveSqlTab, selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
 
 /** 2 行 2 列の問い合わせ結果。 */
@@ -548,7 +550,7 @@ describe('App', () => {
     expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
     expect(calls.disconnect).toEqual(['c1'])
     expect(useTabStore.getState().tabs.map((tab) => tab.id)).toContain(タブ)
-    expect(selectActiveTab(useTabStore.getState())?.content).toBe('select * from dual')
+    expect(selectActiveSqlTab(useTabStore.getState())?.content).toBe('select * from dual')
   })
 
   it('切断のときに開いている結果セットを閉じ、スキーマを捨てる', async () => {
@@ -991,5 +993,181 @@ describe('App', () => {
       'insert into t values (2)',
     ])
     expect(screen.getByText(/3 文中 2 文目で失敗しました/)).toBeInTheDocument()
+  })
+})
+
+/** タブ帯を SQL タブ 1 枚に戻す（ADR 0022）。 */
+function タブを初期化する(): void {
+  useTabStore.setState({
+    tabs: [
+      { kind: 'sql', id: 'sql-1', name: '無題-1.sql', filePath: null, content: '', dirty: false },
+    ],
+    activeTabId: 'sql-1',
+    bindValues: {},
+  })
+  useDefinitionStore.getState().clear()
+}
+
+/**
+ * ツリーの `USERS` を右クリックして「定義を開く」を押す（ADR 0022）。
+ *
+ * @param user 打鍵の口
+ */
+async function 定義を開く(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  // 「テーブル」は種別フィルタの項目にもあるため、ツリーの中だけを見る。
+  const tree = within(await screen.findByTestId('schema-tree'))
+  // 既に開いている枝を押すと畳んでしまう。閉じているときだけ押す。
+  const 開く = async (name: RegExp) => {
+    const row = await tree.findByRole('button', { name })
+    if (row.getAttribute('aria-expanded') === 'false') {
+      await user.click(row)
+    }
+  }
+  await 開く(/KODUCHI/)
+  await 開く(/テーブル/)
+  fireEvent.contextMenu(await tree.findByRole('button', { name: 'USERS' }))
+  await user.click(screen.getByRole('menuitem', { name: '定義を開く' }))
+}
+
+/**
+ * テーブル定義タブ（ADR 0022）。
+ *
+ * ツリーの右クリックからタブが開くこと、定義タブの間は結果ペインが出ないこと、
+ * SQL タブへ戻れば元どおりになることを見る。
+ */
+describe('テーブル定義タブ', () => {
+  // jsdom は要素の寸法を持たず、ツリーの仮想スクロールが領域を 0 と見なして
+  // 行を 1 つも描かない。寸法だけを補う（`SchemaTree.test.tsx` と同じ手当て）。
+  beforeAll(() => {
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      value: 600,
+    })
+  })
+
+  afterAll(() => {
+    Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight')
+  })
+
+  /** ツリーに置く 1 スキーマ 1 テーブル。取得の窓口が返す。 */
+  const スキーマ一覧: SchemaNode[] = [
+    { name: 'KODUCHI', objectCount: 1, objects: [{ name: 'USERS', kind: 'table' }] },
+  ]
+
+  it('右クリックの「定義を開く」でタブ帯に定義タブが増える', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({ schemas: スキーマ一覧 })
+    setDbApi(api)
+    接続済みにする()
+    タブを初期化する()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+
+    // Act
+    await 定義を開く(user)
+
+    // Assert
+    expect(await screen.findByRole('button', { name: 'USERS の定義' })).toBeInTheDocument()
+    expect(useTabStore.getState().tabs.map((tab) => tab.kind)).toEqual(['sql', 'definition'])
+  })
+
+  it('定義タブを選んでいる間はエディタも結果ペインも出さない', async () => {
+    // Arrange: 定義は実行の結果ではなく、結果ペインは空のまま場所を取るだけである
+    const { api } = createFakeDbApi({ schemas: スキーマ一覧 })
+    setDbApi(api)
+    接続済みにする()
+    タブを初期化する()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+
+    // Act
+    await 定義を開く(user)
+
+    // Assert
+    expect(await screen.findByTestId('table-definition')).toBeInTheDocument()
+    expect(screen.queryByText('SQL を実行すると、ここに結果が出ます')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '実行のメニュー' })).not.toBeInTheDocument()
+  })
+
+  it('SQL タブへ戻ると結果ペインが返ってくる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({ schemas: スキーマ一覧 })
+    setDbApi(api)
+    接続済みにする()
+    タブを初期化する()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+    await 定義を開く(user)
+    await screen.findByTestId('table-definition')
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '無題-1.sql' }))
+
+    // Assert
+    expect(await screen.findByText('SQL を実行すると、ここに結果が出ます')).toBeInTheDocument()
+    expect(screen.queryByTestId('table-definition')).not.toBeInTheDocument()
+  })
+
+  it('同じオブジェクトの定義は 2 枚目を開かない', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({ schemas: スキーマ一覧 })
+    setDbApi(api)
+    接続済みにする()
+    タブを初期化する()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+    await 定義を開く(user)
+    await screen.findByTestId('table-definition')
+    await user.click(screen.getByRole('button', { name: '無題-1.sql' }))
+
+    // Act
+    await 定義を開く(user)
+
+    // Assert
+    expect(useTabStore.getState().tabs).toHaveLength(2)
+    expect(useTabStore.getState().tabs[1].name).toBe('USERS')
+  })
+
+  it('定義タブを閉じるとその定義を手放す', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({ schemas: スキーマ一覧 })
+    setDbApi(api)
+    接続済みにする()
+    タブを初期化する()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+    await 定義を開く(user)
+    await screen.findByTestId('table-definition')
+
+    // Act
+    await user.click(screen.getByRole('button', { name: 'USERS を閉じる' }))
+
+    // Assert
+    expect(useTabStore.getState().tabs.map((tab) => tab.kind)).toEqual(['sql'])
+    expect(useDefinitionStore.getState().byTab).toEqual({})
+  })
+
+  it('定義タブはセッションに書き出さない', async () => {
+    // Arrange: 定義は接続に属し、再起動後は中身を出せない（ADR 0019・0022）
+    const { api, calls } = createFakeDbApi({ schemas: スキーマ一覧 })
+    setDbApi(api)
+    接続済みにする()
+    タブを初期化する()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+
+    // Act
+    await 定義を開く(user)
+
+    // Assert
+    await waitFor(() => expect(calls.saveSession.length).toBeGreaterThan(0))
+    const 最後 = calls.saveSession[calls.saveSession.length - 1]
+    expect(最後.state.tabs.map((tab) => tab.id)).toEqual(['sql-1'])
   })
 })

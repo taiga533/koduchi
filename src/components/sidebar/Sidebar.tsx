@@ -11,6 +11,7 @@ import { Plus, Search } from 'lucide-react'
 import { formatColumnProgress, useSchemaStore } from '../../stores/schema'
 import { useHistoryStore } from '../../stores/history'
 import { useSavedQueryStore } from '../../stores/savedQuery'
+import type { DefinitionTarget } from '../../types/db'
 import type { SidebarSegment } from '../../stores/ui'
 import { useUiStore } from '../../stores/ui'
 import { HistoryList } from './HistoryList'
@@ -47,6 +48,12 @@ interface SidebarProps {
   onInsertIdentifier: (text: string) => void
   /** スキーマツリーから `select * from …` を新しいタブに開く（ADR 0020）。 */
   onOpenSelect: (sql: string) => void
+  /**
+   * スキーマツリーから定義タブを開く（ADR 0022）。
+   *
+   * 未接続なら `null`。そのときは右クリックのメニューに「定義を開く」を出さない。
+   */
+  onOpenDefinition: ((target: DefinitionTarget) => void) | null
   /** サイドバーの幅（px）。境界のドラッグで変わる。 */
   width: number
 }
@@ -59,6 +66,7 @@ export function Sidebar({
   onUseHistory,
   onInsertIdentifier,
   onOpenSelect,
+  onOpenDefinition,
   width,
 }: SidebarProps) {
   const segment = useUiStore((state) => state.sidebarSegment)
@@ -159,9 +167,9 @@ export function Sidebar({
       >
         {segment === 'schema' ? (
           <SchemaTree
-            connectionId={connectionId}
             onInsert={onInsertIdentifier}
             onOpenSelect={onOpenSelect}
+            onOpenDefinition={onOpenDefinition}
           />
         ) : null}
         {segment === 'history' ? <HistoryList onUse={onUseHistory} /> : null}

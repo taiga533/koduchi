@@ -1,5 +1,5 @@
 /**
- * スキーマツリー（ADR 0007・0014・0019・0020）。
+ * スキーマツリー（ADR 0007・0014・0019・0020・0022）。
  *
  * スキーマ行の右にオブジェクト数を出し、展開すると**種別ごとの束**が並ぶ。
  * 束を開くとその種別のオブジェクトが並び、テーブルとビューはさらに展開できて
@@ -14,24 +14,23 @@
  * 絞り込みの入力が目に見えて詰まる。そこで一度平らな行の並びに直し、見えている
  * 分だけを描く（結果テーブルと同じ TanStack Virtual）。
  *
- * ここからエディタへ手を伸ばせる（ADR 0020）。マウスの操作は場所と回数で
+ * ここからエディタへ手を伸ばせる（ADR 0020・0022）。マウスの操作は場所と回数で
  * 割り振ってあり、互いに食い合わない。
  *
- * | 操作                 | 起きること                                    |
- * | -------------------- | --------------------------------------------- |
- * | 行を単クリック       | 開閉する（開けない行では何も起きない）        |
- * | 行をダブルクリック   | 名前をエディタのカーソル位置へ挿入する        |
- * | 行を右クリック       | 名前のコピー・挿入・`SELECT` を開くのメニュー |
- * | 「定義」を単クリック | テーブル定義ビューを開く（ADR 0019）          |
+ * | 操作               | 起きること                                              |
+ * | ------------------ | ------------------------------------------------------- |
+ * | 行を単クリック     | 開閉する（開けない行では何も起きない）                  |
+ * | 行をダブルクリック | 名前をエディタのカーソル位置へ挿入する                  |
+ * | 行を右クリック     | コピー・挿入・`SELECT` を開く・定義を開くのメニュー     |
  *
  * ダブルクリックは 1 回目と 2 回目の押し下げでそれぞれ `onClick` が起き、開閉が
  * 2 度切り替わって元の状態へ戻る。**打ち消す細工はしない。**結果テーブルの
  * 「ダブルクリックは 1 回目の押し下げで選択も起こる」と同じ扱いである。
  *
- * 「定義」は行とは別の押しどころであり、行のクリックの意味を変えない
- * （ADR 0019）。そのため**「定義」の上ではダブルクリックの挿入を起こさない**。
- * ボタンを 2 度押したのは押した人の意図であり、そこに挿入まで重ねない。
- * 右クリックだけは行と同じメニューを出す（「定義」もその行の一部だからである）。
+ * **行の右に押しどころは無い。**テーブル定義ビューの入口だった「定義」の
+ * ボタンは、右クリックのメニューへ移した（ADR 0022）。行の中に押しどころを
+ * 足すときの作法（`data-row-action` を付け、ダブルクリックの挿入から外す）は
+ * ADR 0020 に書いてある。
  *
  * 挿入する綴りと引用符は `identifiers.ts` が決める（ADR 0013）。文字列の
  * 組み立ては `editor/insertion.ts` の純粋な関数に寄せてある。
@@ -61,7 +60,6 @@ import { getClipboardApi } from '../../api/clipboard'
 import type { DefinitionTarget, ObjectKind, SchemaNode, TableColumn } from '../../types/db'
 import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER, defaultCompletionSettings } from '../../types/db'
 import { useConnectionStore } from '../../stores/connection'
-import { useDefinitionStore } from '../../stores/definition'
 import { filterSchemas, kindGroupKey, nodeKey, useSchemaStore } from '../../stores/schema'
 import { qualifiedIdentifier, selectAllStatement } from '../editor/insertion'
 import { SchemaTreeContextMenu } from './SchemaTreeContextMenu'
@@ -85,14 +83,6 @@ const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
 /** 列を持ちうる種類。展開して列を出せるのはこれだけである。 */
 const EXPANDABLE: ObjectKind[] = ['table', 'view', 'materializedView']
 
-/**
- * 行の中の、行そのものとは別の押しどころに付ける目印。
- *
- * 今のところ「定義」のボタンだけである。ここでのダブルクリックは行への挿入に
- * 使わない（ADR 0019・0020）。
- */
-const ROW_ACTION = 'data-row-action'
-
 /** 平らにした 1 行。仮想スクロールに載せる単位である。 */
 export type TreeRow =
   | { kind: 'schema'; key: string; name: string; objectCount: number; open: boolean }
@@ -103,8 +93,8 @@ export type TreeRow =
       /**
        * 所有者のスキーマ名。
        *
-       * 定義ビューを開くのに要り（ADR 0019）、挿入する名前をスキーマで修飾する
-       * のにも使う（ADR 0020）。`ALL_OBJECTS.OWNER` と同じ意味である。
+       * 定義タブを開くのに要り（ADR 0019・0022）、挿入する名前をスキーマで
+       * 修飾するのにも使う（ADR 0020）。`ALL_OBJECTS.OWNER` と同じ意味である。
        */
       owner: string
       name: string
@@ -163,6 +153,31 @@ export function rowIdentifierPath(row: TreeRow): string[] | null {
  */
 export function canOpenSelect(row: TreeRow): boolean {
   return row.kind === 'object' && EXPANDABLE.includes(row.objectKind)
+}
+
+/**
+ * 定義タブを開ける行か（ADR 0022）。
+ *
+ * オブジェクトの行はすべて開ける。**12 種別に例外を設けない。**DDL を見る
+ * 値打ちが最も大きいのはファンクション・プロシージャ・パッケージであり、
+ * パッケージ本体に至っては名前を見る道すらここにしかない（ADR 0019）。
+ * スキーマ行と列行は定義を持たないため開けない。
+ *
+ * @param row 平らにした 1 行
+ */
+export function canOpenDefinition(row: TreeRow): boolean {
+  return row.kind === 'object'
+}
+
+/**
+ * 行が指すオブジェクトを、定義タブの対象へ直す（ADR 0022）。
+ *
+ * オブジェクトの行でなければ `null`。
+ *
+ * @param row 平らにした 1 行
+ */
+export function definitionTargetOf(row: TreeRow): DefinitionTarget | null {
+  return row.kind === 'object' ? { owner: row.owner, name: row.name, kind: row.objectKind } : null
 }
 
 /**
@@ -316,11 +331,12 @@ export function flattenSchemas(
 
 interface SchemaTreeProps {
   /**
-   * 接続の識別子。テーブル定義ビューを開くのに要る（ADR 0019）。
+   * 定義タブを開く（ADR 0022）。
    *
-   * 繋がっていなければ `null`。そのときは「定義」を押せない。
+   * 繋がっていなければ `null`。そのときは右クリックのメニューに
+   * 「定義を開く」を出さない。
    */
-  connectionId: string | null
+  onOpenDefinition: ((target: DefinitionTarget) => void) | null
   /**
    * 名前をエディタのカーソル位置へ入れる（ADR 0020）。
    *
@@ -332,7 +348,7 @@ interface SchemaTreeProps {
   onOpenSelect: (sql: string) => void
 }
 
-export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeProps) {
+export function SchemaTree({ onOpenDefinition, onInsert, onOpenSelect }: SchemaTreeProps) {
   const allSchemas = useSchemaStore((state) => state.schemas)
   const columns = useSchemaStore((state) => state.columns)
   const search = useSchemaStore((state) => state.search)
@@ -340,7 +356,6 @@ export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeP
   const toggle = useSchemaStore((state) => state.toggle)
   const status = useSchemaStore((state) => state.status)
   const error = useSchemaStore((state) => state.error)
-  const openDefinition = useDefinitionStore((state) => state.open)
 
   // 挿入する綴りは接続ごとの設定である（ADR 0013）。補完と同じ値を引く。
   const identifierCase = useConnectionStore(
@@ -412,6 +427,14 @@ export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeP
     }
   }
 
+  /** 定義タブを開く。オブジェクトの行でなければ何もしない（ADR 0022）。 */
+  const openDefinitionFor = (row: TreeRow) => {
+    const target = definitionTargetOf(row)
+    if (target && onOpenDefinition) {
+      onOpenDefinition(target)
+    }
+  }
+
   /** 焦点を別の行へ移す。並びの外へは出さない。 */
   const moveFocus = (next: number) => {
     const clamped = Math.max(0, Math.min(rows.length - 1, next))
@@ -464,19 +487,17 @@ export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeP
     if (event.key.toLowerCase() === 'c' && event.metaKey) {
       event.preventDefault()
       copyRow(row)
+      return
+    }
+    if (event.key.toLowerCase() === 'd' && event.metaKey) {
+      // 定義を開く（ADR 0022）。ツリーの中でだけ効く。
+      event.preventDefault()
+      openDefinitionFor(row)
     }
   }
 
-  /**
-   * ダブルクリック。名前をカーソル位置へ入れる。
-   *
-   * 「定義」の上では起こさない。行とは別の押しどころであり、ボタンを 2 度
-   * 押したことに挿入まで重ねない（ADR 0019・0020）。
-   */
-  const onDoubleClick = (event: ReactMouseEvent, row: TreeRow) => {
-    if (event.target instanceof Element && event.target.closest(`[${ROW_ACTION}]`)) {
-      return
-    }
+  /** ダブルクリック。名前をカーソル位置へ入れる（ADR 0020）。 */
+  const onDoubleClick = (row: TreeRow) => {
     insertRow(row)
   }
 
@@ -521,7 +542,7 @@ export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeP
               width: '100%',
               transform: `translateY(${item.start}px)`,
             }}
-            onDoubleClick={(event) => onDoubleClick(event, rows[item.index])}
+            onDoubleClick={() => onDoubleClick(rows[item.index])}
             onContextMenu={(event) => openMenu(event, rows[item.index])}
           >
             <Row
@@ -529,9 +550,6 @@ export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeP
               focused={item.index === focused}
               onToggle={toggle}
               onFocus={() => setFocusedIndex(item.index)}
-              onOpenDefinition={
-                connectionId === null ? null : (target) => void openDefinition(connectionId, target)
-              }
             />
           </div>
         ))}
@@ -542,6 +560,7 @@ export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeP
           y={menu.y}
           target={qualifiedIdentifier(rowIdentifierPath(menu.row) ?? [], identifierCase)}
           canSelect={canOpenSelect(menu.row)}
+          canOpenDefinition={onOpenDefinition !== null && canOpenDefinition(menu.row)}
           onCopy={() => {
             copyRow(menu.row)
             setMenu(null)
@@ -552,6 +571,10 @@ export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeP
           }}
           onOpenSelect={() => {
             openSelectFor(menu.row)
+            setMenu(null)
+          }}
+          onOpenDefinition={() => {
+            openDefinitionFor(menu.row)
             setMenu(null)
           }}
           onClose={() => setMenu(null)}
@@ -567,12 +590,10 @@ interface RowProps {
   focused: boolean
   onToggle: (key: string, open: boolean) => void
   onFocus: () => void
-  /** 定義ビューを開く。繋がっていなければ `null`（ADR 0019）。 */
-  onOpenDefinition: ((target: DefinitionTarget) => void) | null
 }
 
 /** 平らにした 1 行を、種類に応じて描き分ける。 */
-function Row({ row, focused, onToggle, onFocus, onOpenDefinition }: RowProps) {
+function Row({ row, focused, onToggle, onFocus }: RowProps) {
   // 焦点を持てるのは 1 行だけにする。仮想スクロールで描かれている行がすべて
   // タブ順に並ぶと、ツリーを抜けるのに数十回打鍵することになる。
   const focus = { tabIndex: focused ? 0 : -1, 'data-tree-focused': focused, onFocus }
@@ -621,46 +642,28 @@ function Row({ row, focused, onToggle, onFocus, onOpenDefinition }: RowProps) {
 
   if (row.kind === 'object') {
     const Icon = KIND_ICONS[row.objectKind]
-    // 行そのものと「定義」は押しどころが違う。入れ子のボタンにできないため、
-    // 行を包む器を 1 つ挟んで横に並べる（ADR 0019）。焦点は行そのものが持ち、
-    // 「定義」へは `Tab` で降りる（ADR 0020 の roving tabindex）。
+    // 行の右に押しどころは無い。定義の入口は右クリックのメニューである
+    // （ADR 0022）。
     return (
-      <div className="w-full flex items-center hover:bg-fill">
-        <button
-          type="button"
-          {...focus}
-          onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
-          aria-expanded={row.expandable ? row.open : undefined}
-          className="min-w-0 flex-1 flex items-center gap-6px pl-38px pr-4px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2"
-        >
-          <span className="w-13px shrink-0 flex items-center">
-            {row.expandable ? (
-              row.open ? (
-                <ChevronDown size={12} className="text-fg5" />
-              ) : (
-                <ChevronRight size={12} className="text-fg5" />
-              )
-            ) : null}
-          </span>
-          <Icon size={13} className="text-fg5 shrink-0" />
-          <span className="flex-1 truncate">{row.name}</span>
-        </button>
-        {onOpenDefinition === null ? null : (
-          <button
-            type="button"
-            {...{ [ROW_ACTION]: true }}
-            tabIndex={focused ? 0 : -1}
-            onFocus={onFocus}
-            onClick={() =>
-              onOpenDefinition({ owner: row.owner, name: row.name, kind: row.objectKind })
-            }
-            aria-label={`${row.name} の定義を開く`}
-            className="shrink-0 mr-10px px-5px py-1px rounded-5px bg-transparent border-none text-10px text-fg5 cursor-pointer font-inherit hover:text-fg3"
-          >
-            定義
-          </button>
-        )}
-      </div>
+      <button
+        type="button"
+        {...focus}
+        onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
+        aria-expanded={row.expandable ? row.open : undefined}
+        className="w-full flex items-center gap-6px pl-38px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
+      >
+        <span className="w-13px shrink-0 flex items-center">
+          {row.expandable ? (
+            row.open ? (
+              <ChevronDown size={12} className="text-fg5" />
+            ) : (
+              <ChevronRight size={12} className="text-fg5" />
+            )
+          ) : null}
+        </span>
+        <Icon size={13} className="text-fg5 shrink-0" />
+        <span className="flex-1 truncate">{row.name}</span>
+      </button>
     )
   }
 

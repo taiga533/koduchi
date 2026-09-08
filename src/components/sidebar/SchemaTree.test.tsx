@@ -2,11 +2,17 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
-import type { IdentifierCase, SchemaNode, TableColumn } from '../../types/db'
+import type { DefinitionTarget, IdentifierCase, SchemaNode, TableColumn } from '../../types/db'
 import { useConnectionStore } from '../../stores/connection'
 import { useSchemaStore } from '../../stores/schema'
-import { useDefinitionStore } from '../../stores/definition'
-import { canOpenSelect, flattenSchemas, rowIdentifierPath, SchemaTree } from './SchemaTree'
+import {
+  canOpenDefinition,
+  canOpenSelect,
+  definitionTargetOf,
+  flattenSchemas,
+  rowIdentifierPath,
+  SchemaTree,
+} from './SchemaTree'
 
 /**
  * jsdom は要素の寸法を持たない。仮想スクロールは `offsetHeight` で表示領域を
@@ -71,22 +77,30 @@ const 列一覧: Record<string, TableColumn[]> = {
 const 何もしない = () => {}
 
 interface ツリーの口 {
-  connectionId?: string | null
   onInsert?: (text: string) => void
   onOpenSelect?: (sql: string) => void
+  /** `undefined` なら既定の口を渡す。`null` を渡すと未接続として扱われる。 */
+  onOpenDefinition?: ((target: DefinitionTarget) => void) | null
 }
 
+/** 開かれた定義タブの対象。既定の口が積む。 */
+let 開いた定義: DefinitionTarget[] = []
+
 /**
- * ツリーを描く。接続・挿入・`SELECT` の口は呼び出し側で差し替えられる。
+ * ツリーを描く。挿入・`SELECT`・定義の口は呼び出し側で差し替えられる。
  *
  * @param actions 差し替える口
  */
 function renderTree(actions: ツリーの口 = {}) {
   return render(
     <SchemaTree
-      connectionId={actions.connectionId === undefined ? 'c1' : actions.connectionId}
       onInsert={actions.onInsert ?? 何もしない}
       onOpenSelect={actions.onOpenSelect ?? 何もしない}
+      onOpenDefinition={
+        actions.onOpenDefinition === undefined
+          ? (target) => 開いた定義.push(target)
+          : actions.onOpenDefinition
+      }
     />,
   )
 }
@@ -119,7 +133,7 @@ function 接続を置く(identifierCase: IdentifierCase): void {
 beforeEach(() => {
   useConnectionStore.setState({ connection: null })
   useSchemaStore.getState().clear()
-  useDefinitionStore.getState().clear()
+  開いた定義 = []
   useSchemaStore.setState({
     schemas: スキーマ一覧,
     columns: 列一覧,
@@ -366,49 +380,77 @@ describe('flattenSchemas', () => {
   })
 })
 
-describe('テーブル定義ビュー', () => {
-  it('オブジェクトの行から定義ビューを開ける', async () => {
-    // Arrange: 入口は 1 つだけ。行のクリックの意味は変えない（ADR 0019）
+describe('テーブル定義タブの入口', () => {
+  it('オブジェクトを右クリックして定義を開ける', async () => {
+    // Arrange: 入口は右クリックのメニュー 1 つだけである（ADR 0022）
+    接続を置く('lower')
     renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS' }))
 
     // Act
-    await userEvent.click(screen.getByRole('button', { name: 'USERS の定義を開く' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: '定義を開く' }))
 
     // Assert
-    expect(useDefinitionStore.getState().target).toEqual({
-      owner: 'KODUCHI',
-      name: 'USERS',
-      kind: 'table',
-    })
+    expect(開いた定義).toEqual([{ owner: 'KODUCHI', name: 'USERS', kind: 'table' }])
   })
 
-  it('列を持たない種別からも定義ビューを開ける', async () => {
+  it('列を持たない種別からも定義を開ける', async () => {
     // Arrange: ファンクションやパッケージは DDL を見る道がここにしかない
+    接続を置く('lower')
     renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'ORDER_TOTAL' }))
 
     // Act
-    await userEvent.click(screen.getByRole('button', { name: 'ORDER_TOTAL の定義を開く' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: '定義を開く' }))
 
     // Assert
-    expect(useDefinitionStore.getState().target?.kind).toBe('function')
+    expect(開いた定義[0]?.kind).toBe('function')
   })
 
-  it('繋がっていなければ定義の入口を出さない', async () => {
+  it('繋がっていなければ定義の項目を出さない', async () => {
     // Arrange
-    renderTree({ connectionId: null })
+    接続を置く('lower')
+    renderTree({ onOpenDefinition: null })
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
-    // Act & Assert
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS' }))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: '定義を開く' })).not.toBeInTheDocument()
+  })
+
+  it('スキーマの行には定義の項目を出さない', async () => {
+    // Arrange: スキーマは定義を持たない（ADR 0022）
+    接続を置く('lower')
+    renderTree()
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: '定義を開く' })).not.toBeInTheDocument()
+  })
+
+  it('行の右に定義のボタンは無い', async () => {
+    // Arrange: 入口を右クリックへ移した（ADR 0022）
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Assert
     expect(screen.queryByRole('button', { name: 'USERS の定義を開く' })).not.toBeInTheDocument()
   })
 
   it('行のクリックはこれまでどおり展開に使う', async () => {
-    // Arrange: ツリーのマウス操作の割り振りは変えていない（ADR 0019・0020）
+    // Arrange: ツリーのマウス操作の割り振りは変えていない（ADR 0020）
     renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
@@ -418,7 +460,75 @@ describe('テーブル定義ビュー', () => {
 
     // Assert
     expect(screen.getByText('USER_ID')).toBeInTheDocument()
-    expect(useDefinitionStore.getState().target).toBeNull()
+    expect(開いた定義).toEqual([])
+  })
+
+  it('⌘D でツリーの焦点にある行の定義を開く', async () => {
+    // Arrange: ツリーの中でだけ効くキーである（ADR 0022）
+    接続を置く('lower')
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'USERS' }))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'd', metaKey: true })
+
+    // Assert
+    expect(開いた定義).toEqual([{ owner: 'KODUCHI', name: 'USERS', kind: 'table' }])
+  })
+})
+
+describe('canOpenDefinition', () => {
+  it('オブジェクトの行は種別を問わず開ける', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, {
+      KODUCHI: true,
+      'KODUCHI.#table': true,
+      'KODUCHI.#function': true,
+    })
+
+    // Act
+    const 開ける = rows.filter(canOpenDefinition)
+
+    // Assert
+    expect(開ける.map((row) => (row.kind === 'object' ? row.name : ''))).toEqual([
+      'USERS',
+      'ORDER_TOTAL',
+    ])
+  })
+
+  it('スキーマ行と種別の束は開けない', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true })
+
+    // Act & Assert
+    expect(rows.filter((row) => row.kind !== 'object').some(canOpenDefinition)).toBe(false)
+  })
+})
+
+describe('definitionTargetOf', () => {
+  it('オブジェクトの行を所有者付きの対象に直す', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true, 'KODUCHI.#table': true })
+    const object = rows.find((row) => row.kind === 'object')
+
+    // Act
+    const target = definitionTargetOf(object!)
+
+    // Assert
+    expect(target).toEqual({ owner: 'KODUCHI', name: 'USERS', kind: 'table' })
+  })
+
+  it('名前を持たない行では null を返す', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true })
+
+    // Act
+    const target = definitionTargetOf(rows[1])
+
+    // Assert
+    expect(target).toBeNull()
   })
 })
 
@@ -608,8 +718,8 @@ describe('ツリーからの挿入', () => {
     )
   })
 
-  it('定義ボタンのダブルクリックでは挿入しない', async () => {
-    // Arrange: 定義は行とは別の押しどころである（ADR 0019・0020）
+  it('オブジェクトの行のダブルクリックは名前を挿入する', async () => {
+    // Arrange: 行の右に押しどころは無くなった（ADR 0022）
     接続を置く('lower')
     const 挿入 = vi.fn()
     renderTree({ onInsert: 挿入 })
@@ -617,11 +727,11 @@ describe('ツリーからの挿入', () => {
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
     // Act
-    await userEvent.dblClick(screen.getByRole('button', { name: 'USERS の定義を開く' }))
+    await userEvent.dblClick(screen.getByRole('button', { name: 'USERS' }))
 
     // Assert
-    expect(挿入).not.toHaveBeenCalled()
-    expect(useDefinitionStore.getState().target?.name).toBe('USERS')
+    expect(挿入).toHaveBeenCalledWith('koduchi.users')
+    expect(開いた定義).toEqual([])
   })
 })
 
@@ -637,7 +747,7 @@ describe('ツリーの右クリックメニュー', () => {
     resetClipboardApi()
   })
 
-  it('テーブルを右クリックすると 3 項目のメニューが出る', async () => {
+  it('テーブルを右クリックすると 4 項目のメニューが出る', async () => {
     // Arrange
     接続を置く('lower')
     renderTree()
@@ -651,21 +761,7 @@ describe('ツリーの右クリックメニュー', () => {
     expect(screen.getByRole('menuitem', { name: '名前をコピー' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'エディタへ挿入' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'SELECT を開く' })).toBeInTheDocument()
-  })
-
-  it('定義ボタンを右クリックしても行と同じメニューが出る', async () => {
-    // Arrange: 定義はその行の一部であり、右クリックの意味は行と同じでよい
-    接続を置く('lower')
-    renderTree()
-    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
-    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
-
-    // Act
-    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS の定義を開く' }))
-
-    // Assert
-    expect(screen.getByTestId('schema-tree-context-menu')).toHaveTextContent('koduchi.users')
-    expect(useDefinitionStore.getState().target).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '定義を開く' })).toBeInTheDocument()
   })
 
   it('名前をコピーすると挿入と同じ綴りがクリップボードへ入る', async () => {
@@ -754,7 +850,7 @@ describe('ツリーのキーボード操作', () => {
   })
 
   it('焦点を当てる行は 1 つだけである', async () => {
-    // Arrange: 定義ボタンは行と同じ焦点の枠に入り、`Tab` で降りる
+    // Arrange: 行の右に押しどころは無く、焦点は行そのものが持つ
     接続を置く('lower')
     renderTree()
 

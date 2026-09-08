@@ -3,7 +3,7 @@ import { act, render } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { EditorPanel } from './EditorPanel'
 import { useSchemaStore } from '../../stores/schema'
-import { resetUntitledCounter, selectActiveTab, useTabStore } from '../../stores/tab'
+import { resetUntitledCounter, selectActiveSqlTab, useTabStore } from '../../stores/tab'
 
 /** 既定の props でエディタ一式を描く。 */
 function 描く() {
@@ -63,7 +63,7 @@ describe('EditorPanel', () => {
     await userEvent.keyboard('select 1')
 
     // Assert
-    expect(selectActiveTab(useTabStore.getState())?.content).toBe('select 1')
+    expect(selectActiveSqlTab(useTabStore.getState())?.content).toBe('select 1')
   })
 
   it('タブを切り替えると切り替え先の内容が表示される', () => {

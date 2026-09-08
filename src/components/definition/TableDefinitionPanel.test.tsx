@@ -1,7 +1,7 @@
 /**
- * テーブル定義ビューのテスト（ADR 0019）。
+ * テーブル定義ビューのテスト（ADR 0019・0022）。
  *
- * 列・制約・索引の描画、タブの切替、列の絞り込み、DDL の遅延取得、権限不足の
+ * 列・制約・索引の描画、内訳の切替、列の絞り込み、DDL の遅延取得、権限不足の
  * 見せ方を見る。データベースからは `src/api/` 層の差し替えで切り離す（ADR 0010）。
  */
 
@@ -13,6 +13,9 @@ import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../te
 import { useDefinitionStore } from '../../stores/definition'
 import type { ObjectDefinition } from '../../types/db'
 import { TableDefinitionPanel } from './TableDefinitionPanel'
+
+/** 描いている定義タブの ID。 */
+const 定義タブ = 'tab-1'
 
 /** 主キー・外部キー・検査制約・複合索引を持つ表の定義。 */
 const 定義: ObjectDefinition = {
@@ -114,11 +117,11 @@ async function パネルを開く(options: FakeDbApiOptions = { definition: 定�
   calls = fake.calls
   setDbApi(fake.api)
 
-  render(<TableDefinitionPanel connectionId="c1" />)
+  render(<TableDefinitionPanel connectionId="c1" tabId={定義タブ} />)
 
   await useDefinitionStore
     .getState()
-    .open('c1', { owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' })
+    .open('c1', 定義タブ, { owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' })
 
   return userEvent.setup()
 }
@@ -329,9 +332,9 @@ describe('TableDefinitionPanel', () => {
     expect(screen.queryByText('列がありません')).not.toBeInTheDocument()
   })
 
-  it('別のオブジェクトを開くと絞り込みが引き継がれない', async () => {
+  it('絞り込みはタブごとに別々である', async () => {
     // Arrange: 前の表の語で別の表を絞ったまま見せると、列が無いのか隠れて
-    // いるのかが分からない
+    // いるのかが分からない（ADR 0022 ではタブごとに分けて解いた）
     const user = await パネルを開く()
     await screen.findByText('TRACKING_NO')
     await user.type(screen.getByLabelText('定義を絞り込む'), 'tracking')
@@ -339,23 +342,22 @@ describe('TableDefinitionPanel', () => {
     // Act
     await useDefinitionStore
       .getState()
-      .open('c1', { owner: 'KODUCHI', name: 'ORDERS', kind: 'table' })
+      .open('c1', '別のタブ', { owner: 'KODUCHI', name: 'ORDERS', kind: 'table' })
 
     // Assert
-    expect(screen.getByLabelText('定義を絞り込む')).toHaveValue('')
+    expect(useDefinitionStore.getState().byTab['別のタブ'].search).toBe('')
+    expect(screen.getByLabelText('定義を絞り込む')).toHaveValue('tracking')
   })
 
-  it('閉じると何も描かない', async () => {
+  it('タブを閉じると何も描かない', async () => {
     // Arrange
     await パネルを開く()
     await screen.findByText('KODUCHI.SHIPMENTS')
 
     // Act
-    useDefinitionStore.getState().close()
+    useDefinitionStore.getState().drop(定義タブ)
 
     // Assert
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'テーブル定義' })).not.toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.queryByTestId('table-definition')).not.toBeInTheDocument())
   })
 })

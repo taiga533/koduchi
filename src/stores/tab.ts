@@ -1,9 +1,16 @@
 /**
  * エディタタブを持つストア。
  *
- * タブは `.sql` ファイルの開く / 保存に対応し、未保存のままでも保持される
- * （ADR 0005）。未保存のバッファも含めて SQLite に保存し、再起動でタブ構成ごと
- * 復元する。
+ * タブは 2 種類ある（ADR 0022）。**並びは 1 本であり、両方が同じ列に混ざる。**
+ *
+ * - **SQL タブ**: `.sql` ファイルの開く / 保存に対応し、未保存のままでも保持
+ *   される（ADR 0005）。未保存のバッファも含めて SQLite に保存し、再起動で
+ *   タブ構成ごと復元する。
+ * - **定義タブ**: オブジェクトの定義を見る（ADR 0022）。内容も保存先も持たず、
+ *   「どのオブジェクトの定義か」だけを持つ。**セッションには保存しない。**
+ *
+ * 種類による振り分けは `tabKinds.ts` の純粋な関数に寄せてある。並び順・選択・
+ * 閉じるは種類を問わず同じに扱えるため、ここでは分けていない。
  *
  * バインド変数へ前回与えた値もここが覚える（ADR の「バインド変数」節）。実行の
  * 状態ではなく編集中の文脈に属するためである。セッションには保存しないので、
@@ -12,13 +19,23 @@
 
 import { create } from 'zustand'
 import { autoBindKind } from '../sql/bindTypes'
-import type { Bind, BindKind, SessionState } from '../types/db'
+import type { Bind, BindKind, DefinitionTarget, SessionState } from '../types/db'
+import { fromSessionTabs, isSqlTab, openDefinitionTab, toSessionTabs } from './tabKinds'
 
-/** エディタタブ 1 枚。 */
-export interface EditorTab {
+/** タブ 1 枚に共通するもの。 */
+interface TabBase {
   id: string
-  /** タブに表示する名前。新規タブは `無題-1.sql`。 */
+  /**
+   * タブに表示する名前。
+   *
+   * SQL タブは `無題-1.sql` などのファイル名、定義タブはオブジェクト名である。
+   */
   name: string
+}
+
+/** SQL を書くタブ 1 枚。 */
+export interface SqlTab extends TabBase {
+  kind: 'sql'
   /** 保存先のファイル。未保存のバッファでは `null`。 */
   filePath: string | null
   /** エディタの内容。 */
@@ -26,6 +43,21 @@ export interface EditorTab {
   /** 保存後に変更されたか。タブの `●` 印に対応する。 */
   dirty: boolean
 }
+
+/**
+ * オブジェクトの定義を見るタブ 1 枚（ADR 0022）。
+ *
+ * 中身は取らずに対象だけを持つ。列・制約・索引・DDL そのものは `definition`
+ * ストアがタブごとに持つ。
+ */
+export interface DefinitionEditorTab extends TabBase {
+  kind: 'definition'
+  /** 見ているオブジェクト。 */
+  target: DefinitionTarget
+}
+
+/** エディタタブ 1 枚。SQL タブと定義タブのどちらかである（ADR 0022）。 */
+export type EditorTab = SqlTab | DefinitionEditorTab
 
 /**
  * バインド変数 1 つへの入力。
@@ -57,6 +89,13 @@ interface TabState {
 
   /** 新しい空のタブを開き、それを選択する。 */
   openNewTab: () => void
+  /**
+   * オブジェクトの定義タブを開き、それを選択する（ADR 0022）。
+   *
+   * 同じ対象のタブが既にあれば 2 枚目を開かず、そのタブへ移る。選ばれたタブの
+   * ID を返す。定義そのものを取りにいくのは `definition` ストアである。
+   */
+  openDefinitionTab: (target: DefinitionTarget) => string
   /** タブを閉じる。最後の 1 枚を閉じると新しい空のタブが開く。 */
   closeTab: (id: string) => void
   /** タブを選択する。 */
@@ -98,9 +137,10 @@ let untitledCounter = 0
  *
  * 名前は `無題-1.sql` から始まる連番にする。
  */
-function createTab(): EditorTab {
+function createTab(): SqlTab {
   untitledCounter += 1
   return {
+    kind: 'sql',
     id: crypto.randomUUID(),
     name: `無題-${untitledCounter}.sql`,
     filePath: null,
@@ -116,7 +156,7 @@ export function resetUntitledCounter(): void {
 
 const initialTab = createTab()
 
-export const useTabStore = create<TabState>((set) => ({
+export const useTabStore = create<TabState>((set, get) => ({
   tabs: [initialTab],
   activeTabId: initialTab.id,
   bindValues: {},
@@ -126,6 +166,12 @@ export const useTabStore = create<TabState>((set) => ({
       const tab = createTab()
       return { tabs: [...state.tabs, tab], activeTabId: tab.id }
     }),
+
+  openDefinitionTab: (target) => {
+    const opened = openDefinitionTab(get().tabs, target, crypto.randomUUID())
+    set({ tabs: opened.tabs, activeTabId: opened.activeTabId })
+    return opened.activeTabId
+  },
 
   closeTab: (id) =>
     set((state) => {
@@ -158,19 +204,22 @@ export const useTabStore = create<TabState>((set) => ({
   updateContent: (id, content) =>
     set((state) => ({
       tabs: state.tabs.map((tab) =>
-        tab.id === id ? { ...tab, content, dirty: tab.content !== content || tab.dirty } : tab,
+        tab.id === id && isSqlTab(tab)
+          ? { ...tab, content, dirty: tab.content !== content || tab.dirty }
+          : tab,
       ),
     })),
 
   openFile: (filePath, content) =>
     set((state) => {
       // 同じファイルを開いているタブがあれば、そちらへ移る。
-      const existing = state.tabs.find((tab) => tab.filePath === filePath)
+      const existing = state.tabs.find((tab) => isSqlTab(tab) && tab.filePath === filePath)
       if (existing) {
         return { activeTabId: existing.id }
       }
 
-      const tab: EditorTab = {
+      const tab: SqlTab = {
+        kind: 'sql',
         id: crypto.randomUUID(),
         name: baseName(filePath),
         filePath,
@@ -183,7 +232,9 @@ export const useTabStore = create<TabState>((set) => ({
   markSaved: (id, filePath) =>
     set((state) => ({
       tabs: state.tabs.map((tab) =>
-        tab.id === id ? { ...tab, filePath, name: baseName(filePath), dirty: false } : tab,
+        tab.id === id && isSqlTab(tab)
+          ? { ...tab, filePath, name: baseName(filePath), dirty: false }
+          : tab,
       ),
     })),
 
@@ -193,13 +244,8 @@ export const useTabStore = create<TabState>((set) => ({
         return state
       }
 
-      const tabs: EditorTab[] = session.tabs.map((tab) => ({
-        id: tab.id,
-        name: tab.name,
-        filePath: tab.filePath,
-        content: tab.content,
-        dirty: tab.dirty,
-      }))
+      // セッションに載るのは SQL タブだけである（ADR 0022）。
+      const tabs: EditorTab[] = fromSessionTabs(session.tabs)
 
       // 復元した名前と連番がぶつからないよう、番号を進めておく。
       for (const tab of tabs) {
@@ -231,6 +277,19 @@ export function selectActiveTab(state: TabState): EditorTab | null {
   return state.tabs.find((tab) => tab.id === state.activeTabId) ?? null
 }
 
+/**
+ * 選択中のタブが SQL タブならそれを返す（ADR 0022）。
+ *
+ * 定義タブを選んでいるときは `null` を返す。実行・保存・CSV の書き出しといった
+ * 「今のタブの SQL」を要る操作は、すべてここを通してから進める。
+ *
+ * @param state タブストアの状態
+ */
+export function selectActiveSqlTab(state: TabState): SqlTab | null {
+  const tab = selectActiveTab(state)
+  return tab !== null && isSqlTab(tab) ? tab : null
+}
+
 /** タブ以外にセッションへ書き出すもの。 */
 export interface SessionLayout {
   /** サイドバーの選択セグメント。 */
@@ -242,10 +301,10 @@ export interface SessionLayout {
 }
 
 /**
- * セッションに保存する形へ変換する（ADR 0005）。
+ * セッションに保存する形へ変換する（ADR 0005・0022）。
  *
  * 未保存のバッファも丸ごと含める。タブの `●` 印は「閉じても消えない」ことを
- * 前提にした設計である。
+ * 前提にした設計である。**定義タブは書き出さない**（ADR 0022）。
  *
  * @param state タブストアの状態
  * @param layout サイドバーの選択セグメントとペインの寸法
@@ -254,15 +313,13 @@ export function selectSession(
   state: Pick<TabState, 'tabs' | 'activeTabId'>,
   layout: SessionLayout,
 ): SessionState {
+  const tabs = toSessionTabs(state.tabs)
+  // 定義タブを選んだまま終えたときは、そのタブごと消える。選択も落とす。
+  const activeTabId = tabs.some((tab) => tab.id === state.activeTabId) ? state.activeTabId : null
+
   return {
-    tabs: state.tabs.map((tab) => ({
-      id: tab.id,
-      name: tab.name,
-      filePath: tab.filePath,
-      content: tab.content,
-      dirty: tab.dirty,
-    })),
-    activeTabId: state.activeTabId,
+    tabs,
+    activeTabId,
     sidebarSegment: layout.sidebarSegment,
     sidebarWidth: layout.sidebarWidth,
     editorHeight: layout.editorHeight,

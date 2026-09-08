@@ -11,7 +11,7 @@ import type { Ref } from 'react'
 import { useCallback, useMemo } from 'react'
 import { useConnectionStore } from '../../stores/connection'
 import { useSchemaStore } from '../../stores/schema'
-import { selectActiveTab, useTabStore } from '../../stores/tab'
+import { selectActiveSqlTab, useTabStore } from '../../stores/tab'
 import type { TableColumn } from '../../types/db'
 import { defaultCompletionSettings } from '../../types/db'
 import { buildCatalog } from './catalog'
@@ -41,7 +41,7 @@ interface EditorPanelProps {
 }
 
 /**
- * 選択中のタブを SQL エディタへ繋ぐ。
+ * 選択中の SQL タブを SQL エディタへ繋ぐ。
  *
  * @param props 実行と中止の呼び出し口
  */
@@ -53,7 +53,8 @@ export function EditorPanel({
   onRunScript,
   onCancel,
 }: EditorPanelProps) {
-  const activeTab = useTabStore(selectActiveTab)
+  // 定義タブを選んでいるときは何も描かない。定義タブにエディタは無い（ADR 0022）。
+  const activeTab = useTabStore(selectActiveSqlTab)
   const updateContent = useTabStore((state) => state.updateContent)
 
   const schemas = useSchemaStore((state) => state.schemas)
