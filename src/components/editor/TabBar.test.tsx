@@ -4,10 +4,19 @@
  * 未保存の印と閉じるボタンが同時に出ること（ADR 0023 が直したバグ）、ドラッグと
  * `⌥←` / `⌥→` による並べ替え、そして SQL タブと定義タブが 1 本の並びに混ざった
  * ときの描き分け（ADR 0022）を見る。
+ *
+ * 枚数が増えたときにあふれない器であることも見る。jsdom はレイアウトを行わない
+ * ため「はみ出す」ことそのものは確かめられないが、**あふれを収める仕掛けが
+ * 繋がっていること**は確かめられる。見張るのは 3 つで、いずれもクラス名では
+ * なく振る舞いと組み立てである。
+ *
+ * - `＋` ボタンがスクロールする器の**外**に居ること（流されない）
+ * - 省いた名前を `title` で読めること
+ * - 選んだタブが帯の外に居れば送られ、**掴んでいる間は送られない**こと
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TabBar } from './TabBar'
 import type { EditorTab, SqlTab } from '../../stores/tab'
@@ -117,6 +126,70 @@ function ドラッグする(器: HTMLElement, from: number, to: number): void {
   横位置を与える()
   fireEvent.pointerMove(器, { pointerId: 1, clientX: to })
   fireEvent.pointerUp(器, { pointerId: 1, clientX: to })
+}
+
+/**
+ * 矩形を 1 つ作る。jsdom の `getBoundingClientRect` を差し替えるために使う。
+ *
+ * @param left 左端
+ * @param width 幅
+ */
+function 矩形(left: number, width: number): DOMRect {
+  return {
+    left,
+    right: left + width,
+    width,
+    top: 0,
+    bottom: 34,
+    height: 34,
+    x: left,
+    y: 0,
+  } as DOMRect
+}
+
+/** タブの並びを収める、横へスクロールする器を返す。 */
+function タブ帯(): HTMLElement {
+  const element = document.querySelector<HTMLElement>('[data-tab-scroller]')
+  if (!element) {
+    throw new Error('タブ帯が見つからない')
+  }
+  return element
+}
+
+/**
+ * 今の並び順のとおりにタブの横位置を割り当てる。
+ *
+ * 幅 100px のタブを 4px の間隔で並べ、帯を `送り量` だけ送った状態にあたる
+ * 横位置（`clientX` と同じ座標系）を与える。
+ *
+ * @param 送り量 帯の送り量（px）
+ */
+function 並びの横位置を与える(送り量: number): void {
+  for (const [index, tab] of useTabStore.getState().tabs.entries()) {
+    const element = document.querySelector<HTMLElement>(`[data-tab-id="${tab.id}"]`)
+    if (element) {
+      const rect = 矩形(index * 104 - 送り量, 100)
+      element.getBoundingClientRect = () => rect
+    }
+  }
+}
+
+/**
+ * 帯とタブに寸法を与える。
+ *
+ * jsdom はレイアウトを行わないため、横スクロールの判定に要る寸法だけを与える。
+ * 帯の左端は 0 に置く。
+ *
+ * @param 幅 帯の見えている幅（px）
+ * @param 送り量 帯の送り量（px）
+ */
+function 帯の寸法を与える(幅: number, 送り量: number): HTMLElement {
+  const 帯 = タブ帯()
+  const rect = 矩形(0, 幅)
+  帯.getBoundingClientRect = () => rect
+  帯.scrollLeft = 送り量
+  並びの横位置を与える(送り量)
+  return 帯
 }
 
 /** タブを 3 枚にし、名前を打ち直して見分けられるようにする。 */
@@ -464,5 +537,265 @@ describe('TabBar の定義タブ', () => {
 
     // Assert
     expect(並び()).toEqual(['SHIPMENTS', 't1.sql'])
+  })
+})
+
+/**
+ * 枚数が増えても帯が壊れないこと。
+ *
+ * `＋` ボタンの居場所と、省いた名前の確かめ方を見る。
+ */
+describe('TabBar のあふれの収め方', () => {
+  it('新しいタブのボタンはスクロールする器の外に居る', () => {
+    // Arrange: 器の中に居ると、タブが増えたときに一緒に流れて押せなくなる
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+
+    // Act
+    const 追加 = screen.getByRole('button', { name: '新しいタブ' })
+
+    // Assert
+    expect(タブ帯()).toBeInTheDocument()
+    expect(追加.closest('[data-tab-scroller]')).toBeNull()
+  })
+
+  it('タブはすべてスクロールする器の中に居る', () => {
+    // Arrange
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+
+    // Act
+    const タブ = Array.from(document.querySelectorAll<HTMLElement>('[data-tab-id]'))
+
+    // Assert
+    expect(タブ).toHaveLength(3)
+    expect(タブ.every((element) => element.closest('[data-tab-scroller]') !== null)).toBe(true)
+  })
+
+  it('省かれても読めるよう、タブは名前をそのまま `title` に持つ', () => {
+    // Arrange: 長い名前は `…` で省かれる。全体を確かめる道が要る
+    タブを据える([SQLタブ('とても長い名前の付いた集計クエリ')], 'とても長い名前の付いた集計クエリ')
+    render(<TabBar onCloseTab={vi.fn()} />)
+
+    // Act
+    const 器 = タブの器('とても長い名前の付いた集計クエリ.sql')
+
+    // Assert
+    expect(器).toHaveAttribute('title', 'とても長い名前の付いた集計クエリ.sql')
+  })
+
+  it('定義タブも名前をそのまま `title` に持つ', () => {
+    // Arrange
+    タブを据える([出荷の定義タブ], 'd1')
+    render(<TabBar onCloseTab={vi.fn()} />)
+
+    // Act
+    const 器 = タブの器('SHIPMENTS の定義')
+
+    // Assert
+    expect(器).toHaveAttribute('title', 'SHIPMENTS')
+  })
+})
+
+/**
+ * 帯の外に居るタブへの追従と、掴んでいる間の抑止。
+ *
+ * `⌘K` のパレットや `⌘T` で選択が飛ぶと、そのタブが帯の外に居ることが起こる。
+ */
+describe('TabBar の選択の追従', () => {
+  it('右に隠れているタブを選ぶと帯がそこまで送られる', () => {
+    // Arrange: 帯は 150px。3 枚目は 208〜308 に居て見えていない
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const [一枚目, , 三枚目] = useTabStore.getState().tabs
+    act(() => {
+      useTabStore.getState().selectTab(一枚目.id)
+    })
+    const 帯 = 帯の寸法を与える(150, 0)
+
+    // Act
+    act(() => {
+      useTabStore.getState().selectTab(三枚目.id)
+    })
+
+    // Assert
+    expect(帯.scrollLeft).toBe(158)
+  })
+
+  it('左に隠れているタブを選ぶと帯が戻される', () => {
+    // Arrange: 帯を 158 まで送った状態から 1 枚目を選ぶ
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const [一枚目] = useTabStore.getState().tabs
+    const 帯 = 帯の寸法を与える(150, 158)
+
+    // Act
+    act(() => {
+      useTabStore.getState().selectTab(一枚目.id)
+    })
+
+    // Assert
+    expect(帯.scrollLeft).toBe(0)
+  })
+
+  it('既に見えているタブを選び直しても帯は動かない', () => {
+    // Arrange: 帯が 400px あれば 3 枚とも見えている
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const [一枚目, , 三枚目] = useTabStore.getState().tabs
+    act(() => {
+      useTabStore.getState().selectTab(一枚目.id)
+    })
+    const 帯 = 帯の寸法を与える(400, 0)
+
+    // Act
+    act(() => {
+      useTabStore.getState().selectTab(三枚目.id)
+    })
+
+    // Assert
+    expect(帯.scrollLeft).toBe(0)
+  })
+
+  it('掴んでいる間は選択の追従で帯が動かず、離すと動かしたタブが見える位置へ来る', () => {
+    // Arrange: 帯は 150px、送り量 0。1 枚目を掴んで末尾へ動かす
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const 器 = タブの器('無題-1.sql')
+    const 帯 = 帯の寸法を与える(150, 0)
+
+    // Act
+    fireEvent.pointerDown(器, { pointerId: 1, button: 0, clientX: 50 })
+    fireEvent.pointerMove(器, { pointerId: 1, clientX: 300 })
+    const 掴んでいる間 = 帯.scrollLeft
+    // 並びが変わったぶん、位置を割り当て直す（jsdom は測り直してくれない）
+    並びの横位置を与える(0)
+    fireEvent.pointerUp(器, { pointerId: 1, clientX: 300 })
+
+    // Assert
+    expect(並び()).toEqual(['無題-2.sql', '無題-3.sql', '無題-1.sql'])
+    expect(掴んでいる間).toBe(0)
+    expect(帯.scrollLeft).toBe(158)
+  })
+})
+
+/**
+ * 掴んだまま端まで持っていったときに帯が送られること。
+ *
+ * jsdom はフレームを時間で回さないため、予約されたフレームを手で進める。
+ */
+describe('TabBar の端でのスクロール', () => {
+  /** 予約されたフレームの表。番号で取り消せるようにしておく。 */
+  let フレーム: Map<number, FrameRequestCallback>
+  let 次の番号: number
+
+  beforeEach(() => {
+    フレーム = new Map()
+    次の番号 = 0
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      次の番号 += 1
+      フレーム.set(次の番号, callback)
+      return 次の番号
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((handle) => {
+      フレーム.delete(handle)
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** 予約されているフレームを 1 巡ぶん進める。 */
+  function フレームを進める(): void {
+    const 予約 = [...フレーム.values()]
+    フレーム.clear()
+    for (const callback of 予約) {
+      act(() => {
+        callback(0)
+      })
+    }
+  }
+
+  it('掴んだタブを帯の右端まで持っていくと帯が送られる', () => {
+    // Arrange: 帯は 0〜150。右端の内側 24px は 126 から
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const 器 = タブの器('無題-1.sql')
+    const 帯 = 帯の寸法を与える(150, 0)
+
+    // Act
+    fireEvent.pointerDown(器, { pointerId: 1, button: 0, clientX: 50 })
+    fireEvent.pointerMove(器, { pointerId: 1, clientX: 145 })
+    フレームを進める()
+
+    // Assert
+    expect(帯.scrollLeft).toBe(11)
+  })
+
+  it('掴んだタブを帯の左端まで持っていくと帯が戻される', () => {
+    // Arrange: 帯を 100 まで送った状態から左端へ持っていく
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const 器 = タブの器('無題-3.sql')
+    const 帯 = 帯の寸法を与える(150, 100)
+
+    // Act
+    fireEvent.pointerDown(器, { pointerId: 1, button: 0, clientX: 130 })
+    fireEvent.pointerMove(器, { pointerId: 1, clientX: 5 })
+    フレームを進める()
+
+    // Assert
+    expect(帯.scrollLeft).toBeLessThan(100)
+  })
+
+  it('端から離れた位置では帯を送らない', () => {
+    // Arrange
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const 器 = タブの器('無題-1.sql')
+    const 帯 = 帯の寸法を与える(150, 0)
+
+    // Act: 帯の真ん中あたりまでしか動かさない
+    fireEvent.pointerDown(器, { pointerId: 1, button: 0, clientX: 50 })
+    fireEvent.pointerMove(器, { pointerId: 1, clientX: 75 })
+    フレームを進める()
+
+    // Assert
+    expect(帯.scrollLeft).toBe(0)
+  })
+
+  it('端に居ても指を離せば帯は送られなくなる', () => {
+    // Arrange
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const 器 = タブの器('無題-1.sql')
+    const 帯 = 帯の寸法を与える(150, 0)
+    fireEvent.pointerDown(器, { pointerId: 1, button: 0, clientX: 50 })
+    fireEvent.pointerMove(器, { pointerId: 1, clientX: 145 })
+
+    // Act
+    fireEvent.pointerUp(器, { pointerId: 1, clientX: 145 })
+    const 離した時点 = 帯.scrollLeft
+    フレームを進める()
+
+    // Assert
+    expect(帯.scrollLeft).toBe(離した時点)
+  })
+
+  it('しきい値を越えていない押し下げでは帯を送らない', () => {
+    // Arrange: 掴んだと見なす前に端へ居ても、ただの押し下げである
+    三枚開く()
+    render(<TabBar onCloseTab={vi.fn()} />)
+    const 器 = タブの器('無題-1.sql')
+    const 帯 = 帯の寸法を与える(150, 0)
+
+    // Act
+    fireEvent.pointerDown(器, { pointerId: 1, button: 0, clientX: 145 })
+    fireEvent.pointerMove(器, { pointerId: 1, clientX: 146 })
+    フレームを進める()
+
+    // Assert
+    expect(帯.scrollLeft).toBe(0)
   })
 })

@@ -13,18 +13,35 @@
  * 同じ側だが、**定義タブは未保存にならない**ため両方が出ることはない。印の場所は
  * 印が無いときも空けてあり、SQL タブと定義タブで名前の左端が揃う。
  *
+ * **枚数が増えたときの収め方は 3 段構えである。**
+ *
+ * 1. タブは `tabSizing.ts` の上限（`TAB_MAX_WIDTH`）で頭打ちにし、はみ出す名前は
+ *    `…` で省く。全体は `title` で確かめられる。
+ * 2. 帯が足りなくなったらタブを縮める。縮む下限は `TAB_MIN_WIDTH` であり、
+ *    `●` 印・種別のアイコン・閉じる `✕` はどこまで縮めても見えたままになる。
+ * 3. 下限まで縮めても収まらない枚数では、タブの並びだけを横へスクロールさせる
+ *    （`[data-tab-scroller]`）。**`＋` ボタンはその外側に置く**ので、何枚開いても
+ *    流されない。選んだタブが帯の外に居るときは `tabScroll.ts` の `revealOffset`
+ *    で見える位置まで送る。
+ *
  * 並べ替えは Pointer Events で行う。`Splitter` と同じく `setPointerCapture` を
  * 使い、`mousemove` を `window` に貼らない。落とす位置の計算は `tabOrder.ts` の
- * 純粋な関数に寄せてある。
+ * 純粋な関数に寄せてある。**スクロールしても `dropIndex` はそのままでよい**
+ * （理由は `tabScroll.ts` の冒頭）。掴んだまま端まで持っていったときは
+ * `autoScrollStep` の量で帯を送り、送れたぶんだけ落とす位置を計算し直す。
+ * **ドラッグ中は選択の追従を止める。**掴んで動かしている最中に帯が別の都合で
+ * 動くと、指とタブがずれる。
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { Plus, TableProperties, X } from 'lucide-react'
 import { useTabStore } from '../../stores/tab'
 import { isDefinitionTab, isDirty } from '../../stores/tabKinds'
 import { DRAG_THRESHOLD, dropIndex } from './tabOrder'
 import type { TabRect } from './tabOrder'
+import { autoScrollStep, revealOffset } from './tabScroll'
+import { TAB_MAX_WIDTH, TAB_MIN_WIDTH } from './tabSizing'
 
 interface TabBarProps {
   /**
@@ -45,6 +62,8 @@ interface DragState {
   origin: number
   /** しきい値を越えて「掴んだ」と見なしたか。 */
   held: boolean
+  /** 直近のポインタの横位置（`clientX`）。端でのスクロールが見に来る。 */
+  pointerX: number
 }
 
 /**
@@ -87,6 +106,10 @@ export function TabBar({ onCloseTab }: TabBarProps) {
   const drag = useRef<DragState | null>(null)
   /** タブの ID から描かれている要素を引く。横位置を実測するために持つ。 */
   const elements = useRef(new Map<string, HTMLElement>())
+  /** タブの並びだけを収める、横へスクロールする器。 */
+  const scroller = useRef<HTMLDivElement | null>(null)
+  /** 端でのスクロールを回している間だけ入る、次のフレームの識別子。 */
+  const frame = useRef<number | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
 
   /**
@@ -107,150 +130,269 @@ export function TabBar({ onCloseTab }: TabBarProps) {
     return rects
   }, [])
 
-  /** ドラッグを終える。指を離したときと、途中で取り消されたときの両方で呼ぶ。 */
-  const endDrag = useCallback((element: Element, pointerId: number) => {
-    drag.current = null
-    releasePointer(element, pointerId)
-    document.body.style.userSelect = ''
-    setDraggingId(null)
+  /**
+   * 今のポインタ位置から落とす位置を決め、並びを動かす。
+   *
+   * @param id 掴んでいるタブの ID
+   * @param pointerX ポインタの横位置（`clientX`）
+   */
+  const applyDrop = useCallback(
+    (id: string, pointerX: number) => {
+      const to = dropIndex(measure(), id, pointerX)
+      if (to !== -1) {
+        moveTab(id, to)
+      }
+    },
+    [measure, moveTab],
+  )
+
+  /** 端でのスクロールを止める。 */
+  const stopAutoScroll = useCallback(() => {
+    if (frame.current !== null) {
+      cancelAnimationFrame(frame.current)
+      frame.current = null
+    }
   }, [])
 
+  /**
+   * 端でのスクロールを始める。既に回っていれば何もしない。
+   *
+   * 1 フレームごとに `autoScrollStep` の量だけ帯を送り、送れたぶんだけ落とす
+   * 位置を計算し直す。端から離れたとき・これ以上送れないとき・ドラッグが
+   * 終わったときに自分で止まる。ポインタが止まっていても帯は動き続けるため、
+   * 次のフレームは中で予約する。
+   */
+  const startAutoScroll = useCallback(() => {
+    /** 1 フレームぶん進める。自分を呼び直すので関数宣言で書く。 */
+    function step(): void {
+      frame.current = null
+      const element = scroller.current
+      const state = drag.current
+      if (!element || !state || !state.held) {
+        return
+      }
+
+      const viewport = element.getBoundingClientRect()
+      const 送り = autoScrollStep(viewport.left, viewport.right, state.pointerX)
+      if (送り === 0) {
+        return
+      }
+
+      const before = element.scrollLeft
+      element.scrollLeft = before + 送り
+      if (element.scrollLeft === before) {
+        // 端まで送りきった。これ以上回しても何も起きない。
+        return
+      }
+
+      applyDrop(state.id, state.pointerX)
+      frame.current = requestAnimationFrame(step)
+    }
+
+    if (frame.current === null) {
+      frame.current = requestAnimationFrame(step)
+    }
+  }, [applyDrop])
+
+  /** ドラッグを終える。指を離したときと、途中で取り消されたときの両方で呼ぶ。 */
+  const endDrag = useCallback(
+    (element: Element, pointerId: number) => {
+      drag.current = null
+      stopAutoScroll()
+      releasePointer(element, pointerId)
+      document.body.style.userSelect = ''
+      setDraggingId(null)
+    },
+    [stopAutoScroll],
+  )
+
+  // 描かれないまま外れたときにフレームを残さない。
+  useEffect(() => stopAutoScroll, [stopAutoScroll])
+
+  /**
+   * 選んだタブが帯の外に居たら、見える位置まで送る。
+   *
+   * `⌘K` のパレットや `⌘T` で選択が飛んだとき、そのタブが帯の外に居ることが
+   * 起こる。**ドラッグ中は追わない**（掴んでいる指とタブがずれる）。掴み終えた
+   * 時点で `draggingId` が戻り、動かしたタブが改めて見える位置へ来る。
+   *
+   * 祖先まで動かしてしまう `scrollIntoView` は使わず、帯の送り量だけを書く。
+   *
+   * 並びが変わっただけでは追わない。並べ替えは掴んでいる間の出来事であり、
+   * 掴み終えた時点の `draggingId` の戻りが同じ仕事をする。タブの開閉も
+   * `activeTabId` が動くので、ここから漏れるのは「名前が変わって幅が変わった」
+   * ときだけである。
+   */
+  useEffect(() => {
+    if (draggingId !== null) {
+      return
+    }
+    const element = scroller.current
+    const tab = activeTabId === null ? undefined : elements.current.get(activeTabId)
+    if (!element || !tab) {
+      return
+    }
+
+    const viewport = element.getBoundingClientRect()
+    const rect = tab.getBoundingClientRect()
+    // 帯の中身の左端を 0 とした位置に直す。
+    const left = rect.left - viewport.left + element.scrollLeft
+    const next = revealOffset(element.scrollLeft, viewport.width, left, rect.width)
+    if (next !== element.scrollLeft) {
+      element.scrollLeft = next
+    }
+  }, [activeTabId, draggingId])
+
   return (
-    <div className="h-34px flex items-stretch gap-4px bg-bg shrink-0">
-      {tabs.map((tab) => {
-        const active = tab.id === activeTabId
-        const dragging = tab.id === draggingId
+    <div className="h-34px flex items-stretch gap-4px bg-bg shrink-0 min-w-0">
+      <div
+        ref={scroller}
+        data-tab-scroller=""
+        /* `tab-scroller` は水平スクロールバーを隠すためだけの決まり（`app.css`）。
+           34px の帯にバーの居場所は無い。 */
+        className="tab-scroller flex items-stretch gap-4px min-w-0 overflow-x-auto overflow-y-hidden"
+      >
+        {tabs.map((tab) => {
+          const active = tab.id === activeTabId
+          const dragging = tab.id === draggingId
 
-        /**
-         * 掴む。閉じるボタンの上から始めたときは掴まない。
-         *
-         * 押し下げた時点でそのタブを選ぶ。並べ替えたタブが選ばれていないと、
-         * どれを動かしたのかが分からなくなる。
-         */
-        const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-          if (event.button !== 0) {
-            return
-          }
-          if ((event.target as HTMLElement).closest('[data-tab-action]')) {
-            return
-          }
-          selectTab(tab.id)
-          drag.current = {
-            pointerId: event.pointerId,
-            id: tab.id,
-            origin: event.clientX,
-            held: false,
-          }
-          capturePointer(event.currentTarget, event.pointerId)
-        }
-
-        const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-          const state = drag.current
-          if (!state || state.pointerId !== event.pointerId) {
-            return
-          }
-
-          if (!state.held) {
-            // しきい値を越えるまでは、ただの押し下げとして扱う。
-            if (Math.abs(event.clientX - state.origin) < DRAG_THRESHOLD) {
+          /**
+           * 掴む。閉じるボタンの上から始めたときは掴まない。
+           *
+           * 押し下げた時点でそのタブを選ぶ。並べ替えたタブが選ばれていないと、
+           * どれを動かしたのかが分からなくなる。
+           */
+          const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+            if (event.button !== 0) {
               return
             }
-            state.held = true
-            setDraggingId(state.id)
-            document.body.style.userSelect = 'none'
+            if ((event.target as HTMLElement).closest('[data-tab-action]')) {
+              return
+            }
+            selectTab(tab.id)
+            drag.current = {
+              pointerId: event.pointerId,
+              id: tab.id,
+              origin: event.clientX,
+              held: false,
+              pointerX: event.clientX,
+            }
+            capturePointer(event.currentTarget, event.pointerId)
           }
 
-          const to = dropIndex(measure(), state.id, event.clientX)
-          if (to !== -1) {
-            moveTab(state.id, to)
-          }
-        }
+          const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+            const state = drag.current
+            if (!state || state.pointerId !== event.pointerId) {
+              return
+            }
+            state.pointerX = event.clientX
 
-        const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-          const state = drag.current
-          if (!state || state.pointerId !== event.pointerId) {
-            return
-          }
-          endDrag(event.currentTarget, event.pointerId)
-        }
-
-        /** `⌥←` / `⌥→` で 1 つずつ動かす（ADR 0023）。 */
-        const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-          if (!event.altKey || event.metaKey || event.ctrlKey) {
-            return
-          }
-          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
-            return
-          }
-          const order = useTabStore.getState().tabs
-          const index = order.findIndex((item) => item.id === tab.id)
-          const to = index + (event.key === 'ArrowRight' ? 1 : -1)
-          if (index === -1 || to < 0 || to >= order.length) {
-            return
-          }
-          event.preventDefault()
-          moveTab(tab.id, to)
-        }
-
-        return (
-          <div
-            key={tab.id}
-            ref={(element) => {
-              if (element) {
-                elements.current.set(tab.id, element)
-              } else {
-                elements.current.delete(tab.id)
+            if (!state.held) {
+              // しきい値を越えるまでは、ただの押し下げとして扱う。
+              if (Math.abs(event.clientX - state.origin) < DRAG_THRESHOLD) {
+                return
               }
-            }}
-            data-tab-id={tab.id}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            onKeyDown={onKeyDown}
-            className={`flex items-center gap-6px px-11px rounded-7px text-11.5px touch-none ${
-              active ? 'bg-panel text-fg' : 'text-fg3'
-            } ${dragging ? 'opacity-60' : ''}`}
-          >
-            {isDirty(tab) ? (
-              <span
-                className="w-7px h-7px rounded-full bg-ac shrink-0"
-                aria-label="未保存"
-                role="img"
-              />
-            ) : (
-              // 印の有無で幅が動かないよう、印が無いときも場所だけは空けておく。
-              <span className="w-7px shrink-0" aria-hidden="true" />
-            )}
-            <button
-              type="button"
-              onClick={() => selectTab(tab.id)}
-              aria-label={isDefinitionTab(tab) ? `${tab.name} の定義` : undefined}
-              className="flex items-center gap-5px bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
+              state.held = true
+              setDraggingId(state.id)
+              document.body.style.userSelect = 'none'
+            }
+
+            applyDrop(state.id, event.clientX)
+            // 端に居るなら帯を送る。既に回っていれば何もしない。
+            startAutoScroll()
+          }
+
+          const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+            const state = drag.current
+            if (!state || state.pointerId !== event.pointerId) {
+              return
+            }
+            endDrag(event.currentTarget, event.pointerId)
+          }
+
+          /** `⌥←` / `⌥→` で 1 つずつ動かす（ADR 0023）。 */
+          const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+            if (!event.altKey || event.metaKey || event.ctrlKey) {
+              return
+            }
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+              return
+            }
+            const order = useTabStore.getState().tabs
+            const index = order.findIndex((item) => item.id === tab.id)
+            const to = index + (event.key === 'ArrowRight' ? 1 : -1)
+            if (index === -1 || to < 0 || to >= order.length) {
+              return
+            }
+            event.preventDefault()
+            moveTab(tab.id, to)
+          }
+
+          return (
+            <div
+              key={tab.id}
+              ref={(element) => {
+                if (element) {
+                  elements.current.set(tab.id, element)
+                } else {
+                  elements.current.delete(tab.id)
+                }
+              }}
+              data-tab-id={tab.id}
+              // 名前を省いても、指を乗せれば全体が読める。
+              title={tab.name}
+              style={{ minWidth: `${TAB_MIN_WIDTH}px`, maxWidth: `${TAB_MAX_WIDTH}px` }}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              onKeyDown={onKeyDown}
+              className={`flex items-center gap-6px px-11px rounded-7px text-11.5px touch-none ${
+                active ? 'bg-panel text-fg' : 'text-fg3'
+              } ${dragging ? 'opacity-60' : ''}`}
             >
-              {/* 定義タブの目印（ADR 0022）。名前だけでは SQL タブと見分けにくい。 */}
-              {isDefinitionTab(tab) ? (
-                <TableProperties size={12} className="text-fg5 shrink-0" aria-hidden />
-              ) : null}
-              {tab.name}
-            </button>
-            <button
-              type="button"
-              data-tab-action="close"
-              onClick={() => onCloseTab(tab.id)}
-              aria-label={`${tab.name} を閉じる`}
-              className="flex items-center bg-transparent border-none p-0 text-fg5 font-inherit cursor-pointer"
-            >
-              <X size={13} />
-            </button>
-          </div>
-        )
-      })}
+              {isDirty(tab) ? (
+                <span
+                  className="w-7px h-7px rounded-full bg-ac shrink-0"
+                  aria-label="未保存"
+                  role="img"
+                />
+              ) : (
+                // 印の有無で幅が動かないよう、印が無いときも場所だけは空けておく。
+                <span className="w-7px shrink-0" aria-hidden="true" />
+              )}
+              <button
+                type="button"
+                onClick={() => selectTab(tab.id)}
+                aria-label={isDefinitionTab(tab) ? `${tab.name} の定義` : undefined}
+                className="flex items-center gap-5px min-w-0 bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
+              >
+                {/* 定義タブの目印（ADR 0022）。名前だけでは SQL タブと見分けにくい。 */}
+                {isDefinitionTab(tab) ? (
+                  <TableProperties size={12} className="text-fg5 shrink-0" aria-hidden />
+                ) : null}
+                {/* 縮んだぶんは `…` で省く。省いた名前は器の `title` で読める。 */}
+                <span className="truncate">{tab.name}</span>
+              </button>
+              <button
+                type="button"
+                data-tab-action="close"
+                onClick={() => onCloseTab(tab.id)}
+                aria-label={`${tab.name} を閉じる`}
+                className="flex items-center bg-transparent border-none p-0 text-fg5 font-inherit cursor-pointer"
+              >
+                <X size={13} className="shrink-0" />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+      {/* スクロールする器の外に置く。何枚開いても流されない。 */}
       <button
         type="button"
         onClick={openNewTab}
         aria-label="新しいタブ"
-        className="flex items-center px-9px text-fg5 bg-transparent border-none cursor-pointer font-inherit"
+        className="flex items-center px-9px shrink-0 text-fg5 bg-transparent border-none cursor-pointer font-inherit"
       >
         <Plus size={15} />
       </button>
