@@ -66,6 +66,7 @@ import {
   splitStatements,
   statementAt,
 } from './sql/statements'
+import { onConnectionLost } from './connection/lost'
 import { isManualCommit, useConnectionStore } from './stores/connection'
 import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
@@ -196,6 +197,7 @@ export function App() {
   const releaseTab = useExecutionStore((state) => state.releaseTab)
   const markExhausted = useExecutionStore((state) => state.markExhausted)
   const noteFormatFailure = useExecutionStore((state) => state.noteFormatFailure)
+  const noteConnectionLost = useExecutionStore((state) => state.noteConnectionLost)
   const clearExecutions = useExecutionStore((state) => state.clear)
 
   const selectSidebarSegment = useUiStore((state) => state.selectSidebarSegment)
@@ -474,6 +476,41 @@ export function App() {
   }, [connection, rollback])
 
   /**
+   * サーバ側で接続が切れたことを受け取り、各ストアへ配る（ADR 0026）。
+   *
+   * 断は実行だけでなく、スキーマ取得・定義・セッション一覧・ソース検索・
+   * コミットのどの往復でも起こりうる。気付くのは `src/api/` 層の見張り 1 箇所で、
+   * ここは受け取ったものを順に配るだけである。**切断の後片付けを順に呼ぶのと
+   * 同じ形であり、ストア同士を結合させない。**
+   *
+   * `execution` 側では未コミットの表示を降ろし、そのことをメッセージタブへ
+   * 残す。切れた時点で Oracle はロールバック済みであり、表示を出し続けるのも、
+   * 黙って消すのも、どちらも嘘になる。
+   */
+  useEffect(
+    () =>
+      onConnectionLost((message) => {
+        useConnectionStore.getState().markLost(message)
+        noteConnectionLost(message)
+      }),
+    [noteConnectionLost],
+  )
+
+  /**
+   * 同じ接続先へ繋ぎ直す（ADR 0026）。
+   *
+   * 自動では行わない。押させることそのものが、「繋ぎ直した接続は別のセッション
+   * であり、未コミットの変更はもう無い」を利用者へ見せる機会である。
+   *
+   * 開いていた結果セットは断の時点で破棄済みにしてあるため、ここでは何も
+   * 捨てない。エディタのタブと内容も残す。スキーマツリーは同じデータベースの
+   * ものであり、繋ぎ直しても中身は変わらない。
+   */
+  const reconnectConnection = useCallback(async () => {
+    await useConnectionStore.getState().reconnect()
+  }, [])
+
+  /**
    * 未コミットの変更を片付けてから進めてよいかを決める（ADR 0012）。
    *
    * 接続を手放す操作 — ウィンドウを閉じる・アプリを終了する・切断する — は、
@@ -485,7 +522,12 @@ export function App() {
    */
   const resolvePendingTransaction = useCallback(
     async (wording: PendingWording): Promise<boolean> => {
-      const active = useConnectionStore.getState().connection
+      const { connection: active, status } = useConnectionStore.getState()
+      // 切れている接続に「コミットしますか」と尋ねない（ADR 0026）。押しても
+      // 届かず、未コミットの変更はサーバ側で既にロールバックされている。
+      if (status === 'lost') {
+        return true
+      }
       if (!active || !isManualCommit(active) || !useExecutionStore.getState().inTransaction) {
         return true
       }
@@ -1177,6 +1219,7 @@ export function App() {
       onOpenSourceSearch={openSourceSearch}
       onCommit={commitTransaction}
       onRollback={rollbackTransaction}
+      onReconnect={() => void reconnectConnection()}
       onOpenPalette={openPalette}
       overlay={overlay}
     >
@@ -1337,6 +1380,7 @@ function Shell({
   onOpenSourceSearch,
   onCommit,
   onRollback,
+  onReconnect,
   onOpenPalette,
   overlay,
 }: {
@@ -1354,6 +1398,8 @@ function Shell({
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
   onRollback?: () => void
+  /** 同じ接続先へ繋ぎ直す（ADR 0026）。接続中の画面だけが渡す。 */
+  onReconnect?: () => void
   /** `⌘K`。コマンドパレットを開く（ADR 0018）。接続中の画面だけが渡す。 */
   onOpenPalette?: () => void
   overlay?: React.ReactNode
@@ -1371,6 +1417,7 @@ function Shell({
         onOpenSourceSearch={onOpenSourceSearch}
         onCommit={onCommit}
         onRollback={onRollback}
+        onReconnect={onReconnect}
       />
       {overlay}
     </div>

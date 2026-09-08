@@ -19,7 +19,18 @@ pub enum DbErrorKind {
     /// 利用者の操作により中止された（`⌘.`）。
     Cancelled,
     /// 接続が既に閉じられている。
+    ///
+    /// **小槌が自分で閉じた接続を使おうとした**ことを指す。サーバ側で切れた
+    /// のは `ConnectionLost` である（ADR 0026）。取り違えると、繋ぎ直せば
+    /// 済む状態に「再接続」の道が出なくなる。
     Closed,
+    /// サーバ側で接続が切れた（ADR 0026）。
+    ///
+    /// アイドル時間の超過（`ORA-02396`）・通信路の切断（`ORA-03113`）・
+    /// セッションの強制終了（`ORA-00028`）など、**繋ぎ直せば直る**断である。
+    /// 小槌が自分で閉じた `Closed` とは別物であり、繋ぎ直しても駄目な
+    /// `Connect`（認証の失敗・リスナー不在）とも別物である。
+    ConnectionLost,
     /// 履歴や設定など、アプリ自身の保管庫の読み書きに失敗した（ADR 0005）。
     Storage,
     /// 権限が足りず、見ることも行うこともできない（ADR 0017）。
@@ -61,6 +72,11 @@ impl DbError {
     /// 接続が既に閉じられていることを表すエラーを作る。
     pub fn closed() -> Self {
         Self::new(DbErrorKind::Closed, "接続は既に閉じられています")
+    }
+
+    /// サーバ側で接続が切れたことを表すエラーを作る（ADR 0026）。
+    pub fn connection_lost(message: impl Into<String>) -> Self {
+        Self::new(DbErrorKind::ConnectionLost, message)
     }
 
     /// 利用者の操作で中止されたことを表すエラーを作る。
@@ -105,6 +121,31 @@ mod tests {
 
         // Assert
         assert_eq!(error.kind, DbErrorKind::Permission);
+    }
+
+    #[test]
+    fn 接続が切れたエラーは閉じたエラーとは別の区分を持つ() {
+        // Arrange: 「小槌が閉じた」と「サーバ側で切れた」を混ぜない（ADR 0026）
+        let 切れた = DbError::connection_lost("ORA-02396: 最大アイドル時間を超過しました");
+        let 閉じた = DbError::closed();
+
+        // Act & Assert
+        assert_eq!(切れた.kind, DbErrorKind::ConnectionLost);
+        assert_eq!(閉じた.kind, DbErrorKind::Closed);
+        assert_ne!(切れた.kind, 閉じた.kind);
+    }
+
+    #[test]
+    fn 接続が切れたエラーはその区分でシリアライズされる() {
+        // Arrange
+        let error =
+            DbError::connection_lost("ORA-03113: 通信チャネルでファイルの終わりを検出しました");
+
+        // Act
+        let json = serde_json::to_string(&error).unwrap();
+
+        // Assert: フロントエンドはこの綴りで見分ける
+        assert!(json.contains(r#""kind":"connectionLost""#));
     }
 
     #[test]

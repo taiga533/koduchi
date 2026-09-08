@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi, emptyResponse, queryResponse } from '../test/fakeDbApi'
 import {
+  discardOpenCursors,
   emptyExecution,
   formatResultSummary,
   selectExecution,
   selectResultTabs,
   useExecutionStore,
 } from './execution'
+import type { TabExecution } from './execution'
 import type { Bind, Cell, Column, ExecuteResponse } from '../types/db'
 
 const TAB = 'tab-1'
@@ -1029,5 +1031,125 @@ describe('バインド変数の受け渡し', () => {
 
     // Assert
     expect(calls.actualPlan[0].binds).toEqual(binds)
+  })
+})
+
+describe('discardOpenCursors', () => {
+  /**
+   * 実行済みのタブを作る。
+   *
+   * @param exhausted カーソルを読み切っていたか
+   */
+  function 成功したタブ(exhausted: boolean): TabExecution {
+    return {
+      ...emptyExecution,
+      status: 'succeeded',
+      columns: 列,
+      rows: 行を作る(2),
+      exhausted,
+      elapsedMs: 3,
+    }
+  }
+
+  it('カーソルを開いたままだったタブは破棄済みになる', () => {
+    // Arrange: 切れた接続のカーソルはサーバ側にもう無い（ADR 0026）
+    const byTab = { a: 成功したタブ(false) }
+
+    // Act
+    const 次 = discardOpenCursors(byTab)
+
+    // Assert
+    expect(次.a.status).toBe('discarded')
+  })
+
+  it('読み切ったタブの結果はそのまま残る', () => {
+    // Arrange: 行はすべてクライアント側にあり、接続が切れても正しいままである
+    const byTab = { a: 成功したタブ(true) }
+
+    // Act
+    const 次 = discardOpenCursors(byTab)
+
+    // Assert
+    expect(次.a.status).toBe('succeeded')
+    expect(次.a.rows).toHaveLength(2)
+  })
+
+  it('失敗したタブと何もしていないタブは触らない', () => {
+    // Arrange
+    const byTab = {
+      a: { ...emptyExecution, status: 'failed' as const, error: 'ORA-00904', exhausted: false },
+      b: emptyExecution,
+    }
+
+    // Act
+    const 次 = discardOpenCursors(byTab)
+
+    // Assert
+    expect(次.a.status).toBe('failed')
+    expect(次.b.status).toBe('idle')
+  })
+})
+
+describe('接続が切れたときの記録（ADR 0026）', () => {
+  it('未コミットの表示が降りる', async () => {
+    // Arrange: 切れた時点で Oracle はロールバック済みである
+    const { api } = createFakeDbApi({
+      onExecute: () => ({ ...emptyResponse, inTransaction: true }),
+    })
+    setDbApi(api)
+    await useExecutionStore.getState().execute('c1', TAB, 'update t set n = 1', 'dev', [])
+    expect(useExecutionStore.getState().inTransaction).toBe(true)
+
+    // Act
+    useExecutionStore.getState().noteConnectionLost('ORA-02396: 最大アイドル時間を超過しました')
+
+    // Assert
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+  })
+
+  it('未コミットがあったときはロールバックされたことをログへ残す', async () => {
+    // Arrange: 黙って消すのが最も悪い
+    const { api } = createFakeDbApi({
+      onExecute: () => ({ ...emptyResponse, inTransaction: true }),
+    })
+    setDbApi(api)
+    await useExecutionStore.getState().execute('c1', TAB, 'update t set n = 1', 'dev', [])
+
+    // Act
+    useExecutionStore.getState().noteConnectionLost('ORA-02396: 最大アイドル時間を超過しました')
+
+    // Assert
+    const 最後 = useExecutionStore.getState().log.at(-1)
+    expect(最後?.sql).toBe('接続')
+    expect(最後?.error).toContain('ORA-02396')
+    expect(最後?.error).toContain('ロールバックされました')
+    expect(最後?.error).toContain('別のセッション')
+  })
+
+  it('未コミットが無かったときはロールバックの文言を出さない', () => {
+    // Arrange: 起きていないことを告げない
+    useExecutionStore.setState({ inTransaction: false })
+
+    // Act
+    useExecutionStore.getState().noteConnectionLost('ORA-03113: 通信路が切れました')
+
+    // Assert
+    const 最後 = useExecutionStore.getState().log.at(-1)
+    expect(最後?.error).toBe('ORA-03113: 通信路が切れました')
+  })
+
+  it('開いたままだった結果セットは破棄済みになる', async () => {
+    // Arrange: 千行ちょうど返れば、まだ続きがあるかは分からずカーソルが残る
+    const { api } = createFakeDbApi({
+      onExecute: () => queryResponse(列, 行を作る(1000), { exhausted: false }),
+    })
+    setDbApi(api)
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from t', 'dev', [])
+
+    // Act
+    useExecutionStore.getState().noteConnectionLost('ORA-03113')
+
+    // Assert
+    expect(useExecutionStore.getState().byTab[TAB].status).toBe('discarded')
   })
 })

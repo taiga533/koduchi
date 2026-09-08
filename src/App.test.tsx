@@ -1251,3 +1251,137 @@ describe('テーブル定義タブ', () => {
     expect(最後.state.tabs.map((tab) => tab.id)).toEqual(['sql-1'])
   })
 })
+
+describe('接続断の検出と回復（ADR 0026）', () => {
+  // 定義タブを開くテストの後だと、選ばれているタブが SQL タブでないことがある
+  // （ADR 0022）。空の SQL タブ 1 枚から始める。
+  beforeEach(() => {
+    const tab = {
+      kind: 'sql' as const,
+      id: 'lost-tab',
+      name: '無題.sql',
+      filePath: null,
+      content: '',
+      dirty: false,
+    }
+    useTabStore.setState({ tabs: [tab], activeTabId: tab.id, bindValues: {} })
+  })
+
+  /** アイドル時間の超過。昼休みのあとに最初に出会う番号である。 */
+  const アイドル切断 = {
+    kind: 'connectionLost' as const,
+    message: 'ORA-02396: 最大アイドル時間を超過しました。再接続してください',
+  }
+
+  it('実行が接続断で失敗するとステータスバーがその旨に変わる', async () => {
+    // Arrange: ステータスバーが「接続中」のままでは何も分からない
+    const { api } = createFakeDbApi({
+      onExecute: () => Promise.reject(アイドル切断),
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select 1 from dual')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+
+    // Assert
+    expect(await screen.findByText('接続が切れました')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '接続中' })).not.toBeInTheDocument()
+  })
+
+  it('実行以外の往復で切れても同じように気付く', async () => {
+    // Arrange: 断はどの往復でも起こりうる。気付く場所は `src/api/` 層の 1 箇所に
+    // 寄せてあり、経路ごとに書き足す形にはしていない
+    const { api } = createFakeDbApi({ commitError: アイドル切断 })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'コミット' }))
+
+    // Assert
+    expect(await screen.findByText('接続が切れました')).toBeInTheDocument()
+  })
+
+  it('接続断のあとに再接続を押すと接続中へ戻る', async () => {
+    // Arrange
+    let 断を返す = true
+    const { api, calls } = createFakeDbApi({
+      onExecute: () => (断を返す ? Promise.reject(アイドル切断) : emptyResponse),
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select 1 from dual')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('接続が切れました')
+    断を返す = false
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '再接続' }))
+
+    // Assert
+    expect(await screen.findByRole('button', { name: '接続中' })).toBeInTheDocument()
+    expect(calls.connect).toHaveLength(1)
+  })
+
+  it('未コミットのまま切れたらロールバックされたことをメッセージタブへ残す', async () => {
+    // Arrange: 未コミットの表示だけを黙って消すのが最も悪い（ADR 0012 からの申し送り）
+    let 断を返す = false
+    const { api } = createFakeDbApi({
+      onExecute: () =>
+        断を返す ? Promise.reject(アイドル切断) : { ...emptyResponse, inTransaction: true },
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), "update users set name = 'あ'")
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('未コミット')
+    断を返す = true
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+
+    // Assert
+    await screen.findByText('接続が切れました')
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+    expect(screen.queryByText('未コミット')).not.toBeInTheDocument()
+    // 断の報せは、失敗した文そのもののログとは別の 1 行として積まれる
+    const 断の行 = useExecutionStore.getState().log.find((entry) => entry.sql === '接続')
+    expect(断の行?.error).toContain('ロールバックされました')
+  })
+
+  it('接続が切れているときの切断は未コミットを尋ねずに接続を選ぶ画面へ戻る', async () => {
+    // Arrange: 届かないコミットを尋ねて袋小路へ入れない（ADR 0026）
+    let 断を返す = false
+    const { api } = createFakeDbApi({
+      onExecute: () =>
+        断を返す ? Promise.reject(アイドル切断) : { ...emptyResponse, inTransaction: true },
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), "update users set name = 'あ'")
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('未コミット')
+    断を返す = true
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('接続が切れました')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '切断' }))
+
+    // Assert
+    expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
+    expect(確認した問い).toEqual([])
+  })
+})
