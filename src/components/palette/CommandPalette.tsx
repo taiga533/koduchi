@@ -25,6 +25,7 @@ import {
   movePaletteSelection,
   summarizeSql,
 } from './paletteSearch'
+import { isComposingKey } from '../../input/ime'
 
 /** パレットから呼べる動作 1 つ。 */
 export interface PaletteCommand {
@@ -147,6 +148,12 @@ export function CommandPalette({
     <div
       className="absolute inset-0 z-30 flex items-start justify-center bg-[rgba(24,28,38,.28)] px-24px pt-96px"
       onKeyDown={(event) => {
+        // 変換中の打鍵は何も起こさない（ADR 0025）。`⏎` は変換の確定、`esc` は
+        // 変換の取り消し、`↑` `↓` は変換候補の選択であり、どれもパレットの
+        // 操作ではない。
+        if (isComposingKey(event)) {
+          return
+        }
         if (event.key === 'Escape') {
           event.preventDefault()
           onClose()

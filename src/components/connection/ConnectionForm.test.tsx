@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
@@ -475,5 +475,31 @@ describe('ConnectionForm', () => {
     // Assert
     expect(色).toHaveAttribute('aria-pressed', 'true')
     await waitFor(() => expect(screen.getByLabelText('グループ')).toHaveValue('検証'))
+  })
+})
+
+describe('ConnectionForm の IME 対応（ADR 0025）', () => {
+  it('変換中の ⏎ では暗黙の送信を止める', async () => {
+    // Arrange
+    描く()
+    const 入力 = await screen.findByPlaceholderText('prod-replica')
+
+    // Act
+    const 通った = fireEvent.keyDown(入力, { key: 'Enter', isComposing: true })
+
+    // Assert
+    expect(通った).toBe(false)
+  })
+
+  it('変換していないときの ⏎ は送信を止めない', async () => {
+    // Arrange
+    描く()
+    const 入力 = await screen.findByPlaceholderText('prod-replica')
+
+    // Act
+    const 通った = fireEvent.keyDown(入力, { key: 'Enter' })
+
+    // Assert
+    expect(通った).toBe(true)
   })
 })

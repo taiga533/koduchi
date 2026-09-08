@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, sessionRow, type FakeCalls } from '../../test/fakeDbApi'
@@ -292,5 +292,29 @@ describe('SessionsPanel', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('SessionsPanel の IME 対応（ADR 0025）', () => {
+  it('変換中の esc ではパネルを閉じない', () => {
+    // Arrange
+    const { onClose } = パネルを描く()
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true })
+
+    // Assert
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('変換していないときの esc は今までどおりパネルを閉じる', () => {
+    // Arrange
+    const { onClose } = パネルを描く()
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    // Assert
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

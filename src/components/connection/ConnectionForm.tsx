@@ -39,6 +39,7 @@ import {
   toErrorMessage,
 } from '../../types/db'
 import { collectGroupNames, normalizeGroup } from './grouping'
+import { blockComposingSubmit } from '../../input/ime'
 
 /** Oracle の既定のリスナーポート。 */
 const DEFAULT_PORT = '1521'
@@ -274,7 +275,11 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
   }
 
   return (
-    <form onSubmit={(event) => void submit(event)} className="w-520px flex flex-col gap-18px">
+    <form
+      onKeyDown={blockComposingSubmit}
+      onSubmit={(event) => void submit(event)}
+      className="w-520px flex flex-col gap-18px"
+    >
       <div className="flex flex-col gap-5px">
         <h1 className="text-17px font-600 text-fg tracking--0.01em m-0">
           {initial ? '接続を編集' : '接続を作成'}

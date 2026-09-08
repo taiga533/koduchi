@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 import { WrapText, X } from 'lucide-react'
 import type { Cell, Column } from '../../types/db'
 import { characterCount, detailBody, formatJson, isOpaque } from './cellDetail'
+import { isComposingKey } from '../../input/ime'
 
 interface CellDetailPanelProps {
   column: Column
@@ -26,7 +27,10 @@ export function CellDetailPanel({ column, cell, rowNumber, onClose }: CellDetail
   // `esc` で閉じる。パネルは focus を奪わないため、ウィンドウ側で受ける。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      // 変換中の `esc` は変換の取り消しである（ADR 0025）。この listener は
+      // `window` に付いているため、サイドバーの絞り込みなど別の欄で変換して
+      // いるときの `esc` も届く。
+      if (event.key === 'Escape' && !isComposingKey(event)) {
         onClose()
       }
     }

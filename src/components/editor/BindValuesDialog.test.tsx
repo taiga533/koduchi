@@ -181,3 +181,54 @@ describe('BindValuesDialog', () => {
     expect(閉じた).toBe(true)
   })
 })
+
+describe('BindValuesDialog の IME 対応（ADR 0025）', () => {
+  it('変換中の ⏎ では暗黙の送信を止める', () => {
+    // Arrange
+    描く()
+
+    // Act
+    const 通った = fireEvent.keyDown(screen.getByLabelText(':id'), {
+      key: 'Enter',
+      isComposing: true,
+    })
+
+    // Assert
+    expect(通った).toBe(false)
+  })
+
+  it('変換していないときの ⏎ は送信を止めない', () => {
+    // Arrange
+    描く()
+
+    // Act
+    const 通った = fireEvent.keyDown(screen.getByLabelText(':id'), { key: 'Enter' })
+
+    // Assert
+    expect(通った).toBe(true)
+  })
+
+  it('変換中の esc では実行をやめない', () => {
+    // Arrange
+    let 閉じた = false
+    描く({ onClose: () => (閉じた = true) })
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText(':id'), { key: 'Escape', isComposing: true })
+
+    // Assert
+    expect(閉じた).toBe(false)
+  })
+
+  it('変換していないときの esc は今までどおり実行をやめる', () => {
+    // Arrange
+    let 閉じた = false
+    描く({ onClose: () => (閉じた = true) })
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText(':id'), { key: 'Escape' })
+
+    // Assert
+    expect(閉じた).toBe(true)
+  })
+})

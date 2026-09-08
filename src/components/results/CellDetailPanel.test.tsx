@@ -122,3 +122,43 @@ describe('CellDetailPanel', () => {
     expect(閉じる).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('CellDetailPanel の IME 対応（ADR 0025）', () => {
+  it('変換中の esc では詳細を閉じない', () => {
+    // Arrange
+    const onClose = vi.fn()
+    render(
+      <CellDetailPanel
+        column={JSON列}
+        cell={{ kind: 'text', text: '{"a":1}' }}
+        rowNumber={1}
+        onClose={onClose}
+      />,
+    )
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true })
+
+    // Assert
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('変換していないときの esc は今までどおり詳細を閉じる', () => {
+    // Arrange
+    const onClose = vi.fn()
+    render(
+      <CellDetailPanel
+        column={JSON列}
+        cell={{ kind: 'text', text: '{"a":1}' }}
+        rowNumber={1}
+        onClose={onClose}
+      />,
+    )
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    // Assert
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})

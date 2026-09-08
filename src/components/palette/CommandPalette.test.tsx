@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi } from '../../test/fakeDbApi'
@@ -257,5 +257,89 @@ describe('CommandPalette', () => {
 
     // Assert
     expect(await screen.findByText(/スキーマを読み込んでいます/)).toBeInTheDocument()
+  })
+})
+
+describe('CommandPalette の IME 対応（ADR 0025）', () => {
+  it('変換中の ⏎ では候補を決定しない', async () => {
+    // Arrange
+    const 走った: string[] = []
+    let 閉じた = false
+    パレットを描く({ commands: コマンド(走った), onClose: () => (閉じた = true) })
+    const 入力 = await screen.findByRole('textbox', { name: /検索/ })
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Enter', isComposing: true })
+
+    // Assert
+    expect(走った).toEqual([])
+    expect(閉じた).toBe(false)
+  })
+
+  it('変換していないときの ⏎ は今までどおり候補を決定する', async () => {
+    // Arrange
+    const 走った: string[] = []
+    let 閉じた = false
+    パレットを描く({ commands: コマンド(走った), onClose: () => (閉じた = true) })
+    const 入力 = await screen.findByRole('textbox', { name: /検索/ })
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Enter' })
+
+    // Assert
+    expect(走った).toEqual(['commit'])
+    expect(閉じた).toBe(true)
+  })
+
+  it('変換中の esc ではパレットを閉じない', async () => {
+    // Arrange
+    let 閉じた = false
+    パレットを描く({ commands: コマンド([]), onClose: () => (閉じた = true) })
+    const 入力 = await screen.findByRole('textbox', { name: /検索/ })
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Escape', isComposing: true })
+
+    // Assert
+    expect(閉じた).toBe(false)
+  })
+
+  it('変換していないときの esc は今までどおりパレットを閉じる', async () => {
+    // Arrange
+    let 閉じた = false
+    パレットを描く({ commands: コマンド([]), onClose: () => (閉じた = true) })
+    const 入力 = await screen.findByRole('textbox', { name: /検索/ })
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Escape' })
+
+    // Assert
+    expect(閉じた).toBe(true)
+  })
+
+  it('変換中の ↓ では選択を動かさない', async () => {
+    // Arrange
+    パレットを描く({ commands: コマンド([]) })
+    const 先頭 = await screen.findByRole('option', { name: /コミット/ })
+    const 入力 = screen.getByRole('textbox', { name: /検索/ })
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'ArrowDown', isComposing: true })
+
+    // Assert
+    expect(先頭).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('変換していないときの ↓ は今までどおり選択を動かす', async () => {
+    // Arrange
+    パレットを描く({ commands: コマンド([]) })
+    const 先頭 = await screen.findByRole('option', { name: /コミット/ })
+    const 入力 = screen.getByRole('textbox', { name: /検索/ })
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'ArrowDown' })
+
+    // Assert
+    expect(先頭).toHaveAttribute('aria-selected', 'false')
   })
 })

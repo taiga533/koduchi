@@ -28,6 +28,7 @@ import {
 } from '../../stores/sourceSearch'
 import type { SourceKind, SourceLine, SourceObjectMatches } from '../../types/db'
 import { SOURCE_KIND_LABELS, SOURCE_KIND_ORDER } from '../../types/db'
+import { blockComposingSubmit, isComposingKey } from '../../input/ime'
 
 interface SourceSearchPanelProps {
   /** 接続の識別子。 */
@@ -60,7 +61,8 @@ export function SourceSearchPanel({ connectionId, onClose }: SourceSearchPanelPr
   // 1 件を覗いたつもりで検索の結果ごと失う（セッションのパネルと同じ考え方）。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') {
+      // 変換中の `esc` は変換の取り消しである（ADR 0025）。
+      if (event.key !== 'Escape' || isComposingKey(event)) {
         return
       }
       if (useSourceSearchStore.getState().selected) {
@@ -98,6 +100,7 @@ export function SourceSearchPanel({ connectionId, onClose }: SourceSearchPanelPr
 
         <form
           className="flex items-center gap-8px"
+          onKeyDown={blockComposingSubmit}
           onSubmit={(event) => {
             event.preventDefault()
             void search(connectionId)

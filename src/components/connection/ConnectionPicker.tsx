@@ -27,6 +27,7 @@ import { connectionColorVar } from '../../theme/connectionColors'
 import type { ConnectTarget, SavedConnection, SavedTarget, SchemaFilter } from '../../types/db'
 import { toErrorMessage } from '../../types/db'
 import { groupConnections } from './grouping'
+import { blockComposingSubmit } from '../../input/ime'
 
 interface ConnectionPickerProps {
   /** 「新しい接続」を押したときに呼ぶ。 */
@@ -202,6 +203,7 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
 
       {asking?.id === connection.id ? (
         <form
+          onKeyDown={blockComposingSubmit}
           onSubmit={(event) => {
             event.preventDefault()
             void run(connection, password)

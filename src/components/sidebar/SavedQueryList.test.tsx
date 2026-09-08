@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls } from '../../test/fakeDbApi'
@@ -148,5 +148,69 @@ describe('SavedQueryList', () => {
 
     // Assert
     expect(screen.getByText('保存したクエリがここに並びます')).toBeInTheDocument()
+  })
+})
+
+/** 鉛筆を押して名前の入力欄を出す。 */
+async function 名前を編集する() {
+  render(<SavedQueryList onUse={() => {}} />)
+  await userEvent.click(screen.getAllByRole('button', { name: 'このクエリの名前を変える' })[0])
+  return screen.getByRole('textbox', { name: 'クエリの名前' })
+}
+
+describe('SavedQueryList の IME 対応（ADR 0025）', () => {
+  it('変換中の ⏎ では名前を確定しない', async () => {
+    // Arrange
+    const 入力 = await 名前を編集する()
+    await userEvent.clear(入力)
+    await userEvent.type(入力, '利用者')
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Enter', isComposing: true })
+
+    // Assert
+    expect(calls.updateSavedQuery).toHaveLength(0)
+    expect(screen.getByRole('textbox', { name: 'クエリの名前' })).toBeInTheDocument()
+  })
+
+  it('変換していないときの ⏎ は今までどおり名前を確定する', async () => {
+    // Arrange
+    const 入力 = await 名前を編集する()
+    await userEvent.clear(入力)
+    await userEvent.type(入力, '利用者')
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Enter' })
+
+    // Assert
+    expect(calls.updateSavedQuery).toHaveLength(1)
+    expect(calls.updateSavedQuery[0].name).toBe('利用者')
+  })
+
+  it('変換中の esc では編集をやめない', async () => {
+    // Arrange
+    const 入力 = await 名前を編集する()
+    await userEvent.clear(入力)
+    await userEvent.type(入力, '書きかけ')
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Escape', isComposing: true })
+
+    // Assert
+    expect(screen.getByRole('textbox', { name: 'クエリの名前' })).toHaveValue('書きかけ')
+  })
+
+  it('変換していないときの esc は今までどおり編集をやめる', async () => {
+    // Arrange
+    const 入力 = await 名前を編集する()
+    await userEvent.clear(入力)
+    await userEvent.type(入力, '書きかけ')
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Escape' })
+
+    // Assert
+    expect(screen.queryByRole('textbox', { name: 'クエリの名前' })).not.toBeInTheDocument()
+    expect(screen.getByText('利用者の一覧')).toBeInTheDocument()
   })
 })
