@@ -60,7 +60,12 @@ pub struct CompletionSettings {
 /// トークンと 1 対 1 で対応させ、ライト / ダークのどちらでも破綻しない値だけを
 /// 使うためである。Rust 側はこの値を使わない。`connections.toml` を往復させる
 /// ためだけに持つ。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// **読み込みは寛容にしてある。** 知らない名前は色なしとして読む（`Deserialize`
+/// の手書きの実装）。色は見た目だけの値であり、`connections.toml` は利用者が
+/// 外部エディタで編集するファイルである（ADR 0004）。色名を 1 文字打ち間違えた
+/// だけで `from_toml` が失敗し、保存した接続が一覧ごと消えるのは釣り合わない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum ConnectionColor {
     /// 色を付けない。既定。
@@ -73,6 +78,45 @@ pub enum ConnectionColor {
     Blue,
     Purple,
     Gray,
+}
+
+impl ConnectionColor {
+    /// 設定ファイルに書かれた名前から色を引く。
+    ///
+    /// 知らない名前は色なしとして返す。書き出す綴りと同じ小文字の名前だけを
+    /// 受け、大文字小文字の揺れは吸収しない。曖昧に受けるほど、書き間違いが
+    /// 直らないまま残る。
+    ///
+    /// # 引数
+    ///
+    /// * `name` - 設定ファイルに書かれた色の名前
+    fn from_name(name: &str) -> Self {
+        match name {
+            "red" => ConnectionColor::Red,
+            "orange" => ConnectionColor::Orange,
+            "yellow" => ConnectionColor::Yellow,
+            "green" => ConnectionColor::Green,
+            "blue" => ConnectionColor::Blue,
+            "purple" => ConnectionColor::Purple,
+            "gray" => ConnectionColor::Gray,
+            _ => ConnectionColor::None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ConnectionColor {
+    /// 色の名前を読む。知らない名前は色なしになる。
+    ///
+    /// 値が文字列ですらない場合（`color = 3` など）は型の誤りとして失敗する。
+    /// そこまで寛容にすると、設定ファイルの壊れ方を利用者へ伝える手立てが
+    /// 無くなる。
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        Ok(ConnectionColor::from_name(&name))
+    }
 }
 
 /// 保存された接続 1 件。パスワードは含まない。
@@ -528,14 +572,79 @@ serviceName = "FREEPDB1"
     }
 
     #[test]
-    fn 知らない色の名前は色なしとして読み飛ばさず解析に失敗する() {
-        // Arrange: 壊れた値のときに一覧ごと空になる（from_toml の既定の振る舞い）
+    fn 知らない色の名前は色なしとして読む() {
+        // Arrange: 利用者が外部エディタで色名を打ち間違えた設定ファイルを模す
         let toml_text = r#"
 [[connection]]
 id = "id-1"
 name = "開発"
 username = "koduchi"
 color = "金"
+group = "本番"
+
+[connection.target]
+method = "ezConnect"
+host = "localhost"
+port = 1521
+serviceName = "FREEPDB1"
+"#;
+
+        // Act
+        let file = ConnectionsFile::from_toml(toml_text);
+
+        // Assert: 色だけが落ち、接続そのものは残る
+        assert_eq!(file.connections.len(), 1);
+        assert_eq!(file.connections[0].color, ConnectionColor::None);
+        assert_eq!(file.connections[0].name, "開発");
+        assert_eq!(file.connections[0].group.as_deref(), Some("本番"));
+    }
+
+    #[test]
+    fn 色を打ち間違えても他の接続は一覧から消えない() {
+        // Arrange: 1 件目の色だけが壊れている
+        let toml_text = r#"
+[[connection]]
+id = "id-1"
+name = "開発"
+username = "koduchi"
+color = "むらさき"
+
+[connection.target]
+method = "ezConnect"
+host = "localhost"
+port = 1521
+serviceName = "FREEPDB1"
+
+[[connection]]
+id = "id-2"
+name = "本番"
+username = "app"
+color = "red"
+
+[connection.target]
+method = "ezConnect"
+host = "prod"
+port = 1521
+serviceName = "PRODPDB1"
+"#;
+
+        // Act
+        let file = ConnectionsFile::from_toml(toml_text);
+
+        // Assert
+        assert_eq!(file.connections.len(), 2);
+        assert_eq!(file.connections[1].color, ConnectionColor::Red);
+    }
+
+    #[test]
+    fn 色の大文字小文字の違いは吸収せず色なしとして読む() {
+        // Arrange: 曖昧に受けると書き間違いが直らないまま残る
+        let toml_text = r#"
+[[connection]]
+id = "id-1"
+name = "開発"
+username = "koduchi"
+color = "Red"
 
 [connection.target]
 method = "ezConnect"
@@ -548,7 +657,34 @@ serviceName = "FREEPDB1"
         let file = ConnectionsFile::from_toml(toml_text);
 
         // Assert
-        assert!(file.connections.is_empty());
+        assert_eq!(file.connections[0].color, ConnectionColor::None);
+    }
+
+    #[test]
+    fn どんな文字列でもグループ名として読める() {
+        // Arrange: グループは自由入力であり、決まった綴りを持たない
+        let toml_text = r#"
+[[connection]]
+id = "id-1"
+name = "開発"
+username = "koduchi"
+group = "本番 / 東京 = 第 1"
+
+[connection.target]
+method = "ezConnect"
+host = "localhost"
+port = 1521
+serviceName = "FREEPDB1"
+"#;
+
+        // Act
+        let file = ConnectionsFile::from_toml(toml_text);
+
+        // Assert
+        assert_eq!(
+            file.connections[0].group.as_deref(),
+            Some("本番 / 東京 = 第 1")
+        );
     }
 
     #[test]

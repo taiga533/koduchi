@@ -7,19 +7,19 @@
  *
  * 検索ボックスと Ask AI は器のみで、操作はできない（ADR の機能スコープ）。
  *
- * 接続に色が付いていれば、ウィンドウ上端いっぱいに 3px の帯を敷く（ADR 0015）。
- * 作業中に見ているのはエディタと結果であり、視線は画面の中ほどにある。上端の
- * 全幅の帯は、そこから目を上げなくても周辺視野に入る唯一の場所である。信号機は
- * 上端から 7px あたりから描かれるため、3px の帯とは重ならない（ADR 0009）。
+ * 接続に色が付いていれば、ウィンドウ上端いっぱいに帯を敷く（ADR 0015）。作業中に
+ * 見ているのはエディタと結果であり、視線は画面の中ほどにある。上端の全幅の帯は、
+ * そこから目を上げなくても周辺視野に入る唯一の場所である。
+ *
+ * 帯の高さは信号機に掛からない範囲でなければならない。42px のタイトルバーでは
+ * ボタンの上端がウィンドウ上端から 14px の位置に来る（`trafficLightTop` の導出、
+ * ADR 0009）。値と見張りは `geometry.ts` にあり、**目分量で調整しない。**
  */
 
 import { Search, Sparkles } from 'lucide-react'
 import { useConnectionStore } from '../../stores/connection'
 import { connectionColorVar } from '../../theme/connectionColors'
-import { TITLE_BAR_HEIGHT, titleBarContentLeft } from './geometry'
-
-/** 接続の色を敷く帯の高さ。 */
-const COLOR_BAR_HEIGHT = 3
+import { CONNECTION_COLOR_BAR_HEIGHT, TITLE_BAR_HEIGHT, titleBarContentLeft } from './geometry'
 
 export function TitleBar() {
   const connection = useConnectionStore((state) => state.connection)
@@ -39,7 +39,7 @@ export function TitleBar() {
           data-connection-color={connection?.color}
           aria-hidden="true"
           className="absolute top-0 left-0 right-0 pointer-events-none"
-          style={{ height: COLOR_BAR_HEIGHT, background: 接続の色 }}
+          style={{ height: CONNECTION_COLOR_BAR_HEIGHT, background: 接続の色 }}
         />
       ) : null}
 
