@@ -151,7 +151,7 @@ export function Sidebar({
       <div
         className={`flex-1 min-h-0 ${segment === 'schema' ? 'overflow-hidden' : 'overflow-auto'}`}
       >
-        {segment === 'schema' ? <SchemaTree /> : null}
+        {segment === 'schema' ? <SchemaTree connectionId={connectionId} /> : null}
         {segment === 'history' ? <HistoryList onUse={onUseHistory} /> : null}
         {segment === 'saved' ? <SavedQueryList onUse={onUseHistory} /> : null}
       </div>

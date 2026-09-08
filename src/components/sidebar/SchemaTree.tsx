@@ -9,7 +9,9 @@
  * 数千行に届くためである。束ねてあれば、スキーマを開いたときに増える行数は
  * 種別の数（高々 12）に収まる（ADR 0014）。
  *
- * テーブル定義ビューは器のみで開かない（ADR の機能スコープ）。
+ * 行の右の「定義」からテーブル定義ビューを開く（ADR 0019）。ツリーのマウス
+ * 操作の割り振りは足していない。「定義」は行とは別の押しどころであり、行の
+ * クリックやダブルクリックの意味を変えないためである。
  *
  * 木のまま描くと、描き直しの手間が中身の量に比例する。Oracle のスキーマは
  * オブジェクトが数千に達することがあり、列の読み込みが進むたびに全体を組み直すと
@@ -36,9 +38,10 @@ import {
   Zap,
   type LucideIcon,
 } from 'lucide-react'
-import type { ObjectKind, SchemaNode, TableColumn } from '../../types/db'
+import type { DefinitionTarget, ObjectKind, SchemaNode, TableColumn } from '../../types/db'
 import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER } from '../../types/db'
 import { filterSchemas, kindGroupKey, nodeKey, useSchemaStore } from '../../stores/schema'
+import { useDefinitionStore } from '../../stores/definition'
 
 /** オブジェクトの種類ごとの目印。 */
 const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
@@ -66,6 +69,8 @@ export type TreeRow =
   | {
       kind: 'object'
       key: string
+      /** 所有者のスキーマ名。定義ビューを開くのに要る（ADR 0019）。 */
+      owner: string
       name: string
       objectKind: ObjectKind
       expandable: boolean
@@ -190,6 +195,7 @@ export function flattenSchemas(
         rows.push({
           kind: 'object',
           key: objectKey,
+          owner: schema.name,
           name: object.name,
           objectKind: object.kind,
           expandable,
@@ -220,7 +226,16 @@ export function flattenSchemas(
   return rows
 }
 
-export function SchemaTree() {
+interface SchemaTreeProps {
+  /**
+   * 接続の識別子。テーブル定義ビューを開くのに要る（ADR 0019）。
+   *
+   * 繋がっていなければ `null`。そのときは「定義」を押せない。
+   */
+  connectionId: string | null
+}
+
+export function SchemaTree({ connectionId }: SchemaTreeProps) {
   const allSchemas = useSchemaStore((state) => state.schemas)
   const columns = useSchemaStore((state) => state.columns)
   const search = useSchemaStore((state) => state.search)
@@ -228,6 +243,7 @@ export function SchemaTree() {
   const toggle = useSchemaStore((state) => state.toggle)
   const status = useSchemaStore((state) => state.status)
   const error = useSchemaStore((state) => state.error)
+  const openDefinition = useDefinitionStore((state) => state.open)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -278,7 +294,13 @@ export function SchemaTree() {
               transform: `translateY(${item.start}px)`,
             }}
           >
-            <Row row={rows[item.index]} onToggle={toggle} />
+            <Row
+              row={rows[item.index]}
+              onToggle={toggle}
+              onOpenDefinition={
+                connectionId === null ? null : (target) => void openDefinition(connectionId, target)
+              }
+            />
           </div>
         ))}
       </div>
@@ -287,7 +309,16 @@ export function SchemaTree() {
 }
 
 /** 平らにした 1 行を、種類に応じて描き分ける。 */
-function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string, open: boolean) => void }) {
+function Row({
+  row,
+  onToggle,
+  onOpenDefinition,
+}: {
+  row: TreeRow
+  onToggle: (key: string, open: boolean) => void
+  /** 定義ビューを開く。繋がっていなければ `null`（ADR 0019）。 */
+  onOpenDefinition: ((target: DefinitionTarget) => void) | null
+}) {
   if (row.kind === 'schema') {
     return (
       <button
@@ -330,35 +361,41 @@ function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string, open: bo
 
   if (row.kind === 'object') {
     const Icon = KIND_ICONS[row.objectKind]
+    // 行そのものと「定義」は押しどころが違う。入れ子のボタンにできないため、
+    // 行を包む器を 1 つ挟んで横に並べる。
     return (
-      <button
-        type="button"
-        onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
-        aria-expanded={row.expandable ? row.open : undefined}
-        className="w-full flex items-center gap-6px pl-38px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
-      >
-        <span className="w-13px shrink-0 flex items-center">
-          {row.expandable ? (
-            row.open ? (
-              <ChevronDown size={12} className="text-fg5" />
-            ) : (
-              <ChevronRight size={12} className="text-fg5" />
-            )
-          ) : null}
-        </span>
-        <Icon size={13} className="text-fg5 shrink-0" />
-        <span className="flex-1 truncate">{row.name}</span>
-        {row.expandable ? (
-          // テーブル定義ビューは器だけで、開かない（ADR の機能スコープ）。
-          <span
-            aria-disabled="true"
-            title="テーブル定義ビューは未実装です"
-            className="shrink-0 text-10px text-fg5 opacity-50"
+      <div className="w-full flex items-center hover:bg-fill">
+        <button
+          type="button"
+          onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
+          aria-expanded={row.expandable ? row.open : undefined}
+          className="min-w-0 flex-1 flex items-center gap-6px pl-38px pr-4px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2"
+        >
+          <span className="w-13px shrink-0 flex items-center">
+            {row.expandable ? (
+              row.open ? (
+                <ChevronDown size={12} className="text-fg5" />
+              ) : (
+                <ChevronRight size={12} className="text-fg5" />
+              )
+            ) : null}
+          </span>
+          <Icon size={13} className="text-fg5 shrink-0" />
+          <span className="flex-1 truncate">{row.name}</span>
+        </button>
+        {onOpenDefinition === null ? null : (
+          <button
+            type="button"
+            onClick={() =>
+              onOpenDefinition({ owner: row.owner, name: row.name, kind: row.objectKind })
+            }
+            aria-label={`${row.name} の定義を開く`}
+            className="shrink-0 mr-10px px-5px py-1px rounded-5px bg-transparent border-none text-10px text-fg5 cursor-pointer font-inherit hover:text-fg3"
           >
             定義
-          </span>
-        ) : null}
-      </button>
+          </button>
+        )}
+      </div>
     )
   }
 

@@ -5,6 +5,7 @@
 //! 別実装として追加する。
 
 pub mod actor;
+pub mod definition;
 pub mod driver;
 pub mod error;
 pub mod oracle;

@@ -8,9 +8,10 @@
 //! 命令のチャネル越しには届かない。`Canceller` は `Send + Sync` であり、
 //! 呼び出し元のスレッドから直接叩ける。
 
+use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{Bind, Canceller, Chunk, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
-use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -58,6 +59,20 @@ enum Command {
     Commit { respond: Sender<DbResult<()>> },
     /// トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。
     Rollback { respond: Sender<DbResult<()>> },
+    /// テーブル定義ビュー 1 枚ぶんの内容を取る（ADR 0019）。
+    ObjectDefinition {
+        owner: String,
+        name: String,
+        kind: ObjectKind,
+        respond: Sender<DbResult<ObjectDefinition>>,
+    },
+    /// オブジェクト 1 つの DDL を取る（ADR 0019）。
+    ObjectDdl {
+        owner: String,
+        name: String,
+        kind: ObjectKind,
+        respond: Sender<DbResult<ObjectDdl>>,
+    },
     /// セッションの一覧を取る（ADR 0017）。
     ListSessions {
         respond: Sender<DbResult<SessionOverview>>,
@@ -298,6 +313,55 @@ impl ConnectionHandle {
         response.recv().map_err(|_| DbError::closed())?
     }
 
+    /// テーブル定義ビュー 1 枚ぶんの内容を取る（ADR 0019）。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    pub fn object_definition(
+        &self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<ObjectDefinition> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::ObjectDefinition {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                kind,
+                respond,
+            })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
+    /// オブジェクト 1 つの DDL を取る（ADR 0019）。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    pub fn object_ddl(&self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::ObjectDdl {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                kind,
+                respond,
+            })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
     /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
     ///
     /// 結果セットのカーソルは開かないため、この接続が保持している結果は
@@ -461,6 +525,22 @@ fn run_actor<D, F>(
             }
             Command::Rollback { respond } => {
                 let _ = respond.send(driver.rollback());
+            }
+            Command::ObjectDefinition {
+                owner,
+                name,
+                kind,
+                respond,
+            } => {
+                let _ = respond.send(driver.object_definition(&owner, &name, kind));
+            }
+            Command::ObjectDdl {
+                owner,
+                name,
+                kind,
+                respond,
+            } => {
+                let _ = respond.send(driver.object_ddl(&owner, &name, kind));
             }
             Command::ListSessions { respond } => {
                 let _ = respond.send(driver.list_sessions());
@@ -651,6 +731,39 @@ mod tests {
         fn actual_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String> {
             *self.受け取ったバインド.lock().unwrap() = binds.to_vec();
             Ok(format!("実測: {sql}"))
+        }
+
+        fn object_definition(
+            &mut self,
+            owner: &str,
+            name: &str,
+            kind: crate::db::schema::ObjectKind,
+        ) -> DbResult<crate::db::definition::ObjectDefinition> {
+            Ok(crate::db::definition::ObjectDefinition {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                kind,
+                columns: Vec::new(),
+                constraints: Vec::new(),
+                indexes: Vec::new(),
+            })
+        }
+
+        fn object_ddl(
+            &mut self,
+            owner: &str,
+            name: &str,
+            kind: crate::db::schema::ObjectKind,
+        ) -> DbResult<crate::db::definition::ObjectDdl> {
+            Ok(crate::db::definition::ObjectDdl {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                kind,
+                parts: vec![crate::db::definition::DdlPart {
+                    label: String::from(kind.ddl_label()),
+                    sql: format!("create table {owner}.{name} (id number)"),
+                }],
+            })
         }
 
         fn list_sessions(&mut self) -> DbResult<crate::db::sessions::SessionOverview> {
