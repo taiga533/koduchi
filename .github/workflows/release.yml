@@ -83,14 +83,16 @@ jobs:
       # signingIdentity は書かない（書くと証明書名との一致検査に掛かり、
       # "-" のままだと dmg の署名そのものが飛ぶ。ADR 0028）。
       #
-      # この 1 回で .app の署名・公証・staple と dmg の署名まで進む。
-      # **dmg の公証は Tauri がやらない**ので次の手順で行う。
-      - name: dmg をビルドする（署名と .app の公証つき）
+      # **ここでは公証しない。**APPLE_API_KEY / APPLE_API_ISSUER を渡すと
+      # Tauri が .app を notary へ提出して待つが、その成果は捨てられる——
+      # `--bundles dmg` は dmg を作り終えた時点で .app を消すためである
+      # （実測: .app の公証待ちに 49 分、消される。dmg の公証は 24 秒）。
+      # dmg を公証すれば notary が中身を展開して .app まで検証するので、
+      # 提出は次の手順の 1 回で足りる（ADR 0028）。
+      - name: dmg をビルドする（署名のみ）
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bun run tauri build --target aarch64-apple-darwin --bundles dmg
 
       - name: 作られた dmg のパスを控える
@@ -103,9 +105,10 @@ jobs:
           echo "path=${dmg}" >>"${GITHUB_OUTPUT}"
           echo "作られた dmg: ${dmg}"
 
-      # Tauri が公証するのは .app だけである（バンドラの app.rs と
-      # dmg/mod.rs を読んで確かめた。ADR 0028）。利用者が受け取るのは dmg で
-      # あり、dmg 自身に公証の証跡が無いと Gatekeeper に止められる。
+      # 公証の提出はここ 1 回だけである（ADR 0028）。利用者が受け取るのは dmg
+      # であり、dmg 自身に証跡が無いと Gatekeeper に止められる。notary は
+      # 提出物の中身を展開して署名を検証するため、中の .app もこの 1 回で
+      # 記録される。staple されるのは dmg だが、小槌は dmg でしか配らない。
       - name: dmg を公証して staple する
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -128,9 +131,17 @@ jobs:
           EXPECTED_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          app="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos \
-            -maxdepth 1 -name '*.app' | head -n 1)"
-          [ -n "${app}" ] || { echo '.app が見つからない' >&2; exit 1; }
+
+          # `--bundles dmg` は dmg を作り終えた時点で bundle/macos/*.app を
+          # 消す。確かめる相手は**配る dmg の中身**であり、それが正しい。
+          # 手元に残った .app を見ても、利用者が受け取るものの検査にならない。
+          mount="$(mktemp -d)"
+          cleanup() { hdiutil detach "${mount}" -quiet || true; }
+          trap cleanup EXIT
+          hdiutil attach "${DMG_PATH}" -nobrowse -readonly -mountpoint "${mount}"
+
+          app="$(find "${mount}" -maxdepth 1 -name '*.app' | head -n 1)"
+          [ -n "${app}" ] || { echo 'dmg の中に .app が見つからない' >&2; exit 1; }
 
           echo "== .app の署名 =="
           codesign --verify --strict --deep --verbose=2 "${app}"
@@ -150,8 +161,11 @@ jobs:
           codesign -dv --verbose=4 "${app}" 2>&1 | grep -q 'flags=.*runtime' \
             || { echo '::error::hardened runtime が付いていない' >&2; exit 1; }
 
+          # staple が付くのは dmg だけである（提出したのが dmg だから）。
+          # 中の .app に `stapler validate` を当てても通らない。.app が
+          # 公証されていることは、下の Gatekeeper の判定が確かめる
+          # （証跡が無ければ notary へ問い合わせて判断する）。
           echo "== 公証の証跡（staple）=="
-          xcrun stapler validate "${app}"
           xcrun stapler validate "${DMG_PATH}"
 
           echo "== Gatekeeper の判定 =="
