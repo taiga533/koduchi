@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SchemaNode, TableColumn } from '../../types/db'
-import { buildCatalog, findObject, findSchema, resolveObject } from './catalog'
+import { buildCatalog, findObject, findSchema, isCompletable, resolveObject } from './catalog'
 
 /** スキーマ 1 つを組み立てる。 */
 function スキーマ(name: string, objects: string[]): SchemaNode {
@@ -26,6 +26,22 @@ const 列一覧: Record<string, TableColumn[]> = {
   ANALYTICS: [列('DAILY_GMV', 'GMV')],
 }
 
+describe('isCompletable', () => {
+  it('SQL に名前を書く種別は候補に出す', () => {
+    // Arrange & Act & Assert
+    expect(isCompletable('table')).toBe(true)
+    expect(isCompletable('synonym')).toBe(true)
+    expect(isCompletable('type')).toBe(true)
+  })
+
+  it('索引とトリガーと DB link は候補に出さない', () => {
+    // Arrange & Act & Assert: SQL 本文に裸の名前が現れない（ADR 0014）
+    expect(isCompletable('index')).toBe(false)
+    expect(isCompletable('trigger')).toBe(false)
+    expect(isCompletable('databaseLink')).toBe(false)
+  })
+})
+
 describe('buildCatalog', () => {
   it('スキーマとオブジェクトと列が繋がる', () => {
     // Arrange
@@ -37,6 +53,29 @@ describe('buildCatalog', () => {
     // Assert
     const users = findObject(findSchema(catalog, 'KODUCHI')!, 'USERS')
     expect(users?.columns.map((column) => column.name)).toEqual(['USER_ID', 'EMAIL'])
+  })
+
+  it('補完に出さない種別はカタログに載らない', () => {
+    // Arrange
+    const schemas: SchemaNode[] = [
+      {
+        name: 'KODUCHI',
+        objectCount: 3,
+        objects: [
+          { name: 'USERS', kind: 'table' },
+          { name: 'IX_USERS_EMAIL', kind: 'index' },
+          { name: 'DAILY_GMV', kind: 'synonym' },
+        ],
+      },
+    ]
+
+    // Act
+    const catalog = buildCatalog(schemas, {}, 'KODUCHI')
+
+    // Assert
+    const koduchi = findSchema(catalog, 'KODUCHI')!
+    expect(findObject(koduchi, 'IX_USERS_EMAIL')).toBeNull()
+    expect(findObject(koduchi, 'DAILY_GMV')?.kind).toBe('synonym')
   })
 
   it('列がまだ読み込まれていないオブジェクトは列が空になる', () => {

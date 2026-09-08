@@ -311,6 +311,22 @@ serviceName = "FREEPDB1"
     }
 
     #[test]
+    fn 種別の絞り込みは書き出して読み戻しても保たれる() {
+        // Arrange: 索引だけ隠した接続を保存する（ADR 0014）
+        let mut connection = 接続を作る("id-kinds");
+        connection.schema_filter.kinds.index = false;
+        let mut file = ConnectionsFile::default();
+        file.upsert(connection);
+
+        // Act
+        let restored = ConnectionsFile::from_toml(&file.to_toml());
+
+        // Assert
+        assert!(!restored.connections[0].schema_filter.kinds.index);
+        assert!(restored.connections[0].schema_filter.kinds.trigger);
+    }
+
+    #[test]
     fn 書き出した内容をそのまま読み戻せる() {
         // Arrange
         let mut file = ConnectionsFile::default();

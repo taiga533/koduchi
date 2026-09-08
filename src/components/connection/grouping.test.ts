@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { SavedConnection } from '../../types/db'
+import { defaultSchemaFilter } from '../../types/db'
 import { collectGroupNames, groupConnections, normalizeGroup } from './grouping'
 
 /**
@@ -23,7 +24,7 @@ function 接続(id: string, group: string | null): SavedConnection {
     autoCommit: false,
     color: 'none',
     group,
-    schemaFilter: { excludeSystem: true, hideEmpty: true },
+    schemaFilter: defaultSchemaFilter,
     completion: { identifierCase: 'preserve' },
     target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
   }
