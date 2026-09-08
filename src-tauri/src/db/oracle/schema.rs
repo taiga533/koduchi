@@ -8,7 +8,7 @@
 //!
 //! | ビュー          | 取るもの                                                   |
 //! | --------------- | ---------------------------------------------------------- |
-//! | `ALL_OBJECTS`   | 表・ビュー・マテビュー・トリガー・順序・シノニム・型・関数・手続 |
+//! | `ALL_OBJECTS`   | 表・ビュー・マテビュー・トリガー・順序・シノニム・型・関数・手続・パッケージ |
 //! | `ALL_INDEXES`   | 索引。自動生成されたものは除く                             |
 //! | `ALL_DB_LINKS`  | DB link。`ALL_OBJECTS` の所有者の考え方と噛み合わない       |
 //!
@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 /// 索引と DB link はここに含めない。索引は `ALL_OBJECTS` だと制約や LOB のために
 /// 自動生成された `SYS_C0012345` まで並んでしまい、DB link はそもそも
 /// `ALL_OBJECTS` の所有者の考え方と噛み合わない。どちらも専用のビューから取る。
-const OBJECT_VIEW_KINDS: [ObjectKind; 9] = [
+const OBJECT_VIEW_KINDS: [ObjectKind; 10] = [
     ObjectKind::Table,
     ObjectKind::View,
     ObjectKind::MaterializedView,
@@ -41,6 +41,7 @@ const OBJECT_VIEW_KINDS: [ObjectKind; 9] = [
     ObjectKind::Type,
     ObjectKind::Function,
     ObjectKind::Procedure,
+    ObjectKind::Package,
 ];
 
 /// Oracle が内蔵するスキーマの名前。
@@ -478,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn 既定の種別ではall_objectsから取る九種別が並ぶ() {
+    fn 既定の種別ではall_objectsから取る十種別が並ぶ() {
         // Arrange
         let kinds = ObjectKindFilter::default();
 
@@ -488,8 +489,39 @@ mod tests {
         // Assert: 索引と DB link は別のビューから取るため入らない
         assert_eq!(
             types,
-            "'TABLE','VIEW','MATERIALIZED VIEW','TRIGGER','SEQUENCE','SYNONYM','TYPE','FUNCTION','PROCEDURE'"
+            "'TABLE','VIEW','MATERIALIZED VIEW','TRIGGER','SEQUENCE','SYNONYM','TYPE','FUNCTION','PROCEDURE','PACKAGE'"
         );
+    }
+
+    #[test]
+    fn all_objectsから取る種別は索引とdb_link以外のすべてである() {
+        // Arrange: 種別を足したとき列挙元の割り当てを忘れないための歯止め
+        let kinds = ObjectKindFilter::default();
+
+        // Act
+        let types = listed_object_types(&kinds);
+
+        // Assert
+        for kind in [
+            ObjectKind::Table,
+            ObjectKind::View,
+            ObjectKind::MaterializedView,
+            ObjectKind::Trigger,
+            ObjectKind::Sequence,
+            ObjectKind::Synonym,
+            ObjectKind::Type,
+            ObjectKind::Function,
+            ObjectKind::Procedure,
+            ObjectKind::Package,
+        ] {
+            assert!(
+                types.contains(&format!("'{}'", kind.object_type())),
+                "{:?} が ALL_OBJECTS の問い合わせから漏れている",
+                kind
+            );
+        }
+        assert!(!types.contains("'INDEX'"));
+        assert!(!types.contains("'DATABASE LINK'"));
     }
 
     #[test]

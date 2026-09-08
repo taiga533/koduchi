@@ -1,8 +1,12 @@
 -- スキーマツリーに並べるオブジェクト種別の見本（ADR 0014）。
 --
 -- 索引（002 の IX_EVENTS_* / IX_ORDERS_*）とテーブル・ビュー・関数・手続は
--- 既にあるため、ここでは残りの種別を足す。トリガー・シノニム・型の 3 つは
--- SYS からスキーマ修飾で作れる。
+-- 既にあるため、ここでは残りの種別を足す。パッケージ・トリガー・シノニム・型の
+-- 4 つは SYS からスキーマ修飾で作れる。
+--
+-- パッケージは 0014 より前から種別としてはあったが、開発用データベースに 1 つも
+-- 無かったため、列挙元から抜け落ちても統合テストで気付けなかった。種別ごとに
+-- 見本を 1 つずつ置いておく。
 --
 -- DB link だけはここで作らない。`CREATE DATABASE LINK` はスキーマ修飾を
 -- 受け付けず、必ず接続中のユーザーのスキーマに作られるためである。代わりに
@@ -31,6 +35,22 @@ FOR EACH ROW
 BEGIN
   :new.updated_at := SYSTIMESTAMP;
 END;
+/
+
+-- パッケージ。仕様と本体で 2 つ並ばないこと（本体は種別として扱わない）の確認も兼ねる。
+CREATE OR REPLACE PACKAGE koduchi.order_stats AS
+  FUNCTION paid_count RETURN NUMBER;
+END order_stats;
+/
+
+CREATE OR REPLACE PACKAGE BODY koduchi.order_stats AS
+  FUNCTION paid_count RETURN NUMBER IS
+    v_count NUMBER;
+  BEGIN
+    SELECT COUNT(*) INTO v_count FROM koduchi.orders WHERE status = 'paid';
+    RETURN v_count;
+  END paid_count;
+END order_stats;
 /
 
 -- 統合テストが DB link を作って消せるようにする。

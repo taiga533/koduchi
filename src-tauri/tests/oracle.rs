@@ -614,6 +614,43 @@ fn 索引とトリガーとシノニムと型がツリーに並ぶ() {
 
 #[test]
 #[serial]
+fn all_objectsから取る種別がひととおり並ぶ() {
+    // Arrange: 種別を足したとき列挙元の割り当てを忘れないための歯止め
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Table).contains(&String::from("EVENTS")));
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::View).contains(&String::from("SESSION_ROLLUP"))
+    );
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Function)
+        .contains(&String::from("ORDER_TOTAL")));
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Procedure).contains(&String::from("SAY_HELLO"))
+    );
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Package).contains(&String::from("ORDER_STATS"))
+    );
+
+    // 仕様と本体で 2 行にならない（`PACKAGE BODY` は種別として扱わない）
+    let 同名 = schemas
+        .iter()
+        .find(|schema| schema.name == "KODUCHI")
+        .expect("KODUCHI スキーマがあるはず")
+        .objects
+        .iter()
+        .filter(|object| object.name == "ORDER_STATS")
+        .count();
+    assert_eq!(同名, 1);
+}
+
+#[test]
+#[serial]
 fn 自動生成された索引は並ばない() {
     // Arrange: 主キーの索引は SYS_C0012345 のような名前で作られる
     let Some(pool) = 接続を開く() else {
