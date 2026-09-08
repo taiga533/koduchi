@@ -245,6 +245,163 @@ describe('sqlCompletionSource', () => {
     expect(result).toBeNull()
   })
 
+  it('UPDATE の SET 句で対象の表の列が出る', () => {
+    // Arrange: `FROM` 句しか見ていなかったころは 1 件も出なかった
+
+    // Act
+    const { labels } = 補完する('update orders set |')
+
+    // Assert
+    expect(labels).toContain('ORDER_ID')
+  })
+
+  it('UPDATE の列は表名より上に並ぶ', () => {
+    // Arrange
+
+    // Act
+    const { 候補 } = 補完する('update orders set |')
+
+    // Assert
+    expect(候補('ORDER_ID')?.boost).toBeGreaterThan(候補('USERS')?.boost ?? 0)
+  })
+
+  it('INSERT の列並びで対象の表の列が出る', () => {
+    // Arrange: 括弧が閉じていない
+
+    // Act
+    const { labels } = 補完する('insert into orders (|')
+
+    // Assert
+    expect(labels).toContain('ORDER_ID')
+  })
+
+  it('DELETE の WHERE 句で対象の表の列が出る', () => {
+    // Arrange
+
+    // Act
+    const { labels } = 補完する('delete from orders where |')
+
+    // Assert
+    expect(labels).toContain('ORDER_ID')
+  })
+
+  it('UPDATE の別名で修飾しても列が出る', () => {
+    // Arrange
+
+    // Act
+    const { labels } = 補完する('update orders o set o.|')
+
+    // Assert
+    expect(labels).toEqual(['ORDER_ID', 'USER_ID'])
+  })
+
+  it('WITH で定義した名前が表の候補に出る', () => {
+    // Arrange
+
+    // Act
+    const { 候補 } = 補完する('with recent as (select order_id from orders) select * from |')
+
+    // Assert: カタログの表と見分けが付くよう説明を分ける
+    expect(候補('recent')?.detail).toBe('共通表式')
+  })
+
+  it('WITH で定義した名前の綴りは打たれたまま挿入する', () => {
+    // Arrange: 利用者が打った名前であってカタログの名前ではない
+
+    // Act
+    const { 候補 } = 補完する(
+      'with recent as (select order_id from orders) select * from |',
+      'upper',
+    )
+
+    // Assert
+    expect(候補('recent')?.apply).toBeUndefined()
+  })
+
+  it('WITH で定義した名前の列が修飾なしで出る', () => {
+    // Arrange
+
+    // Act
+    const { labels } = 補完する('with recent as (select order_id from orders) select | from recent')
+
+    // Assert
+    expect(labels).toContain('ORDER_ID')
+  })
+
+  it('WITH で定義した名前で修飾しても列が出る', () => {
+    // Arrange
+
+    // Act
+    const { labels } = 補完する(
+      'with recent as (select order_id from orders) select recent.| from recent',
+    )
+
+    // Assert
+    expect(labels).toEqual(['ORDER_ID'])
+  })
+
+  it('読めない列は候補に出さない', () => {
+    // Arrange: `order_id + 1` に無引用で書ける列名は無い
+
+    // Act
+    const { 候補 } = 補完する(
+      'with recent as (select order_id + 1 from orders) select | from recent',
+    )
+
+    // Assert
+    expect(候補('ORDER_ID')).toBeUndefined()
+  })
+
+  it('副問い合わせの別名で修飾すると内側の列が出る', () => {
+    // Arrange
+
+    // Act
+    const { labels } = 補完する('select t.| from (select order_id from orders) t')
+
+    // Assert
+    expect(labels).toEqual(['ORDER_ID'])
+  })
+
+  it('SET 句の 2 つめの代入でも列が出る', () => {
+    // Arrange
+
+    // Act
+    const { labels } = 補完する('update orders set order_id = 1, |')
+
+    // Assert
+    expect(labels).toContain('USER_ID')
+  })
+
+  it('閉じていない括弧があっても列が出る', () => {
+    // Arrange: 打鍵の途中は必ず構文として壊れている
+
+    // Act
+    const { labels } = 補完する('update orders set order_id = (|')
+
+    // Assert
+    expect(labels).toContain('ORDER_ID')
+  })
+
+  it('壊れた SQL でも例外を投げない', () => {
+    // Arrange
+    const 壊れた = [
+      'update',
+      'insert into',
+      'with',
+      'with x as (',
+      'select * from (((',
+      "delete from orders where name = 'unclosed",
+      'merge into',
+      ',,,,',
+    ]
+
+    // Act
+    const 実行 = () => 壊れた.forEach((sql) => 補完する(`${sql}|`))
+
+    // Assert
+    expect(実行).not.toThrow()
+  })
+
   it('明示されていない空の位置では候補を出さない', () => {
     // Arrange
     const doc = 'select * from orders where '

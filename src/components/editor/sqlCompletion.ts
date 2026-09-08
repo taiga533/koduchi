@@ -12,8 +12,8 @@
  * `identifiers.ts` に決めさせる。キーワードの補完は `lang-sql` のものを併用する
  * （こちらは大文字小文字の問題を持たない）。
  *
- * `FROM` 句に出てくる表の列を非修飾で出すのもここで行う。`select ` まで打った
- * 時点で列名が出るかどうかが、補完の使い勝手をいちばん左右する。
+ * 「今どの表を相手にしているか」の読み取りは `sqlScope.ts` に寄せてある。ここは
+ * カーソルの位置から文脈を読み、その結果を候補へ組み立てるところに徹する。
  */
 
 import { syntaxTree } from '@codemirror/language'
@@ -22,25 +22,17 @@ import type { Text } from '@codemirror/state'
 import type { SyntaxNode } from '@lezer/common'
 import type { IdentifierCase, ObjectKind } from '../../types/db'
 import { OBJECT_KIND_LABELS } from '../../types/db'
-import type { Catalog, CatalogObject } from './catalog'
+import type { Catalog, CatalogColumn, CatalogObject } from './catalog'
 import { findObject, findSchema, foldName, resolveObject } from './catalog'
 import { styleIdentifier } from './identifiers'
+import type { Scope, ScopeSource } from './sqlScope'
+import { idName, isIdentifier, matchesName, readScope } from './sqlScope'
 
 /** 候補の続きとして認める文字。Oracle の識別子は `$` と `#` を含みうる。 */
 const VALID_FOR = /^[\w$#]*$/
 
 /** 引用符の中で打っているときに候補の続きとして認める文字。 */
 const VALID_FOR_QUOTED = /^"?[\w$#]*"?$/
-
-/** `FROM` 句の走査を終える語。ここから先に表は出てこない。 */
-const END_FROM = new Set(
-  'where group having order union intersect minus except limit offset fetch for connect start model pivot unpivot'.split(
-    ' ',
-  ),
-)
-
-/** 表と表の条件を繋ぐ語。ここから先はしばらく表が出てこない。 */
-const CONDITION = new Set(['on', 'using'])
 
 /** オブジェクトの種類ごとの、候補一覧に出すアイコンの種別。 */
 const ICONS: Record<ObjectKind, string> = {
@@ -60,9 +52,9 @@ const ICONS: Record<ObjectKind, string> = {
 
 /** 候補の並び順。数が大きいほど上に出る。 */
 const BOOST = {
-  /** `FROM` 句の表の列。今書いている問い合わせに直接効くため最優先。 */
-  fromColumn: 2,
-  /** `FROM` 句で付けた別名。 */
+  /** 見えている表の列。今書いている文に直接効くため最優先。 */
+  column: 2,
+  /** 別名と、その文が `WITH` で定義した名前。 */
   alias: 1,
   /** 既定スキーマの表。 */
   object: 0,
@@ -83,14 +75,6 @@ interface NameStyle {
   quoted: boolean
 }
 
-/** `FROM` 句に現れた表 1 つ。 */
-export interface TableRef {
-  /** `スキーマ名.表名` を分解した名前の並び。 */
-  path: string[]
-  /** 付けられた別名。無ければ `null`。 */
-  alias: string | null
-}
-
 /** 打っている場所から読み取った文脈。 */
 interface TypingContext {
   /** 候補で置き換え始める位置。 */
@@ -101,8 +85,8 @@ interface TypingContext {
   parents: string[]
   /** 識別子でも `.` でもない位置か。 */
   empty: boolean
-  /** カーソルのある文。`FROM` 句を読むのに使う。 */
-  statement: SyntaxNode | null
+  /** カーソル位置から解決した節点。見えている表を読むのに使う。 */
+  node: SyntaxNode
 }
 
 /**
@@ -116,46 +100,6 @@ function tokenBefore(node: SyntaxNode): SyntaxNode {
     cursor.moveTo(cursor.from, -1)
   }
   return cursor.node
-}
-
-/**
- * 識別子の節点かどうかを判定する。
- *
- * @param node 判定する節点
- */
-function isIdentifier(node: SyntaxNode | null): boolean {
-  return node !== null && (node.name === 'Identifier' || node.name === 'QuotedIdentifier')
-}
-
-/**
- * 識別子の節点から名前を取り出す。引用符は外す。
- *
- * @param doc 文書
- * @param node 識別子の節点
- */
-function idName(doc: Text, node: SyntaxNode): string {
-  const text = doc.sliceString(node.from, node.to)
-  const quoted = /^"(.*)"$/.exec(text)
-  return quoted ? quoted[1] : text
-}
-
-/**
- * 識別子の節点を名前の並びへ分解する。`A.B` は `["A", "B"]` になる。
- *
- * @param doc 文書
- * @param node 識別子または複合識別子の節点
- */
-function pathFor(doc: Text, node: SyntaxNode): string[] {
-  if (node.name === 'CompositeIdentifier') {
-    const path: string[] = []
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      if (isIdentifier(child)) {
-        path.push(idName(doc, child))
-      }
-    }
-    return path
-  }
-  return [idName(doc, node)]
 }
 
 /**
@@ -181,108 +125,6 @@ function parentsFor(doc: Text, node: SyntaxNode | null): string[] {
 }
 
 /**
- * カーソルのある文を探す。
- *
- * 空白の上ではカーソルが文の外へ出る（文の範囲は最後のトークンで終わる）ため、
- * 祖先を辿るだけでは見つからない。そのときは直前の文を採る。ただし間に `;` が
- * あれば別の文が終わったということなので、何も返さない。
- *
- * @param doc 文書
- * @param node カーソル位置から解決した節点
- * @param pos カーソルの位置
- */
-function statementOf(doc: Text, node: SyntaxNode, pos: number): SyntaxNode | null {
-  for (let current: SyntaxNode | null = node; current; current = current.parent) {
-    if (current.name === 'Statement') {
-      return current
-    }
-  }
-
-  for (let child = node.childBefore(pos); child; child = child.childBefore(pos)) {
-    if (child.name === 'Statement') {
-      return doc.sliceString(child.to, pos).includes(';') ? null : child
-    }
-  }
-
-  return null
-}
-
-/**
- * 文の `FROM` 句に現れる表と別名を集める。
- *
- * 副問い合わせは括弧の中に入るため、この走査には引っ掛からない。外側の文の
- * `FROM` 句だけを見る。
- *
- * @param doc 文書
- * @param statement 対象の文
- */
-export function tableRefs(doc: Text, statement: SyntaxNode | null): TableRef[] {
-  if (!statement) {
-    return []
-  }
-
-  const refs: TableRef[] = []
-  let seenFrom = false
-  /** 次に来る識別子が表の名前か。`FROM` と `JOIN` と `,` の直後で真になる。 */
-  let expectingTable = false
-  /** 直前に拾った表。次の識別子が別名ならここへ付ける。 */
-  let last: TableRef | null = null
-
-  for (let scan = statement.firstChild; scan; scan = scan.nextSibling) {
-    const keyword =
-      scan.name === 'Keyword' ? doc.sliceString(scan.from, scan.to).toLowerCase() : null
-
-    if (!seenFrom) {
-      if (keyword === 'from') {
-        seenFrom = true
-        expectingTable = true
-      }
-      continue
-    }
-
-    if (keyword) {
-      if (END_FROM.has(keyword)) {
-        break
-      }
-      if (keyword === 'join') {
-        expectingTable = true
-        last = null
-      } else if (CONDITION.has(keyword)) {
-        // 結合条件の中の識別子は表でも別名でもない。
-        expectingTable = false
-        last = null
-      }
-      // `as` や `left` / `outer` はそのまま読み飛ばす。表と別名の関係は変わらない。
-      continue
-    }
-
-    if (scan.name === 'Punctuation' && doc.sliceString(scan.from, scan.to) === ',') {
-      expectingTable = true
-      last = null
-      continue
-    }
-
-    if (isIdentifier(scan) || scan.name === 'CompositeIdentifier') {
-      if (expectingTable) {
-        last = { path: pathFor(doc, scan), alias: null }
-        refs.push(last)
-        expectingTable = false
-      } else if (last && last.alias === null) {
-        last.alias = idName(doc, scan)
-        last = null
-      }
-      continue
-    }
-
-    // 副問い合わせや関数呼び出し。表の場所を埋めたものとして扱う。
-    expectingTable = false
-    last = null
-  }
-
-  return refs
-}
-
-/**
  * カーソルの位置から文脈を読み取る。
  *
  * @param context CodeMirror から渡される文脈
@@ -290,7 +132,6 @@ export function tableRefs(doc: Text, statement: SyntaxNode | null): TableRef[] {
 function readContext(context: CompletionContext): TypingContext {
   const doc = context.state.doc
   const node = syntaxTree(context.state).resolveInner(context.pos, -1)
-  const statement = statementOf(doc, node, context.pos)
 
   if (node.name === 'Identifier' || node.name === 'QuotedIdentifier' || node.name === 'Keyword') {
     return {
@@ -298,7 +139,7 @@ function readContext(context: CompletionContext): TypingContext {
       quoted: node.name === 'QuotedIdentifier',
       parents: parentsFor(doc, tokenBefore(node)),
       empty: false,
-      statement,
+      node,
     }
   }
 
@@ -308,11 +149,11 @@ function readContext(context: CompletionContext): TypingContext {
       quoted: false,
       parents: parentsFor(doc, node),
       empty: false,
-      statement,
+      node,
     }
   }
 
-  return { from: context.pos, quoted: false, parents: [], empty: true, statement }
+  return { from: context.pos, quoted: false, parents: [], empty: true, node }
 }
 
 /**
@@ -334,17 +175,28 @@ function nameCompletion(
   return { label: styled.label, apply: styled.apply, ...extra }
 }
 
-/** 列 1 つを候補にする。 */
+/**
+ * 列 1 つを候補にする。
+ *
+ * 共通表式や副問い合わせが式へ別名を付けただけの列は型が分からない。そのときは
+ * 型名が空で来るので、説明から丸ごと落とす（`sqlScope.ts`）。
+ *
+ * @param column 候補にする列
+ * @param style 候補の綴りの決め方
+ * @param qualifier 説明の右に添える表の名前。修飾済みの位置では空
+ * @param boost 並び順
+ */
 function columnCompletion(
-  column: { name: string; typeName: string; nullable: boolean },
+  column: CatalogColumn,
   style: NameStyle,
-  detailSuffix: string,
+  qualifier: string,
   boost: number,
 ): Completion {
   const 必須 = column.nullable ? '' : ' NOT NULL'
+  const 型 = column.typeName === '' ? '' : `${column.typeName}${必須}`
   return nameCompletion(column.name, style, {
     type: 'property',
-    detail: `${column.typeName}${必須}${detailSuffix}`,
+    detail: [型, qualifier].filter((部分) => 部分 !== '').join(' · '),
     boost,
   })
 }
@@ -390,42 +242,55 @@ function staticOptions(catalog: Catalog, style: NameStyle): Completion[] {
 }
 
 /**
- * `FROM` 句から取れる候補を組み立てる。表の列と別名。
+ * 表の出どころごとの説明。カタログの表は表名そのものが説明になる。
+ */
+const ORIGIN_LABELS: Record<ScopeSource['origin'], string> = {
+  catalog: '',
+  cte: '共通表式',
+  subquery: '副問い合わせ',
+}
+
+/**
+ * 見えている表から取れる候補を組み立てる。列・別名・`WITH` で定義した名前。
  *
- * 打っている文ごとに変わるため、呼ばれるたびに作り直す。数は高々「結合した表の
+ * 打っている文ごとに変わるため、呼ばれるたびに作り直す。数は高々「見えている表の
  * 列の合計」であり、静的な候補と違って大きくならない。
  *
- * @param catalog 引く先のカタログ
- * @param refs `FROM` 句に現れた表
+ * @param scope 打っている場所から見えるもの
  * @param style 候補の綴りの決め方
  */
-function fromClauseOptions(catalog: Catalog, refs: TableRef[], style: NameStyle): Completion[] {
+function scopeOptions(scope: Scope, style: NameStyle): Completion[] {
   const options: Completion[] = []
   /** 同じ名前の列を 2 度出さないための目印。 */
   const 出した列 = new Set<string>()
 
-  for (const ref of refs) {
-    const object = resolveObject(catalog, ref.path)
-    if (!object) {
-      continue
-    }
-    for (const column of object.columns) {
+  for (const source of scope.sources) {
+    for (const column of source.columns) {
       if (出した列.has(foldName(column.name))) {
         continue
       }
       出した列.add(foldName(column.name))
-      options.push(
-        columnCompletion(column, style, ` · ${ref.alias ?? object.name}`, BOOST.fromColumn),
-      )
+      options.push(columnCompletion(column, style, source.alias ?? source.name, BOOST.column))
     }
-    if (ref.alias) {
+    if (source.aliasText !== null && source.alias !== null) {
       options.push({
-        label: style.quoted ? `"${ref.alias}"` : ref.alias,
+        // 別名は利用者が打った綴りである。カタログの名前ではないので綴りを変えない。
+        label: style.quoted ? `"${source.alias}"` : source.aliasText,
         type: 'constant',
-        detail: object.name,
+        detail: ORIGIN_LABELS[source.origin] === '' ? source.name : ORIGIN_LABELS[source.origin],
         boost: BOOST.alias,
       })
     }
+  }
+
+  for (const cte of scope.ctes) {
+    options.push({
+      // 共通表式の名前も利用者が打った綴りである。
+      label: style.quoted ? `"${cte.name}"` : cte.text,
+      type: 'class',
+      detail: ORIGIN_LABELS.cte,
+      boost: BOOST.alias,
+    })
   }
 
   return options
@@ -434,29 +299,43 @@ function fromClauseOptions(catalog: Catalog, refs: TableRef[], style: NameStyle)
 /**
  * `名前.` の右に出す候補を組み立てる。
  *
- * 名前は別名・スキーマ・表の順に解決する。どれでもなければ `null` を返し、
- * 候補を出さない（キーワードの補完は別のソースが出す）。
+ * 名前は**別名 → 共通表式 → スキーマ → 表**の順に解決する。どれでもなければ
+ * `null` を返し、候補を出さない（キーワードの補完は別のソースが出す）。
+ *
+ * 共通表式をスキーマより先に見るのは、`WITH` で定義した名前がその文の中では
+ * 同じ名前の表より強いためである。逆にカタログの表より後ろに置くと、書きかけの
+ * 文で `WITH` の名前が拾えないときに候補が消える。
  *
  * @param catalog 引く先のカタログ
+ * @param scope 打っている場所から見えるもの
  * @param parents `.` の左側にある名前の並び
- * @param refs `FROM` 句に現れた表
  * @param style 挿入したい綴り
  */
 function qualifiedOptions(
   catalog: Catalog,
+  scope: Scope,
   parents: string[],
-  refs: TableRef[],
   style: NameStyle,
 ): Completion[] | null {
+  /** 列の並びを候補にする。1 件も無ければ `null`。 */
+  const 列を出す = (columns: CatalogColumn[]) =>
+    columns.length === 0
+      ? null
+      : columns.map((column) => columnCompletion(column, style, '', BOOST.column))
+
   if (parents.length === 1) {
-    const alias = refs.find(
-      (ref) => ref.alias !== null && foldName(ref.alias) === foldName(parents[0]),
+    const alias = scope.sources.find(
+      (source) => source.alias !== null && foldName(source.alias) === foldName(parents[0]),
     )
     if (alias) {
-      const object = resolveObject(catalog, alias.path)
-      return object
-        ? object.columns.map((column) => columnCompletion(column, style, '', BOOST.fromColumn))
-        : null
+      return 列を出す(alias.columns)
+    }
+
+    const cte = scope.sources.find(
+      (source) => source.origin === 'cte' && matchesName(source, parents[0]),
+    )
+    if (cte) {
+      return 列を出す(cte.columns)
     }
 
     const schema = findSchema(catalog, parents[0])
@@ -465,17 +344,13 @@ function qualifiedOptions(
     }
 
     const object = resolveObject(catalog, parents)
-    return object
-      ? object.columns.map((column) => columnCompletion(column, style, '', BOOST.fromColumn))
-      : null
+    return object ? 列を出す(object.columns) : null
   }
 
   if (parents.length === 2) {
     const schema = findSchema(catalog, parents[0])
     const object = schema ? findObject(schema, parents[1]) : null
-    return object
-      ? object.columns.map((column) => columnCompletion(column, style, '', BOOST.fromColumn))
-      : null
+    return object ? 列を出す(object.columns) : null
   }
 
   return null
@@ -497,21 +372,21 @@ export function sqlCompletionSource(catalog: Catalog, identifierCase: Identifier
   const 控え: { plain?: Completion[]; quoted?: Completion[] } = {}
 
   return (context: CompletionContext): CompletionResult | null => {
-    const { from, quoted, parents, empty, statement } = readContext(context)
+    const { from, quoted, parents, empty, node } = readContext(context)
     if (empty && !context.explicit) {
       return null
     }
 
     const style: NameStyle = { identifierCase, quoted }
-    const refs = tableRefs(context.state.doc, statement)
+    const scope = readScope(context.state.doc, catalog, node, context.pos)
 
     let options: Completion[] | null
     if (parents.length === 0) {
       const key = quoted ? 'quoted' : 'plain'
       控え[key] ??= staticOptions(catalog, style)
-      options = [...fromClauseOptions(catalog, refs, style), ...控え[key]]
+      options = [...scopeOptions(scope, style), ...控え[key]]
     } else {
-      options = qualifiedOptions(catalog, parents, refs, style)
+      options = qualifiedOptions(catalog, scope, parents, style)
     }
 
     if (options === null || options.length === 0) {
