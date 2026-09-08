@@ -247,7 +247,7 @@ export function tableColumn(column: Partial<TableColumn> & { name: string }): Ta
 
 /** 何も指定しないときのアプリ設定。 */
 const defaultAppSettings: AppSettings = {
-  appearance: { theme: 'system', gridLines: true, rowHeight: 'compact' },
+  appearance: { theme: 'system', gridLines: true, rowHeight: 'compact', editorFontSize: 'medium' },
   csv: defaultCsvOptions,
 }
 

@@ -181,6 +181,35 @@
 }
 
 /*
+ * エディタの文字の大きさ（ADR 0008 の枠組み）。段階は 4 つで、既定（`medium`）は
+ * 属性なしで表す。ピクセル値はここだけに置き、CodeMirror のテーマ
+ * （`components/editor/theme.ts`）は `var(--fs-editor)` を参照する。
+ *
+ * 標準の 12px はデザインのエディタ領域の指定である。両端は 4K の外部ディスプレイ
+ * （小さすぎる）と内蔵画面（ちょうどよい）を行き来しても OS の解像度を触らずに
+ * 済む幅として取ってある。行の高さは 1.7 の倍率指定なので一緒に付いてくる。
+ *
+ * 結果テーブルの文字はこの設定では変わらない。あちらは行の高さ（仮想スクロールの
+ * ための固定のピクセル値）と列幅の見積り（`results/columnSizing.ts`）が文字の
+ * 大きさに結び付いており、CSS 変数 1 つでは追随しない。
+ */
+:root {
+  --fs-editor: 12px;
+}
+
+:root[data-editor-font-size='small'] {
+  --fs-editor: 11px;
+}
+
+:root[data-editor-font-size='large'] {
+  --fs-editor: 14px;
+}
+
+:root[data-editor-font-size='xlarge'] {
+  --fs-editor: 16px;
+}
+
+/*
  * 書体。デザインは UI 全体を等幅で組んでおり、本アプリは日本語を含むデータを
  * 桁を揃えて表示する必要があるため、同梱の PlemolJP（等幅版）を使う。
  * 登録は `fonts.css` にある。

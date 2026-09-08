@@ -2,8 +2,10 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import {
   applyAppearance,
   applyDisplaySettings,
+  applyEditorFontSize,
   applyTheme,
   defaultAppearance,
+  parseEditorFontSize,
   type Appearance,
 } from './appearance'
 
@@ -100,6 +102,82 @@ describe('applyDisplaySettings', () => {
   })
 })
 
+describe('applyEditorFontSize', () => {
+  let root: HTMLElement
+
+  beforeEach(() => {
+    root = document.createElement('html')
+  })
+
+  it('大きくすると data-editor-font-size="large" が付く', () => {
+    // Arrange
+    // 属性の無い初期状態から始める
+
+    // Act
+    applyEditorFontSize(root, 'large')
+
+    // Assert
+    expect(root.getAttribute('data-editor-font-size')).toBe('large')
+  })
+
+  it('特大にすると data-editor-font-size="xlarge" が付く', () => {
+    // Arrange
+    root.setAttribute('data-editor-font-size', 'small')
+
+    // Act
+    applyEditorFontSize(root, 'xlarge')
+
+    // Assert
+    expect(root.getAttribute('data-editor-font-size')).toBe('xlarge')
+  })
+
+  it('標準へ戻すと data-editor-font-size 属性が外れる', () => {
+    // Arrange
+    root.setAttribute('data-editor-font-size', 'xlarge')
+
+    // Act
+    applyEditorFontSize(root, 'medium')
+
+    // Assert
+    expect(root.hasAttribute('data-editor-font-size')).toBe(false)
+  })
+})
+
+describe('parseEditorFontSize', () => {
+  it('知っている綴りはそのまま読み直せる', () => {
+    // Arrange
+    const 綴り = 'xlarge'
+
+    // Act
+    const 大きさ = parseEditorFontSize(綴り)
+
+    // Assert
+    expect(大きさ).toBe('xlarge')
+  })
+
+  it('項目を持たない古い設定では標準になる', () => {
+    // Arrange
+    const 欠落 = undefined
+
+    // Act
+    const 大きさ = parseEditorFontSize(欠落)
+
+    // Assert
+    expect(大きさ).toBe('medium')
+  })
+
+  it('手で書き換えられた知らない綴りでは標準になる', () => {
+    // Arrange
+    const 綴り = '24px'
+
+    // Act
+    const 大きさ = parseEditorFontSize(綴り)
+
+    // Assert
+    expect(大きさ).toBe('medium')
+  })
+})
+
 describe('applyAppearance', () => {
   it('既定の外観設定では属性が 1 つも付かない', () => {
     // Arrange
@@ -119,6 +197,7 @@ describe('applyAppearance', () => {
       theme: 'dark',
       gridLines: false,
       rowHeight: 'comfortable',
+      editorFontSize: 'large',
     }
 
     // Act
@@ -128,5 +207,6 @@ describe('applyAppearance', () => {
     expect(root.getAttribute('data-theme')).toBe('dark')
     expect(root.getAttribute('data-grid-lines')).toBe('off')
     expect(root.getAttribute('data-row-height')).toBe('comfortable')
+    expect(root.getAttribute('data-editor-font-size')).toBe('large')
   })
 })

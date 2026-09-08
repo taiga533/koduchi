@@ -1,13 +1,14 @@
 /**
  * 設定画面（ステータスバー右の ⚙︎）。
  *
- * 項目は ADR の「設定画面」節どおり、テーマ 3 択 / Oracle Instant Client の
- * パス（未検出時のみ）/ 履歴の一括削除 / 罫線の有無 / 行の高さ の 5 つに限る。
+ * 項目は ADR の「設定画面」節どおり、テーマ 3 択 / エディタの文字の大きさ 4 択 /
+ * Oracle Instant Client のパス（未検出時のみ）/ 履歴の一括削除 / 罫線の有無 /
+ * 行の高さ の 6 つに限る。
  */
 
 import { useState } from 'react'
 import { X } from 'lucide-react'
-import type { RowHeight, ThemePreference } from '../../theme/appearance'
+import type { EditorFontSize, RowHeight, ThemePreference } from '../../theme/appearance'
 import { useHistoryStore } from '../../stores/history'
 import { useUiStore } from '../../stores/ui'
 import { getDbApi } from '../../api/db'
@@ -25,6 +26,19 @@ const ROW_HEIGHTS: { id: RowHeight; label: string }[] = [
   { id: 'comfortable', label: 'ゆったり' },
 ]
 
+/**
+ * エディタの文字の大きさの選択肢。
+ *
+ * 並びは `theme/appearance.ts` の `EDITOR_FONT_SIZES` と揃える。実際のピクセル値は
+ * `theme/tokens.css` の `--fs-editor` にあり、ここには書かない（ADR 0008）。
+ */
+const EDITOR_FONT_SIZE_OPTIONS: { id: EditorFontSize; label: string }[] = [
+  { id: 'small', label: '小' },
+  { id: 'medium', label: '標準' },
+  { id: 'large', label: '大' },
+  { id: 'xlarge', label: '特大' },
+]
+
 interface SettingsPanelProps {
   /** Instant Client が未検出か。検出済みならパスの項目を出さない。 */
   clientUnavailable: boolean
@@ -37,6 +51,7 @@ export function SettingsPanel({ clientUnavailable, onClose }: SettingsPanelProps
   const setTheme = useUiStore((state) => state.setTheme)
   const setGridLines = useUiStore((state) => state.setGridLines)
   const setRowHeight = useUiStore((state) => state.setRowHeight)
+  const setEditorFontSize = useUiStore((state) => state.setEditorFontSize)
   const clearHistory = useHistoryStore((state) => state.clearAll)
 
   const [libDir, setLibDir] = useState('')
@@ -72,6 +87,14 @@ export function SettingsPanel({ clientUnavailable, onClose }: SettingsPanelProps
             options={THEMES}
             value={appearance.theme}
             onChange={(theme) => setTheme(theme)}
+          />
+        </Row>
+
+        <Row label="エディタの文字">
+          <Segmented
+            options={EDITOR_FONT_SIZE_OPTIONS}
+            value={appearance.editorFontSize}
+            onChange={(fontSize) => setEditorFontSize(fontSize)}
           />
         </Row>
 
@@ -149,7 +172,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-/** 3 択以下の切替。デザインのセグメントコントロールに合わせる。 */
+/** 少数の選択肢からの切替。デザインのセグメントコントロールに合わせる。 */
 function Segmented<T extends string>({
   options,
   value,

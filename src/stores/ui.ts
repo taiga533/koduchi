@@ -18,8 +18,8 @@ import {
   clampEditorHeight,
   clampSidebarWidth,
 } from '../components/layout/paneSizes'
-import type { Appearance, RowHeight, ThemePreference } from '../theme/appearance'
-import { applyAppearance, defaultAppearance } from '../theme/appearance'
+import type { Appearance, EditorFontSize, RowHeight, ThemePreference } from '../theme/appearance'
+import { applyAppearance, defaultAppearance, parseEditorFontSize } from '../theme/appearance'
 import type { AppSettings, CsvOptions } from '../types/db'
 import { defaultCsvOptions } from '../types/db'
 
@@ -84,6 +84,7 @@ interface UiState {
   setTheme: (theme: ThemePreference) => void
   setGridLines: (gridLines: boolean) => void
   setRowHeight: (rowHeight: RowHeight) => void
+  setEditorFontSize: (editorFontSize: EditorFontSize) => void
   setCsvOptions: (options: CsvOptions) => void
   /** 結果テーブルの列幅を覚える。 */
   setResultColumnWidth: (tabId: string, columnName: string, width: number) => void
@@ -134,8 +135,8 @@ function reflect(appearance: Appearance): void {
 /**
  * 保存する形へ変換する。
  *
- * `theme` と `rowHeight` は Rust 側では文字列として扱う。値の意味を知っているのは
- * フロントエンドだけである。
+ * `theme` / `rowHeight` / `editorFontSize` は Rust 側では文字列として扱う。値の
+ * 意味を知っているのはフロントエンドだけである。
  */
 function toSettings(appearance: Appearance, csv: CsvOptions): AppSettings {
   return {
@@ -143,6 +144,7 @@ function toSettings(appearance: Appearance, csv: CsvOptions): AppSettings {
       theme: appearance.theme,
       gridLines: appearance.gridLines,
       rowHeight: appearance.rowHeight,
+      editorFontSize: appearance.editorFontSize,
     },
     csv,
   }
@@ -214,6 +216,14 @@ export const useUiStore = create<UiState>((set, get) => ({
       return { appearance }
     }),
 
+  setEditorFontSize: (editorFontSize) =>
+    set((state) => {
+      const appearance = { ...state.appearance, editorFontSize }
+      reflect(appearance)
+      persist(appearance, state.csvOptions)
+      return { appearance }
+    }),
+
   setCsvOptions: (csvOptions) =>
     set((state) => {
       persist(state.appearance, csvOptions)
@@ -277,6 +287,7 @@ export const useUiStore = create<UiState>((set, get) => ({
         theme: (settings.appearance.theme as ThemePreference) ?? defaultAppearance.theme,
         gridLines: settings.appearance.gridLines,
         rowHeight: (settings.appearance.rowHeight as RowHeight) ?? defaultAppearance.rowHeight,
+        editorFontSize: parseEditorFontSize(settings.appearance.editorFontSize),
       }
       reflect(appearance)
       set({ appearance, csvOptions: settings.csv })

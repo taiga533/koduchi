@@ -24,23 +24,56 @@ const SETTINGS_FILE_NAME: &str = "settings.toml";
 ///
 /// 値の意味はフロントエンドの `src/theme/appearance.ts` と対応する。Rust 側は
 /// 保存と読み出しだけを行い、内容の解釈はしない。
+///
+/// **項目はすべて `#[serde(default)]` を持つ。**設定画面に項目が増えるたびに、
+/// その項目を持たない `settings.toml` が世の中に残る。既定を持たせておかないと
+/// 表そのものの読み取りが失敗し、`load_app_settings` の `unwrap_or_default()` が
+/// テーマも行の高さもまとめて既定へ戻してしまう（新しい項目 1 つのために古い
+/// 設定が全部飛ぶ）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppearanceSettings {
     /// `system` / `light` / `dark` のいずれか。
+    #[serde(default = "default_theme")]
     pub theme: String,
     /// 結果テーブルの罫線を引くか。
+    #[serde(default = "default_grid_lines")]
     pub grid_lines: bool,
     /// `compact` / `comfortable` のいずれか。
+    #[serde(default = "default_row_height")]
     pub row_height: String,
+    /// エディタの文字の大きさ。`small` / `medium` / `large` / `xlarge` のいずれか。
+    #[serde(default = "default_editor_font_size")]
+    pub editor_font_size: String,
+}
+
+/// テーマの既定。システム追従。
+fn default_theme() -> String {
+    String::from("system")
+}
+
+/// 罫線の既定。引く。
+fn default_grid_lines() -> bool {
+    true
+}
+
+/// 行の高さの既定。つめる。
+fn default_row_height() -> String {
+    String::from("compact")
+}
+
+/// エディタの文字の大きさの既定。デザインどおりの 12px にあたる段階。
+fn default_editor_font_size() -> String {
+    String::from("medium")
 }
 
 impl Default for AppearanceSettings {
     fn default() -> Self {
         AppearanceSettings {
-            theme: String::from("system"),
-            grid_lines: true,
-            row_height: String::from("compact"),
+            theme: default_theme(),
+            grid_lines: default_grid_lines(),
+            row_height: default_row_height(),
+            editor_font_size: default_editor_font_size(),
         }
     }
 }
@@ -164,7 +197,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn アプリ設定の既定はシステム追従で罫線ありのつめた行になる() {
+    fn アプリ設定の既定はシステム追従で罫線ありのつめた行と標準の文字になる() {
         // Arrange & Act
         let settings = AppSettings::default();
 
@@ -172,6 +205,40 @@ mod tests {
         assert_eq!(settings.appearance.theme, "system");
         assert!(settings.appearance.grid_lines);
         assert_eq!(settings.appearance.row_height, "compact");
+        assert_eq!(settings.appearance.editor_font_size, "medium");
+    }
+
+    #[test]
+    fn 文字の大きさを持たない古い設定でも他の項目が保たれ大きさは既定になる() {
+        // Arrange
+        // editorFontSize を足す前に書かれた settings.toml
+        let old = "\
+[appearance]
+theme = \"dark\"
+gridLines = false
+rowHeight = \"comfortable\"
+";
+
+        // Act
+        let settings: AppSettings = toml::from_str(old).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance.theme, "dark");
+        assert!(!settings.appearance.grid_lines);
+        assert_eq!(settings.appearance.row_height, "comfortable");
+        assert_eq!(settings.appearance.editor_font_size, "medium");
+    }
+
+    #[test]
+    fn 見た目の設定の表が空でもすべての項目が既定になる() {
+        // Arrange
+        let empty = "[appearance]\n";
+
+        // Act
+        let settings: AppSettings = toml::from_str(empty).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance, AppearanceSettings::default());
     }
 
     #[test]
@@ -182,6 +249,7 @@ mod tests {
                 theme: String::from("dark"),
                 grid_lines: false,
                 row_height: String::from("comfortable"),
+                editor_font_size: String::from("xlarge"),
             },
             csv: CsvOptions::default(),
         };

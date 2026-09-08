@@ -30,12 +30,15 @@ const highlightStyle = HighlightStyle.define([
 /**
  * エディタの見た目。
  *
- * 行の高さ 1.7 と 12px の等幅は、デザインのエディタ領域の指定に合わせてある。
+ * 行の高さ 1.7 と等幅は、デザインのエディタ領域の指定に合わせてある。文字の
+ * 大きさだけは設定で変わるため、値ではなく `tokens.css` の `--fs-editor` を
+ * 参照する（ADR 0008。既定はデザインどおりの 12px）。行の高さは倍率指定なので
+ * 一緒に付いてくる。
  */
 const editorTheme = EditorView.theme({
   '&': {
     height: '100%',
-    fontSize: '12px',
+    fontSize: 'var(--fs-editor)',
     color: 'var(--fg)',
     backgroundColor: 'var(--panel)',
   },
@@ -72,7 +75,8 @@ const editorTheme = EditorView.theme({
     border: '1px solid var(--line)',
     borderRadius: '9px',
     fontFamily: 'var(--font-mono)',
-    fontSize: '12px',
+    // 補完の候補は本文と同じ綴りを見せるものなので、本文と同じ大きさで出す。
+    fontSize: 'var(--fs-editor)',
   },
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
     backgroundColor: 'var(--fill2)',
