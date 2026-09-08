@@ -62,6 +62,37 @@ export function trafficLightY(titleBarHeight: number): number {
 }
 
 /**
+ * 信号機のボタンの上端が、ウィンドウ上端からどれだけ下にあるかを求める。
+ *
+ * 冒頭の導出のとおり「ボタン中心 = `y` − `CENTER_OFFSET`」であるから、
+ * 上端はそこから半径ぶん上になる。
+ *
+ * ```
+ * 上端 = (y − CENTER_OFFSET) − 直径/2
+ * ```
+ *
+ * 42px のタイトルバーでは `trafficLightY(42)` = 23 → 中心 21 → **上端 14** になる。
+ * タイトルバーの上端に何かを重ねて描くときは、この値より薄く収める必要がある。
+ *
+ * @param titleBarHeight タイトルバーの高さ
+ *
+ * @returns ウィンドウ上端からボタン上端までの距離
+ */
+export function trafficLightTop(titleBarHeight: number): number {
+  return trafficLightY(titleBarHeight) - CENTER_OFFSET - TRAFFIC_LIGHT_DIAMETER / 2
+}
+
+/**
+ * 接続の色を敷く帯の高さ（ADR 0015）。
+ *
+ * ウィンドウ上端いっぱいに敷くため、信号機のボタンに掛からない薄さでなければ
+ * ならない。`trafficLightTop(TITLE_BAR_HEIGHT)` を下回ることはテストで見張って
+ * いる。タイトルバーの高さを変えるとボタンの上端も動くため、**この値を目分量で
+ * 決めない。**
+ */
+export const CONNECTION_COLOR_BAR_HEIGHT = 3
+
+/**
  * 信号機の右端を求める。
  *
  * 3 つのボタンが `TRAFFIC_LIGHT_SPACING` おきに並ぶ。

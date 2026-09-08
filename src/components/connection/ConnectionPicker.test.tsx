@@ -14,6 +14,8 @@ const 開発: SavedConnection = {
   username: 'koduchi',
   readOnly: false,
   autoCommit: false,
+  color: 'none',
+  group: null,
   schemaFilter: defaultSchemaFilter,
   completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
@@ -25,9 +27,35 @@ const 本番: SavedConnection = {
   username: 'app',
   readOnly: true,
   autoCommit: false,
+  color: 'none',
+  group: null,
   schemaFilter: { ...defaultSchemaFilter, excludeSystem: false },
   completion: { identifierCase: 'preserve' },
   target: { method: 'tns', directory: '/etc/oracle', alias: 'PROD' },
+}
+
+const 本番東京: SavedConnection = {
+  ...本番,
+  id: 'saved-3',
+  name: '本番東京',
+  color: 'red',
+  group: '本番',
+}
+
+const 本番大阪: SavedConnection = {
+  ...本番,
+  id: 'saved-4',
+  name: '本番大阪',
+  color: 'orange',
+  group: '本番',
+}
+
+const 検証: SavedConnection = {
+  ...開発,
+  id: 'saved-5',
+  name: '検証',
+  color: 'blue',
+  group: '検証',
 }
 
 const tnsnames = {
@@ -196,6 +224,97 @@ describe('ConnectionPicker', () => {
 
     // Assert
     expect(onEdit).toHaveBeenCalledWith(開発)
+  })
+
+  it('グループを持つ接続は見出しの下にまとまって並ぶ', async () => {
+    // Arrange
+    描く({ savedConnections: [本番東京, 検証, 本番大阪] })
+
+    // Act
+    const 見出し = await screen.findByRole('heading', { name: '本番', level: 2 })
+
+    // Assert
+    const 本番の一覧 = 見出し.parentElement?.querySelector('ul')
+    expect(本番の一覧?.textContent).toContain('本番東京')
+    expect(本番の一覧?.textContent).toContain('本番大阪')
+    expect(本番の一覧?.textContent).not.toContain('検証')
+  })
+
+  it('グループは保存されている並びで最初に現れた順に出る', async () => {
+    // Arrange: 名前で並べ替えるなら「検証」が先に来る
+    描く({ savedConnections: [本番東京, 検証] })
+    await screen.findByText('本番東京')
+
+    // Act
+    const 見出し = screen.getAllByRole('heading', { level: 2 })
+
+    // Assert
+    expect(見出し.map((element) => element.textContent)).toEqual(['本番', '検証'])
+  })
+
+  it('グループ未指定の接続は見出しを持たず先頭に並ぶ', async () => {
+    // Arrange
+    描く({ savedConnections: [本番東京, 開発] })
+    await screen.findByText('開発')
+
+    // Act
+    const 見出し = screen.getAllByRole('heading', { level: 2 })
+
+    // Assert
+    expect(見出し.map((element) => element.textContent)).toEqual(['本番'])
+    const 一覧 = screen.getAllByRole('list')
+    expect(一覧[0].textContent).toContain('開発')
+  })
+
+  it('接続の色は行の帯に当たる', async () => {
+    // Arrange
+    描く({ savedConnections: [本番東京] })
+    await screen.findByText('本番東京')
+
+    // Act
+    const 帯 = screen.getByTestId('connection-color-band-saved-3')
+
+    // Assert
+    expect(帯.style.background).toBe('var(--cn-red)')
+    expect(帯).toHaveAttribute('data-connection-color', 'red')
+  })
+
+  it('色なしの接続の帯は塗られない', async () => {
+    // Arrange
+    描く({ savedConnections: [開発] })
+    await screen.findByText('開発')
+
+    // Act
+    const 帯 = screen.getByTestId('connection-color-band-saved-1')
+
+    // Assert
+    expect(帯.style.background).toBe('transparent')
+  })
+
+  it('読み取り専用の接続は色とは別に鍵で示される', async () => {
+    // Arrange
+    描く({ savedConnections: [開発, 本番東京] })
+    await screen.findByText('本番東京')
+
+    // Act
+    const 鍵 = screen.getAllByLabelText('読み取り専用')
+
+    // Assert: 読み取り専用は 本番東京 の 1 件だけである
+    expect(鍵).toHaveLength(1)
+  })
+
+  it('繋ぐと色とグループが接続の状態へ引き継がれる', async () => {
+    // Arrange
+    描く({ savedConnections: [本番東京], passwords: { 'saved-3': 'secret' }, tnsnames })
+    const 行 = await screen.findByText('本番東京')
+
+    // Act
+    await userEvent.click(行)
+
+    // Assert
+    await waitFor(() => expect(calls.connect).toHaveLength(1))
+    expect(useConnectionStore.getState().connection?.color).toBe('red')
+    expect(useConnectionStore.getState().connection?.group).toBe('本番')
   })
 
   it('新しい接続を押すと作成画面へ進む', async () => {

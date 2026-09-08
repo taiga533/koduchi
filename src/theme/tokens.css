@@ -58,6 +58,17 @@
   --dpb: #eef2e4;
   --dpf: #4b5a1f;
 
+  /* 接続の色（ADR 0015）。決め打ちのパレットであり、任意の色は入れさせない。
+     面のある帯として塗るため、どの色も `--bg` の上で同じくらいの強さに見える
+     明度に揃えてある（黄だけは低い明度でオリーブのアクセントと紛れるため上げた） */
+  --cn-red: oklch(0.55 0.18 27);
+  --cn-orange: oklch(0.6 0.15 55);
+  --cn-yellow: oklch(0.68 0.14 92);
+  --cn-green: oklch(0.55 0.13 150);
+  --cn-blue: oklch(0.55 0.15 250);
+  --cn-purple: oklch(0.5 0.17 305);
+  --cn-gray: oklch(0.6 0 0);
+
   /* 結果テーブルの罫線色。`--gl` は表示設定で透明にも切り替わる */
   --gl-color: #f1f3f6;
 }
@@ -96,6 +107,14 @@
     --dpb: #2c331f;
     --dpf: #bacd80;
 
+    --cn-red: oklch(0.7 0.17 27);
+    --cn-orange: oklch(0.75 0.14 55);
+    --cn-yellow: oklch(0.82 0.13 92);
+    --cn-green: oklch(0.72 0.13 150);
+    --cn-blue: oklch(0.7 0.14 250);
+    --cn-purple: oklch(0.68 0.16 305);
+    --cn-gray: oklch(0.66 0 0);
+
     --gl-color: #2b2f36;
   }
 }
@@ -132,6 +151,14 @@
   --dmf: #e59a90;
   --dpb: #2c331f;
   --dpf: #bacd80;
+
+  --cn-red: oklch(0.7 0.17 27);
+  --cn-orange: oklch(0.75 0.14 55);
+  --cn-yellow: oklch(0.82 0.13 92);
+  --cn-green: oklch(0.72 0.13 150);
+  --cn-blue: oklch(0.7 0.14 250);
+  --cn-purple: oklch(0.68 0.16 305);
+  --cn-gray: oklch(0.66 0 0);
 
   --gl-color: #2b2f36;
 }

@@ -14,6 +14,8 @@ const 保存済み: SavedConnection = {
   username: 'koduchi',
   readOnly: false,
   autoCommit: false,
+  color: 'none',
+  group: null,
   schemaFilter: defaultSchemaFilter,
   completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
@@ -391,5 +393,87 @@ describe('ConnectionForm', () => {
 
     // Assert
     expect(自動コミット).toBeChecked()
+  })
+
+  it('色は既定で選ばれていない', () => {
+    // Arrange & Act
+    描く()
+
+    // Assert
+    expect(screen.getByRole('button', { name: '色: なし' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('選んだ色は保存され接続の状態にも入る', async () => {
+    // Arrange
+    描く()
+    await userEvent.type(screen.getByLabelText('名前'), '本番')
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '色: 赤' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
+
+    // Assert
+    await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
+    expect(calls.saveConnection[0].connection.color).toBe('red')
+    expect(useConnectionStore.getState().connection?.color).toBe('red')
+  })
+
+  it('入力したグループは前後の空白を落として保存される', async () => {
+    // Arrange
+    描く()
+    await userEvent.type(screen.getByLabelText('名前'), '本番')
+    await userEvent.type(screen.getByLabelText('グループ'), '  本番  ')
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
+
+    // Assert
+    await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
+    expect(calls.saveConnection[0].connection.group).toBe('本番')
+  })
+
+  it('グループを空のままにすると未指定として保存される', async () => {
+    // Arrange
+    描く()
+    await userEvent.type(screen.getByLabelText('名前'), '開発')
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
+
+    // Assert
+    await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
+    expect(calls.saveConnection[0].connection.group).toBeNull()
+  })
+
+  it('既に使われているグループ名が入力候補に出る', async () => {
+    // Arrange
+    描く({ savedConnections: [{ ...保存済み, id: 'saved-9', group: '本番' }] })
+
+    // Act
+    await waitFor(() =>
+      expect(document.querySelectorAll('#connection-groups option')).toHaveLength(1),
+    )
+
+    // Assert
+    const 候補 = [...document.querySelectorAll('#connection-groups option')]
+    expect(候補.map((option) => option.getAttribute('value'))).toEqual(['本番'])
+  })
+
+  it('編集で開くと保存済みの色とグループが入っている', async () => {
+    // Arrange
+    描く({}, { initial: { ...保存済み, color: 'purple', group: '検証' } })
+
+    // Act
+    const 色 = screen.getByRole('button', { name: '色: 紫' })
+
+    // Assert
+    expect(色).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(screen.getByLabelText('グループ')).toHaveValue('検証'))
   })
 })
