@@ -14,7 +14,7 @@ import userEvent from '@testing-library/user-event'
 import { StatusBar } from './StatusBar'
 import { useConnectionStore } from '../../stores/connection'
 import { useExecutionStore } from '../../stores/execution'
-import type { ConnectionParams } from '../../types/db'
+import type { ConnectionColor, ConnectionParams } from '../../types/db'
 
 /**
  * 接続中に見せるための接続情報。
@@ -32,8 +32,18 @@ function 接続の設定(readOnly = false, autoCommit = false): ConnectionParams
   }
 }
 
-/** 接続済みの状態にする。 */
-function 接続済みにする(readOnly = false, autoCommit = false): void {
+/**
+ * 接続済みの状態にする。
+ *
+ * @param readOnly 読み取り専用で繋いだことにするか
+ * @param autoCommit 自動コミットで繋いだことにするか（ADR 0012）
+ * @param color 接続に付いている色（ADR 0015）
+ */
+function 接続済みにする(
+  readOnly = false,
+  autoCommit = false,
+  color: ConnectionColor = 'none',
+): void {
   useConnectionStore.setState({
     status: 'connected',
     connection: {
@@ -42,6 +52,8 @@ function 接続済みにする(readOnly = false, autoCommit = false): void {
       name: 'dev',
       params: 接続の設定(readOnly, autoCommit),
       completion: { identifierCase: 'preserve' },
+      color,
+      group: null,
     },
     error: null,
   })
@@ -223,5 +235,44 @@ describe('StatusBar', () => {
     // Assert
     expect(screen.getByRole('menuitem', { name: '切断' })).toBeInTheDocument()
     expect(screen.getByText('未コミット')).toBeInTheDocument()
+  })
+
+  it('色の付いた接続では接続中の手前に色の印が出る', () => {
+    // Arrange
+    接続済みにする(false, false, 'red')
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+
+    // Assert
+    const 印 = screen.getByTestId('connection-color-mark')
+    expect(印.style.background).toBe('var(--cn-red)')
+    expect(印).toHaveAttribute('data-connection-color', 'red')
+  })
+
+  it('色の付いていない接続では色の印を出さない', () => {
+    // Arrange
+    接続済みにする()
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+
+    // Assert
+    expect(screen.queryByTestId('connection-color-mark')).not.toBeInTheDocument()
+  })
+
+  it('読み取り専用は色ではなく文言で示され、色の印とは別に並ぶ', () => {
+    // Arrange
+    接続済みにする(true, false, 'red')
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+
+    // Assert
+    expect(screen.getByText('読み取り専用')).toBeInTheDocument()
+    expect(screen.getByTestId('connection-color-mark')).toBeInTheDocument()
   })
 })

@@ -222,6 +222,30 @@ export const defaultCompletionSettings: CompletionSettings = {
   identifierCase: 'preserve',
 }
 
+/**
+ * 接続に付けられる色（ADR 0015）。
+ *
+ * 決め打ちのパレットであり、任意の色は入れられない。カラーピッカーを置くと
+ * テーマとの整合が取れなくなるためである。値は `src/theme/tokens.css` の
+ * `--cn-*` トークンと 1 対 1 で対応する。Rust 側の `ConnectionColor` と同じ。
+ */
+export const CONNECTION_COLORS = [
+  'none',
+  'red',
+  'orange',
+  'yellow',
+  'green',
+  'blue',
+  'purple',
+  'gray',
+] as const
+
+/** 接続に付けられる色。 */
+export type ConnectionColor = (typeof CONNECTION_COLORS)[number]
+
+/** 色の既定値。付けなければ色は出ない。 */
+export const defaultConnectionColor: ConnectionColor = 'none'
+
 /** 保存する接続先の指定方法（ADR 0004・0006）。 */
 export type SavedTarget =
   | { method: 'ezConnect'; host: string; port: number; serviceName: string }
@@ -236,6 +260,10 @@ export interface SavedConnection {
   readOnly: boolean
   /** 実行のたびに自動でコミットするか（ADR 0012）。既定は偽。 */
   autoCommit: boolean
+  /** 接続に付けた色（ADR 0015）。省略された古い設定ファイルでは `none` になる。 */
+  color: ConnectionColor
+  /** 接続を束ねるグループ名（ADR 0015）。未指定なら `null`。入れ子は作らない。 */
+  group: string | null
   schemaFilter: SchemaFilter
   /** 補完の設定（ADR 0013）。省略された古い設定ファイルでは既定値になる。 */
   completion: CompletionSettings

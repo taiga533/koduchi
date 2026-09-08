@@ -6,24 +6,49 @@
  * Ask AI ボタンを並べる。
  *
  * 検索ボックスと Ask AI は器のみで、操作はできない（ADR の機能スコープ）。
+ *
+ * 接続に色が付いていれば、ウィンドウ上端いっぱいに 3px の帯を敷く（ADR 0015）。
+ * 作業中に見ているのはエディタと結果であり、視線は画面の中ほどにある。上端の
+ * 全幅の帯は、そこから目を上げなくても周辺視野に入る唯一の場所である。信号機は
+ * 上端から 7px あたりから描かれるため、3px の帯とは重ならない（ADR 0009）。
  */
 
 import { Search, Sparkles } from 'lucide-react'
 import { useConnectionStore } from '../../stores/connection'
+import { connectionColorVar } from '../../theme/connectionColors'
 import { TITLE_BAR_HEIGHT, titleBarContentLeft } from './geometry'
+
+/** 接続の色を敷く帯の高さ。 */
+const COLOR_BAR_HEIGHT = 3
 
 export function TitleBar() {
   const connection = useConnectionStore((state) => state.connection)
   const status = useConnectionStore((state) => state.status)
 
+  const 接続の色 = connectionColorVar(connection?.color ?? 'none')
+
   return (
     <header
       data-tauri-drag-region
-      className="flex items-center gap-14px pr-14px bg-bg shrink-0"
+      className="relative flex items-center gap-14px pr-14px bg-bg shrink-0"
       style={{ height: TITLE_BAR_HEIGHT, paddingLeft: titleBarContentLeft() }}
     >
+      {接続の色 ? (
+        <div
+          data-testid="connection-color-bar"
+          data-connection-color={connection?.color}
+          aria-hidden="true"
+          className="absolute top-0 left-0 right-0 pointer-events-none"
+          style={{ height: COLOR_BAR_HEIGHT, background: 接続の色 }}
+        />
+      ) : null}
+
       <div data-tauri-drag-region className="flex items-center gap-9px">
-        <div className="w-13px h-13px rounded-4px bg-ac" />
+        <div
+          data-testid="connection-color-chip"
+          className="w-13px h-13px rounded-4px bg-ac"
+          style={接続の色 ? { background: 接続の色 } : undefined}
+        />
         {connection ? (
           <div className="flex items-center gap-7px">
             <span
@@ -32,6 +57,9 @@ export function TitleBar() {
                 background: status === 'connected' ? 'oklch(0.58 0.12 152)' : 'var(--fg5)',
               }}
             />
+            {connection.group ? (
+              <span className="text-12.5px text-fg4">{connection.group} /</span>
+            ) : null}
             <span className="text-13px font-600 text-fg tracking--0.01em">{connection.name}</span>
             <span className="text-12.5px text-fg4">{connection.params.username}</span>
           </div>
