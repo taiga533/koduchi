@@ -4,9 +4,14 @@
  * zustand ストアはここを介してのみ Rust 側を呼ぶ。この層を差し替えられるように
  * しておくことで、ストアとコンポーネントのテストをデータベースから切り離せる。
  * mock ライブラリではなく実装の差し替えで済むため、mock を最小限に保てる。
+ *
+ * 窓口は `watchConnection` で包んでから配る（ADR 0026）。サーバ側の接続断は
+ * どの往復でも起こりうるため、気付く場所をここ 1 つに寄せてある。差し替えた
+ * 窓口も同じように包まれる。
  */
 
 import { invoke } from '@tauri-apps/api/core'
+import { watchConnection } from '../connection/lost'
 import type {
   AppSettings,
   Bind,
@@ -247,7 +252,7 @@ const tauriDbApi: DbApi = {
   openConnectionWindow: () => invoke('open_connection_window'),
 }
 
-let current: DbApi = tauriDbApi
+let current: DbApi = watchConnection(tauriDbApi)
 
 /** 現在使われている窓口を返す。ストアはこれを介して Rust 側を呼ぶ。 */
 export function getDbApi(): DbApi {
@@ -257,13 +262,16 @@ export function getDbApi(): DbApi {
 /**
  * 窓口を差し替える。テストからのみ使う。
  *
+ * 差し替えた窓口も接続断の見張りで包む（ADR 0026）。包まないと、断の経路だけが
+ * テストで踏めなくなる。
+ *
  * @param api 差し替える実装
  */
 export function setDbApi(api: DbApi): void {
-  current = api
+  current = watchConnection(api)
 }
 
 /** 窓口を Tauri の実装へ戻す。テストの後片付けに使う。 */
 export function resetDbApi(): void {
-  current = tauriDbApi
+  current = watchConnection(tauriDbApi)
 }

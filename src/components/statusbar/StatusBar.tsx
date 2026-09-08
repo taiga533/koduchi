@@ -12,6 +12,16 @@
  * 1 接続 = 1 ウィンドウ（ADR 0009）であるため、接続を操作する場所はこの
  * 「今どこへ繋がっているか」を出している所が自然である。
  *
+ * サーバ側で接続が切れているときは、「接続中」の代わりに「接続が切れました」を
+ * `--warn` で出し、その隣に「再接続」を置く（ADR 0026）。ADR 0012 の「未コミット」と
+ * コミット / ロールバックのボタンと同じ並びであり、**状態のすぐ隣にその状態を
+ * 片付ける手を置く**という形を繰り返している。**自動では繋ぎ直さない。**
+ * 繋ぎ直した接続は別のセッションであり、未コミットの変更はサーバ側で既に
+ * ロールバックされている。押させることが、その事実を見せる機会でもある。
+ *
+ * 切れている間はコミット / ロールバックのボタンを出さない。押しても届かない
+ * うえ、未コミットの状態はもう残っていない。
+ *
  * 接続に色が付いていれば「接続中」の手前に色の印を置く（ADR 0015）。ここは
  * 補助であり、色そのものを届ける主役はタイトルバー上端の帯である。読み取り専用は
  * 色ではなく鍵のアイコン（形）で示し続ける。色は「どの接続か」、形は「何ができるか」
@@ -26,11 +36,13 @@ import {
   ChevronUp,
   FileSearch,
   Lock,
+  PlugZap,
   Settings,
   Undo2,
   Unplug,
 } from 'lucide-react'
-import { isManualCommit, useConnectionStore } from '../../stores/connection'
+import { canReachDatabase, isManualCommit, useConnectionStore } from '../../stores/connection'
+import { CONNECTION_LOST_LABEL } from '../../connection/lost'
 import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { connectionColorVar } from '../../theme/connectionColors'
@@ -60,6 +72,12 @@ interface StatusBarProps {
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
   onRollback?: () => void
+  /**
+   * 同じ接続先へ繋ぎ直す（ADR 0026）。
+   *
+   * 接続が切れているときだけ押せる。渡さないとボタンが出ない。
+   */
+  onReconnect?: () => void
 }
 
 /** 接続の段階を利用者向けの文言にする。 */
@@ -68,6 +86,7 @@ const STATUS_LABELS = {
   connecting: '接続中…',
   connected: '接続中',
   failed: '接続失敗',
+  lost: CONNECTION_LOST_LABEL,
 } as const
 
 /** 接続中を示す緑。トークンに無い色であるため、この 1 箇所で持つ。 */
@@ -81,6 +100,7 @@ export function StatusBar({
   onOpenSourceSearch,
   onCommit,
   onRollback,
+  onReconnect,
 }: StatusBarProps) {
   const status = useConnectionStore((state) => state.status)
   const connection = useConnectionStore((state) => state.connection)
@@ -88,7 +108,8 @@ export function StatusBar({
   const inTransaction = useExecutionStore((state) => state.inTransaction)
 
   // 読み取り専用と自動コミットの接続では、コミットすべき変更がそもそも生じない。
-  const 手動コミット = isManualCommit(connection)
+  // 切れている間は往復そのものが届かないため、同じく出さない（ADR 0026）。
+  const 手動コミット = isManualCommit(connection) && canReachDatabase(status)
 
   return (
     <footer className="h-26px flex items-center gap-16px px-14px bg-bg text-11px text-fg3 shrink-0">
@@ -105,6 +126,8 @@ export function StatusBar({
           onOpenSessions={onOpenSessions}
           onOpenSourceSearch={onOpenSourceSearch}
         />
+      ) : status === 'lost' ? (
+        <LostConnection onReconnect={onReconnect} onDisconnect={onDisconnect} />
       ) : (
         <span>{STATUS_LABELS[status]}</span>
       )}
@@ -138,6 +161,38 @@ export function StatusBar({
 }
 
 /**
+ * 接続が切れていることと、そこから戻る手（ADR 0026）。
+ *
+ * 「再接続」は同じ接続先へ繋ぎ直す。「切断」は接続を選ぶ画面へ戻る。繋ぎ直せない
+ * 相手（停止中のデータベース、期限切れのパスワード）のときに袋小路へ入らない
+ * よう、2 つめの道を残してある。
+ *
+ * メニューにはしない。切れている状態は片手で終わらせたいものであり、
+ * 押しどころを 1 段隠すと「どうすればよいか分からない」に逆戻りする。
+ */
+function LostConnection({
+  onReconnect,
+  onDisconnect,
+}: {
+  onReconnect?: () => void
+  onDisconnect: () => void
+}) {
+  return (
+    <span className="flex items-center gap-10px">
+      <span className="text-warn">{STATUS_LABELS.lost}</span>
+      {onReconnect ? (
+        <TransactionButton label="再接続" shortcut="" onClick={onReconnect}>
+          <PlugZap size={12} />
+        </TransactionButton>
+      ) : null}
+      <TransactionButton label="切断" shortcut="" onClick={onDisconnect}>
+        <Unplug size={12} />
+      </TransactionButton>
+    </span>
+  )
+}
+
+/**
  * コミット / ロールバックのボタン（ADR 0012）。
  *
  * 未コミットが無いときに押しても害は無いため、押せる状態は変えない。押せたり
@@ -150,6 +205,7 @@ function TransactionButton({
   children,
 }: {
   label: string
+  /** 打鍵の割り当て。持たないボタンでは空文字列を渡す。 */
   shortcut: string
   onClick?: () => void
   children: React.ReactNode
@@ -158,7 +214,7 @@ function TransactionButton({
     <button
       type="button"
       onClick={onClick}
-      title={`${label}（${shortcut}）`}
+      title={shortcut === '' ? label : `${label}（${shortcut}）`}
       className="flex items-center gap-5px text-11px text-fg3 bg-transparent border-none cursor-pointer font-inherit p-0"
     >
       {children}

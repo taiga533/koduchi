@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi } from '../test/fakeDbApi'
-import { isManualCommit, useConnectionStore } from './connection'
+import { canReachDatabase, isManualCommit, useConnectionStore } from './connection'
 import type { ConnectionParams } from '../types/db'
 
 const params: ConnectionParams = {
@@ -179,5 +179,152 @@ describe('isManualCommit', () => {
 
     // Assert
     expect(手動).toBe(false)
+  })
+})
+
+describe('canReachDatabase', () => {
+  it('接続中だけがデータベースへ往復できる', () => {
+    // Arrange & Act & Assert
+    expect(canReachDatabase('connected')).toBe(true)
+  })
+
+  it('接続が切れている間は往復できない', () => {
+    // Arrange: 押しても届かないボタンを出さないための判定（ADR 0026）
+    // Act & Assert
+    expect(canReachDatabase('lost')).toBe(false)
+    expect(canReachDatabase('disconnected')).toBe(false)
+    expect(canReachDatabase('connecting')).toBe(false)
+    expect(canReachDatabase('failed')).toBe(false)
+  })
+})
+
+describe('接続断からの回復（ADR 0026）', () => {
+  it('接続断を記録すると切れた状態になり接続の情報は残る', async () => {
+    // Arrange: 繋ぎ直すのに接続先とユーザーが要る
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    useConnectionStore.getState().markLost('ORA-02396: 最大アイドル時間を超過しました')
+
+    // Assert
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('lost')
+    expect(state.connection?.name).toBe('dev')
+    expect(state.error).toBe('ORA-02396: 最大アイドル時間を超過しました')
+  })
+
+  it('初めての接続断だけが段階を動かしたと答える', async () => {
+    // Arrange: 印が立った後のプールは往復せずその場で断を返すため、
+    // 切れたあとに触るたび同じ報せが届く（ADR 0026）
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    const 一度目 = useConnectionStore.getState().markLost('ORA-02396')
+    const 二度目 = useConnectionStore.getState().markLost('ORA-02396')
+
+    // Assert
+    expect(一度目).toBe(true)
+    expect(二度目).toBe(false)
+  })
+
+  it('繋ぎ直したあとの接続断はまた段階を動かしたと答える', async () => {
+    // Arrange: 2 度目の断を 1 度目と同じものとして飲み込まない
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+    useConnectionStore.getState().markLost('ORA-02396')
+    await useConnectionStore.getState().reconnect()
+
+    // Act
+    const 二度目の断 = useConnectionStore.getState().markLost('ORA-03113')
+
+    // Assert
+    expect(二度目の断).toBe(true)
+  })
+
+  it('接続していないときの接続断は状態を動かさない', () => {
+    // Arrange: 切断のあとに遅れて届いたエラーで画面を戻さない
+    useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
+
+    // Act
+    const 動いた = useConnectionStore.getState().markLost('ORA-03113')
+
+    // Assert
+    expect(動いた).toBe(false)
+    expect(useConnectionStore.getState().status).toBe('disconnected')
+  })
+
+  it('繋ぎ直すと接続中に戻り識別子が採番し直される', async () => {
+    // Arrange: Rust 側のプールは切れた印を持ったままであり使い回せない
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params, { color: 'red', group: '本番' })
+    const 前の識別子 = useConnectionStore.getState().connection?.id
+    useConnectionStore.getState().markLost('ORA-02396')
+
+    // Act
+    await useConnectionStore.getState().reconnect()
+
+    // Assert
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('connected')
+    expect(state.connection?.id).not.toBe(前の識別子)
+    expect(calls.connect).toHaveLength(2)
+    expect(state.error).toBeNull()
+  })
+
+  it('繋ぎ直しても表示名と色とグループは引き継がれる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore
+      .getState()
+      .connect('prod', params, { savedId: 's1', color: 'red', group: '本番' })
+    useConnectionStore.getState().markLost('ORA-03113')
+
+    // Act
+    await useConnectionStore.getState().reconnect()
+
+    // Assert
+    const connection = useConnectionStore.getState().connection
+    expect(connection?.name).toBe('prod')
+    expect(connection?.savedId).toBe('s1')
+    expect(connection?.color).toBe('red')
+    expect(connection?.group).toBe('本番')
+  })
+
+  it('繋ぎ直しに失敗しても切れた状態のまま接続の情報を残す', async () => {
+    // Arrange: データベースが起き上がるまで、押すたびに接続を選び直させない
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+    useConnectionStore.getState().markLost('ORA-02396')
+    setDbApi(createFakeDbApi({ connectError: { kind: 'connect', message: 'ORA-12541' } }).api)
+
+    // Act
+    await useConnectionStore.getState().reconnect()
+
+    // Assert
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('lost')
+    expect(state.connection?.name).toBe('dev')
+    expect(state.error).toBe('ORA-12541')
+  })
+
+  it('接続していないときに繋ぎ直しても何も起きない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
+
+    // Act
+    await useConnectionStore.getState().reconnect()
+
+    // Assert
+    expect(calls.connect).toHaveLength(0)
   })
 })

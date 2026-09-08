@@ -59,6 +59,16 @@ function 接続済みにする(
   })
 }
 
+/**
+ * サーバ側で接続が切れた状態にする（ADR 0026）。
+ *
+ * 接続の情報は残す。繋ぎ直すのに接続先とユーザーが要るためである。
+ */
+function 接続が切れた状態にする(): void {
+  接続済みにする()
+  useConnectionStore.getState().markLost('ORA-02396: 最大アイドル時間を超過しました')
+}
+
 /** 必ず要るハンドラをまとめて用意する。 */
 function ハンドラを作る() {
   return { onOpenSettings: vi.fn(), onDisconnect: vi.fn(), onSwitchConnection: vi.fn() }
@@ -318,5 +328,83 @@ describe('StatusBar', () => {
     // Assert
     expect(screen.getByText('読み取り専用')).toBeInTheDocument()
     expect(screen.getByTestId('connection-color-mark')).toBeInTheDocument()
+  })
+
+  it('接続が切れているときは接続中ではなくその旨を出す', () => {
+    // Arrange: 「接続中」のままでは何も分からない（ADR 0026）
+    接続が切れた状態にする()
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+
+    // Assert
+    expect(screen.getByText('接続が切れました')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '接続中' })).not.toBeInTheDocument()
+  })
+
+  it('接続が切れているときは再接続を押せる', async () => {
+    // Arrange
+    接続が切れた状態にする()
+    const handlers = ハンドラを作る()
+    const onReconnect = vi.fn()
+    render(<StatusBar {...handlers} onReconnect={onReconnect} />)
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '再接続' }))
+
+    // Assert
+    expect(onReconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('接続が切れているときも切断で接続を選ぶ画面へ戻れる', async () => {
+    // Arrange: 繋ぎ直せない相手のときに袋小路へ入らないための 2 つめの道
+    接続が切れた状態にする()
+    const handlers = ハンドラを作る()
+    render(<StatusBar {...handlers} onReconnect={vi.fn()} />)
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '切断' }))
+
+    // Assert
+    expect(handlers.onDisconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('接続が切れているときはコミットとロールバックを出さない', () => {
+    // Arrange: 押しても届かず、未コミットの状態はもう残っていない（ADR 0026）
+    接続が切れた状態にする()
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} onReconnect={vi.fn()} onCommit={vi.fn()} />)
+
+    // Assert
+    expect(screen.queryByRole('button', { name: 'コミット' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'ロールバック' })).not.toBeInTheDocument()
+  })
+
+  it('接続が切れているときは未コミットの表示を出さない', () => {
+    // Arrange: 切れた時点でデータベース側はロールバック済みである
+    接続が切れた状態にする()
+    useExecutionStore.setState({ inTransaction: true })
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} onReconnect={vi.fn()} />)
+
+    // Assert
+    expect(screen.queryByText('未コミット')).not.toBeInTheDocument()
+  })
+
+  it('再接続の手続きを渡さないとボタンは出ない', () => {
+    // Arrange
+    接続が切れた状態にする()
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+
+    // Assert
+    expect(screen.queryByRole('button', { name: '再接続' })).not.toBeInTheDocument()
   })
 })

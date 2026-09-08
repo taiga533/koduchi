@@ -11,7 +11,20 @@ import type { CompletionSettings, ConnectionColor, ConnectionParams } from '../t
 import { defaultCompletionSettings, defaultConnectionColor, toErrorMessage } from '../types/db'
 
 /** 接続の段階。ステータスバーの表示に使う。 */
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'failed'
+export type ConnectionStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'failed'
+  /**
+   * サーバ側で接続が切れた（ADR 0026）。
+   *
+   * `connection` は残したままにする。繋ぎ直すのに接続先とユーザーが要るうえ、
+   * 「どこへ繋がっていたか」を見せ続けないと、切れたのがどの接続か分からなく
+   * なるためである。**自動では繋ぎ直さない。**繋ぎ直した接続は別のセッションで
+   * あり、未コミットの変更はサーバ側で既にロールバックされている。
+   */
+  | 'lost'
 
 /** 接続中のデータベースの情報。タイトルバーに出す。 */
 export interface ActiveConnection {
@@ -68,6 +81,26 @@ interface ConnectionState {
   connect: (name: string, params: ConnectionParams, profile?: ConnectionProfile) => Promise<void>
   /** 切断する。接続していなければ何もしない。 */
   disconnect: () => Promise<void>
+  /**
+   * サーバ側で接続が切れたことを記録する（ADR 0026）。
+   *
+   * 繋がっている最中にだけ効く。切断したあとに遅れて届いたエラーで、
+   * 接続を選ぶ画面を「切れました」に戻さないためである。
+   *
+   * **段階が実際に変わったかを返す。**印が立った後のプールは往復せずその場で
+   * 断を返すため、切れたあとに触るたびに同じ報せが届く。呼び出し側はこの
+   * 戻り値を見て、2 度目以降の報せを数えない。
+   *
+   * @returns この呼び出しで初めて切れた状態になったか
+   */
+  markLost: (message: string) => boolean
+  /**
+   * 同じ接続先へ繋ぎ直す（ADR 0026）。
+   *
+   * 接続の識別子は採番し直す。Rust 側のプールは切れた印を持ったままであり、
+   * 使い回すと繋ぎ直しても切れたままに見える。
+   */
+  reconnect: () => Promise<void>
 }
 
 /**
@@ -91,6 +124,18 @@ export function isManualCommit(connection: ActiveConnection | null): boolean {
   return connection !== null && !connection.params.readOnly && !connection.params.autoCommit
 }
 
+/**
+ * データベースへ往復できる状態かを返す（ADR 0026）。
+ *
+ * 切れている間はコミットもロールバックも届かない。押せば必ず失敗するボタンを
+ * 出さないための判定である。
+ *
+ * @param status 接続の段階
+ */
+export function canReachDatabase(status: ConnectionStatus): boolean {
+  return status === 'connected'
+}
+
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
   status: 'disconnected',
   connection: null,
@@ -105,7 +150,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     } = profile
     const previous = get().connection
     if (previous) {
-      await getDbApi().disconnect(previous.id)
+      try {
+        await getDbApi().disconnect(previous.id)
+      } catch {
+        // 既に切れている接続は閉じられなくてよい（ADR 0026）。繋ぎ直しを
+        // 後片付けの失敗で止めない。
+      }
     }
 
     const id = createConnectionId()
@@ -131,5 +181,39 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
     await getDbApi().disconnect(current.id)
     set({ status: 'disconnected', connection: null, error: null })
+  },
+
+  markLost: (message) => {
+    if (get().status !== 'connected') {
+      return false
+    }
+    set({ status: 'lost', error: message })
+    return true
+  },
+
+  reconnect: async () => {
+    const current = get().connection
+    if (!current) {
+      return
+    }
+
+    try {
+      await getDbApi().disconnect(current.id)
+    } catch {
+      // 切れた接続は閉じられなくてよい。繋ぎ直しを後片付けの失敗で止めない。
+    }
+
+    const id = createConnectionId()
+    set({ status: 'connecting', error: null })
+
+    try {
+      await getDbApi().connect(id, current.params)
+      set({ status: 'connected', connection: { ...current, id }, error: null })
+    } catch (error) {
+      // 繋ぎ直せなくても接続の情報は捨てない。`connect` と違って「切れている」へ
+      // 戻すのは、もう一度押せる状態を残すためである。データベースが起き上がる
+      // までの間、押すたびに接続を選び直させてはいけない。
+      set({ status: 'lost', connection: current, error: toErrorMessage(error) })
+    }
   },
 }))

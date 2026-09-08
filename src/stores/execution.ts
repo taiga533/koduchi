@@ -111,6 +111,40 @@ export type TransactionAction = 'commit' | 'rollback'
 /** 整形の報せをログに出すときの見出し（ADR 0024）。 */
 const FORMAT_LOG_LABEL = 'SQL の整形'
 
+/** 接続にまつわる報せをログに出すときの見出し（ADR 0026）。 */
+const CONNECTION_LOG_LABEL = '接続'
+
+/**
+ * 未コミットのまま接続が切れたことを告げる文言（ADR 0026）。
+ *
+ * Oracle はセッションが切れた時点で未コミットの変更をロールバックしている。
+ * 「未コミット」の表示だけを黙って消すと、利用者は自分の変更が残っていると
+ * 思ったまま繋ぎ直し、別のセッションでそれを探すことになる。
+ */
+const LOST_TRANSACTION_NOTICE =
+  '未コミットの変更はデータベース側でロールバックされました。繋ぎ直した接続は別のセッションです'
+
+/** 繋ぎ直せなかったことを告げる文言（ADR 0026）。 */
+const RECONNECT_FAILURE_NOTICE = '繋ぎ直せませんでした'
+
+/**
+ * 接続にまつわる報せをログの 1 行として組み立てる（ADR 0026）。
+ *
+ * @param error 出す文言
+ */
+function 接続のログ(error: string): LogEntry {
+  return {
+    id: crypto.randomUUID(),
+    startedAt: new Date(),
+    sql: CONNECTION_LOG_LABEL,
+    elapsedMs: null,
+    rowCount: null,
+    error,
+    notices: [],
+    statement: null,
+  }
+}
+
 /** トランザクションの操作をログに出す文言（ADR 0012）。 */
 const TRANSACTION_LABELS: Record<TransactionAction, string> = {
   commit: 'コミット',
@@ -200,8 +234,52 @@ interface ExecutionState {
    * みとする」）。エディタの中に別の出し方を作らない。
    */
   noteFormatFailure: (message: string) => void
+  /**
+   * サーバ側で接続が切れたことを記録する（ADR 0026）。
+   *
+   * 3 つを同時に行う。
+   *
+   * 1. **未コミットの表示を降ろす。** 切れた時点で Oracle はロールバック済みで
+   *    あり、「未コミット」を出し続けるのは嘘になる。
+   * 2. **降ろしたことをメッセージタブへ残す。** 黙って消すのが最も悪い。
+   * 3. **開いたままだった結果セットを破棄済みにする。** カーソルはサーバ側に
+   *    もう無い（ADR 0003 の「結果は破棄されました。再実行してください」）。
+   *    読み切ったタブの行はクライアント側にあるため、そのまま残す。
+   */
+  noteConnectionLost: (message: string) => void
+  /**
+   * 繋ぎ直せなかったことを記録する（ADR 0026）。
+   *
+   * 「再接続」を押した結果は、成功しても失敗しても分かる必要がある。失敗は
+   * 断そのものではないため `noteConnectionLost` とは別の入口にしてあり、
+   * 押すたびに 1 行が積まれる（押した回数だけ結果があるのが正しい）。
+   */
+  noteReconnectFailure: (message: string) => void
   /** すべての結果とログを捨てる。接続を切り替えたときに使う。 */
   clear: () => void
+}
+
+/**
+ * 接続が切れたときに、破棄済みへ落とすタブを決める（ADR 0026）。
+ *
+ * **カーソルを開いたままだったタブだけ**が対象である。読み切ったタブ
+ * （`exhausted`）の行はすべてクライアント側にあり、接続が切れても正しいままで
+ * ある。それを「破棄されました」に変えるのは、手元にある正しい結果を捨てる
+ * ことになる。
+ *
+ * @param byTab 現在のタブごとの実行状態
+ */
+export function discardOpenCursors(
+  byTab: Record<string, TabExecution>,
+): Record<string, TabExecution> {
+  const next: Record<string, TabExecution> = {}
+
+  for (const [tabId, execution] of Object.entries(byTab)) {
+    const 開いたまま = execution.status === 'succeeded' && !execution.exhausted
+    next[tabId] = 開いたまま ? { ...execution, status: 'discarded' } : execution
+  }
+
+  return next
 }
 
 /**
@@ -577,6 +655,25 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       // スクリプト実行の途中なら、残りの文を投げないための目印にもなる。
       cancelRequests.add(tabId)
       await getDbApi().cancel(connectionId, tabId)
+    },
+
+    noteConnectionLost: (message) => {
+      set((state) => {
+        const 未コミットだった = state.inTransaction
+        const error = 未コミットだった ? `${message}。${LOST_TRANSACTION_NOTICE}` : message
+
+        return {
+          inTransaction: false,
+          byTab: discardOpenCursors(state.byTab),
+          log: [...state.log, 接続のログ(error)],
+        }
+      })
+    },
+
+    noteReconnectFailure: (message) => {
+      set((state) => ({
+        log: [...state.log, 接続のログ(`${RECONNECT_FAILURE_NOTICE}: ${message}`)],
+      }))
     },
 
     noteFormatFailure: (message) => {

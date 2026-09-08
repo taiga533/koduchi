@@ -65,7 +65,7 @@ impl Canceller for OracleCanceller {
     fn cancel(&self) -> DbResult<()> {
         self.connection
             .break_execution()
-            .map_err(|error| DbError::execute(error.to_string()))
+            .map_err(|error| errors::map_execute_error("", &error))
     }
 }
 
@@ -160,7 +160,7 @@ impl OracleDriver {
     /// 読み取り専用へ戻す前にこれを呼ぶ必要がある。
     fn rollback_transaction(&self) -> DbResult<()> {
         self.connection.rollback().map_err(|error| {
-            DbError::execute(format!("トランザクションを戻せませんでした: {error}"))
+            errors::map_execute_error("トランザクションを戻せませんでした", &error)
         })
     }
 
@@ -265,7 +265,7 @@ fn take_chunk(cursor: &mut OpenCursor, chunk_size: usize) -> DbResult<Chunk> {
                     .collect::<DbResult<Vec<_>>>()?;
                 rows.push(cells);
             }
-            Some(Err(error)) => return Err(DbError::execute(error.to_string())),
+            Some(Err(error)) => return Err(errors::map_execute_error("", &error)),
             None => {
                 cursor.exhausted = true;
                 break;
@@ -301,14 +301,14 @@ impl Driver for OracleDriver {
             .connection
             .statement(sql)
             .build()
-            .map_err(|error| DbError::execute(error.to_string()))?;
+            .map_err(|error| errors::map_execute_error("", &error))?;
 
         let bound = bind::bound_values(&statement, binds)?;
 
         if statement.is_query() {
             let result_set = statement
                 .into_result_set_named::<Row>(&bind::params(&bound))
-                .map_err(|error| DbError::execute(error.to_string()))?;
+                .map_err(|error| errors::map_execute_error("", &error))?;
 
             let columns: Vec<Column> = result_set
                 .column_info()
@@ -345,7 +345,7 @@ impl Driver for OracleDriver {
 
         statement
             .execute_named(&bind::params(&bound))
-            .map_err(|error| DbError::execute(error.to_string()))?;
+            .map_err(|error| errors::map_execute_error("", &error))?;
 
         let affected_rows = statement.row_count().unwrap_or(0);
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -392,7 +392,7 @@ impl Driver for OracleDriver {
     fn commit(&mut self) -> DbResult<()> {
         self.connection
             .commit()
-            .map_err(|error| DbError::execute(format!("コミットできませんでした: {error}")))?;
+            .map_err(|error| errors::map_execute_error("コミットできませんでした", &error))?;
 
         // 読み取り専用の保証はトランザクションが続く間だけ効く（ADR 0004）。
         // コミットで切れてしまうため、その場で張り直す。
