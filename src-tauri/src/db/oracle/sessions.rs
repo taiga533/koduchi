@@ -191,7 +191,9 @@ pub fn kill_statement(sid: u32, serial: u32) -> String {
 ///
 /// 判定のために一覧を読み直す。UI が持っている一覧は古くなりうるうえ、
 /// `SID` は使い回されるためである。破壊的な操作は 1 度きりであり、
-/// `V$SESSION` を 1 回読む代償は釣り合う。
+/// `V$SESSION` を 1 回読む代償は釣り合う。読み直した `SERIAL#` は
+/// `check_kill_allowed` が呼び出し側の指定と突き合わせる。古い `SERIAL#` の
+/// まま撃たせない。
 ///
 /// # 引数
 ///
@@ -208,11 +210,11 @@ pub fn kill_session(
     // 読み取り専用は一覧を読むまでもなく弾く。空の一覧を渡しても順序は同じだが、
     // 無駄な往復をしないよう先に確かめる。
     if read_only {
-        return check_kill_allowed(&SessionOverview::new(0, 0, Vec::new()), sid, true);
+        return check_kill_allowed(&SessionOverview::new(0, 0, Vec::new()), sid, serial, true);
     }
 
     let overview = load_sessions(connection)?;
-    check_kill_allowed(&overview, sid, read_only)?;
+    check_kill_allowed(&overview, sid, serial, read_only)?;
 
     connection
         .execute(&kill_statement(sid, serial), &[])

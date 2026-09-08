@@ -282,10 +282,16 @@ fn 節点を組む(
 /// 小槌自身の接続も弾く。自分自身に限らず、同じプールの残りの接続と別の
 /// ウィンドウの接続を落としても、以後の実行が `ORA-00028` で失敗する。
 ///
+/// `SERIAL#` も突き合わせる。`SID` は使い回されるため、一覧を見てから押すまでの
+/// 間にそのセッションが終わり、別のセッションが同じ `SID` を持つことがある。
+/// 画面が持っている `SERIAL#` は古くなりうるが、直前に読み直した一覧には正しい
+/// 値がある。食い違ったら、落とすべきでない相手を指していると見なして弾く。
+///
 /// # 引数
 ///
 /// * `overview` - 直前に読んだセッションの一覧
 /// * `target_sid` - 落とそうとしているセッション
+/// * `target_serial` - 落とそうとしているセッションの `SERIAL#`
 /// * `read_only` - 読み取り専用で繋いだ接続か
 ///
 /// # 戻り値
@@ -294,6 +300,7 @@ fn 節点を組む(
 pub fn check_kill_allowed(
     overview: &SessionOverview,
     target_sid: u32,
+    target_serial: u32,
     read_only: bool,
 ) -> DbResult<()> {
     if read_only {
@@ -317,6 +324,14 @@ pub fn check_kill_allowed(
     if target.own {
         return Err(DbError::execute(format!(
             "SID {target_sid} は小槌自身が張っている接続です。終了できません"
+        )));
+    }
+
+    if target.serial != target_serial {
+        return Err(DbError::execute(format!(
+            "SID {target_sid} の SERIAL# が一覧と違います（今は {}、指定は {target_serial}）。\
+             一覧が古くなっています。更新してからやり直してください",
+            target.serial
         )));
     }
 
@@ -573,7 +588,7 @@ mod tests {
         );
 
         // Act
-        let result = check_kill_allowed(&overview, 20, false);
+        let result = check_kill_allowed(&overview, 20, 200, false);
 
         // Assert
         assert!(result.is_ok());
@@ -585,7 +600,7 @@ mod tests {
         let overview = SessionOverview::new(1, 10, vec![同じプロセスのセッション(10, "4242")]);
 
         // Act
-        let error = check_kill_allowed(&overview, 10, false).unwrap_err();
+        let error = check_kill_allowed(&overview, 10, 100, false).unwrap_err();
 
         // Assert
         assert_eq!(error.kind, DbErrorKind::Execute);
@@ -605,7 +620,7 @@ mod tests {
         );
 
         // Act
-        let error = check_kill_allowed(&overview, 20, false).unwrap_err();
+        let error = check_kill_allowed(&overview, 20, 200, false).unwrap_err();
 
         // Assert
         assert!(error.message.contains("小槌自身"));
@@ -624,7 +639,7 @@ mod tests {
         );
 
         // Act
-        let error = check_kill_allowed(&overview, 20, true).unwrap_err();
+        let error = check_kill_allowed(&overview, 20, 200, true).unwrap_err();
 
         // Assert
         assert_eq!(error.kind, DbErrorKind::Permission);
@@ -637,7 +652,7 @@ mod tests {
         let overview = SessionOverview::new(1, 10, vec![同じプロセスのセッション(10, "4242")]);
 
         // Act
-        let error = check_kill_allowed(&overview, 999, true).unwrap_err();
+        let error = check_kill_allowed(&overview, 999, 9990, true).unwrap_err();
 
         // Assert
         assert_eq!(error.kind, DbErrorKind::Permission);
@@ -649,10 +664,52 @@ mod tests {
         let overview = SessionOverview::new(1, 10, vec![同じプロセスのセッション(10, "4242")]);
 
         // Act
-        let error = check_kill_allowed(&overview, 999, false).unwrap_err();
+        let error = check_kill_allowed(&overview, 999, 9990, false).unwrap_err();
 
         // Assert
         assert!(error.message.contains("見つかりません"));
+    }
+
+    #[test]
+    fn serialが食い違うセッションはkillできない() {
+        // Arrange: 一覧を見てから押すまでに、同じ SID で別のセッションが張られた
+        let overview = SessionOverview::new(
+            1,
+            10,
+            vec![
+                同じプロセスのセッション(10, "4242"),
+                同じプロセスのセッション(20, "9999"),
+            ],
+        );
+
+        // Act: 画面が持っている SERIAL# は古い
+        let error = check_kill_allowed(&overview, 20, 199, false).unwrap_err();
+
+        // Assert
+        assert!(
+            error.message.contains("更新してからやり直してください"),
+            "想定と違うエラー: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn serialが一致すればkillできる() {
+        // Arrange
+        let overview = SessionOverview::new(
+            1,
+            10,
+            vec![
+                同じプロセスのセッション(10, "4242"),
+                同じプロセスのセッション(20, "9999"),
+            ],
+        );
+
+        // Act: `セッション` が組む SERIAL# は SID の 10 倍である
+        let result = check_kill_allowed(&overview, 20, 200, false);
+
+        // Assert
+        assert!(result.is_ok());
     }
 
     #[test]
