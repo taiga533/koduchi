@@ -10,10 +10,20 @@
  * 2. 閉じるボタンの `×` は lucide のアイコンへ挿げ替える（CLAUDE.md「アイコン」）。
  *    パネルは CodeMirror が素の DOM で組むため、そこへ小さな React の根を 1 つ
  *    生やして描く。
- * 3. 日本語入力（IME）の変換中は検索語を確定させない。素の検索欄は `keyup` の
- *    たびに問い合わせを作り直すので、そのままでは変換中の未確定な文字列でも
- *    検索が走り、候補を選んでいる間ずっと強調が飛び回る。変換中の `keyup` は
- *    パネルの手前で止め、確定した打鍵だけを通す。
+ * 3. 日本語入力（IME）の変換中の打鍵をパネルへ渡さない（ADR 0025）。止める
+ *    理由は 2 つある。
+ *
+ *    - `keyup`: 素の検索欄は `keyup` のたびに問い合わせを作り直すので、その
+ *      ままでは変換中の未確定な文字列でも検索が走り、候補を選んでいる間ずっと
+ *      強調が飛び回る。
+ *    - `keydown`: パネルは `esc` を自前の `keydown` で受けて閉じる。変換を
+ *      取り消すつもりの `esc` で**打ちかけの検索語ごとパネルが消える**。
+ *
+ *    **本文（`contentDOM`）側にこの手当ては要らない。**`@codemirror/view` の
+ *    `ignoreDuringComposition` が変換中の打鍵を既に捨てており、WebKit で
+ *    `compositionend` の後に `⏎` が届く癖まで面倒を見ている。それが効くのは
+ *    エディタ本文に属する打鍵だけで、**パネルは対象外**である。だからここだけ
+ *    塞ぐ。
  *
  * 見た目そのもの（背景・枠線・入力欄・ボタン）は `theme.ts` の
  * `koduchiEditorTheme` がトークン経由で与える。ここでは色を持たない。
@@ -35,6 +45,7 @@ import {
   searchKeymap,
 } from '@codemirror/search'
 import { X } from 'lucide-react'
+import { isComposingKey } from '../../input/ime'
 
 /**
  * 検索パネルの文言。
@@ -94,23 +105,37 @@ export const koduchiSearchKeymap: readonly KeyBinding[] = [
 ]
 
 /**
- * 変換中の `keyup` を入力欄へ届く前に止める。
+ * 変換中の打鍵を入力欄とパネルへ届く前に止める（ADR 0025）。
  *
- * `@codemirror/search` は入力欄の `keyup` ごとに検索の問い合わせを作り直す。
- * その処理は入力欄そのものに載っているので、1 つ上のパネルで捕捉相をつかまえ、
- * `isComposing` が立っている打鍵だけ伝播を止める。変換が確定した後の打鍵と
- * `change` はそのまま通るため、確定した語で検索が走る。
+ * `@codemirror/search` は入力欄の `keyup` ごとに検索の問い合わせを作り直し、
+ * `esc` はパネルの `keydown` で受けて閉じる。どちらの処理もパネルとその中の
+ * 入力欄に載っているので、1 つ上のパネルで捕捉相をつかまえて伝播を止める。
+ *
+ * **`preventDefault()` は使わない。**変換の確定そのものへ影響しかねないうえ、
+ * ここで要るのは「パネルに横取りさせない」ことだけである。文字が入る既定の
+ * 動作はそのまま残る。変換が確定した後の打鍵と `change` は通るため、確定した
+ * 語で検索が走り、`esc` でパネルが閉じる。
  *
  * 後片付けのための関数を返す。
  */
 function 変換中の打鍵を止める(パネル: HTMLElement): () => void {
   パネル.addEventListener('keyup', 変換中なら止める, true)
-  return () => パネル.removeEventListener('keyup', 変換中なら止める, true)
+  パネル.addEventListener('keydown', 変換中なら止める, true)
+  return () => {
+    パネル.removeEventListener('keyup', 変換中なら止める, true)
+    パネル.removeEventListener('keydown', 変換中なら止める, true)
+  }
 }
 
-/** 変換中の打鍵だけ伝播を止める。上の説明を参照。 */
+/**
+ * 変換中の打鍵だけ伝播を止める。上の説明を参照。
+ *
+ * 判定は `isComposingKey` に任せる。変換の**途中**は `isComposing` が真で
+ * 届くが、変換を**確定する** `⏎` は `isComposing` が偽・`keyCode` が 229 で
+ * 届くためである（ADR 0025 の「1-2」）。
+ */
 function 変換中なら止める(event: Event): void {
-  if (event instanceof KeyboardEvent && event.isComposing) {
+  if (event instanceof KeyboardEvent && isComposingKey(event)) {
     event.stopPropagation()
   }
 }
