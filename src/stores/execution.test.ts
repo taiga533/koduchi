@@ -636,6 +636,56 @@ describe('selectResultTabs', () => {
   })
 })
 
+describe('noteFormatFailure（ADR 0024）', () => {
+  it('整形できなかった理由をログへ 1 件残す', () => {
+    // Arrange
+    const 理由 = '整形の結果が元の SQL と食い違ったため、取りやめました。'
+
+    // Act
+    useExecutionStore.getState().noteFormatFailure(理由)
+
+    // Assert
+    const log = useExecutionStore.getState().log
+    expect(log).toHaveLength(1)
+    expect(log[0].error).toBe(理由)
+  })
+
+  it('整形の記録であることが分かる見出しを付ける', () => {
+    // Arrange
+    // 実行していないため、ログの見出しは SQL ではない。
+
+    // Act
+    useExecutionStore.getState().noteFormatFailure('整形できませんでした。')
+
+    // Assert
+    expect(useExecutionStore.getState().log[0].sql).toBe('SQL の整形')
+  })
+
+  it('実行していないため所要時間も行数も持たない', () => {
+    // Arrange
+    // 整形はデータベースへ行かない操作である。
+
+    // Act
+    useExecutionStore.getState().noteFormatFailure('整形できませんでした。')
+
+    // Assert
+    const entry = useExecutionStore.getState().log[0]
+    expect(entry.elapsedMs).toBeNull()
+    expect(entry.rowCount).toBeNull()
+  })
+
+  it('通知が無くてもメッセージタブが出る', () => {
+    // Arrange
+    useExecutionStore.getState().noteFormatFailure('整形できませんでした。')
+
+    // Act
+    const tabs = selectResultTabs(useExecutionStore.getState(), TAB)
+
+    // Assert
+    expect(tabs).toEqual(['result', 'messages'])
+  })
+})
+
 describe('履歴への記録', () => {
   it('成功した実行は行数と所要時間つきで記録される', async () => {
     // Arrange

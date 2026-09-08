@@ -14,6 +14,7 @@ function 描く() {
       onRunSelection={() => {}}
       onRunScript={() => {}}
       onCancel={() => {}}
+      onFormatFailed={() => {}}
     />,
   )
 }

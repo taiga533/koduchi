@@ -108,6 +108,9 @@ export interface LogEntry {
 /** トランザクションの操作。ログの見出しに使う。 */
 export type TransactionAction = 'commit' | 'rollback'
 
+/** 整形の報せをログに出すときの見出し（ADR 0024）。 */
+const FORMAT_LOG_LABEL = 'SQL の整形'
+
 /** トランザクションの操作をログに出す文言（ADR 0012）。 */
 const TRANSACTION_LABELS: Record<TransactionAction, string> = {
   commit: 'コミット',
@@ -189,6 +192,14 @@ interface ExecutionState {
    * 書き出しの後に「まだ続きがある」と表示し続けないための後始末である。
    */
   markExhausted: (tabId: string) => void
+  /**
+   * 整形できなかったことをメッセージタブへ残す（ADR 0024）。
+   *
+   * 整形は接続を要らない操作だが、報せの行き先はここ 1 つにしてある
+   * （ADR README「機能スコープ」の「エラー表示はメッセージタブのテキストの
+   * みとする」）。エディタの中に別の出し方を作らない。
+   */
+  noteFormatFailure: (message: string) => void
   /** すべての結果とログを捨てる。接続を切り替えたときに使う。 */
   clear: () => void
 }
@@ -568,6 +579,24 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       await getDbApi().cancel(connectionId, tabId)
     },
 
+    noteFormatFailure: (message) => {
+      set((state) => ({
+        log: [
+          ...state.log,
+          {
+            id: crypto.randomUUID(),
+            startedAt: new Date(),
+            sql: FORMAT_LOG_LABEL,
+            elapsedMs: null,
+            rowCount: null,
+            error: message,
+            notices: [],
+            statement: null,
+          },
+        ],
+      }))
+    },
+
     commit: async (connectionId) => {
       await 終わらせる(set, connectionId, 'commit')
     },
@@ -732,8 +761,11 @@ export function selectResultTabs(
   tabId: string | null,
 ): ('result' | 'messages' | 'plan')[] {
   const execution = selectExecution(state, tabId)
+  // 通知が無くてもエラーだけの記録は出す。整形の失敗（ADR 0024）と
+  // コミットの失敗（ADR 0012）は通知を伴わないため、これが無いと出る先を失う。
   const hasMessages =
-    execution.error !== null || state.log.some((entry) => entry.notices.length > 0)
+    execution.error !== null ||
+    state.log.some((entry) => entry.notices.length > 0 || entry.error !== null)
 
   const tabs: ('result' | 'messages' | 'plan')[] = ['result']
   if (hasMessages) {

@@ -10,7 +10,21 @@
  *
  * 同じ走査は `collectBindVariables` でも使い回す。バインド変数の `:` もまた、
  * 文字列リテラルやコメントの中では拾ってはならないためである。
+ *
+ * リテラルとコメントの読み飛ばしそのものは `scan.ts` が持つ。整形の見張り
+ * （`tokens.ts`、ADR 0024）も同じ判定を通す。`q'[...]'` の見立てが 2 通りに
+ * 割れると、実行する文と整形が守る範囲がずれる。
  */
+
+import {
+  IDENTIFIER_CHARACTER,
+  isQuotedLiteralStart,
+  readWord as readRawWord,
+  skipBlockComment,
+  skipLineComment,
+  skipQuoted,
+  skipQuotedLiteral,
+} from './scan'
 
 /** 切り出された 1 文。 */
 export interface SqlStatement {
@@ -34,18 +48,11 @@ const ANONYMOUS_BLOCK_STARTERS = new Set(['DECLARE', 'BEGIN'])
 /** `CREATE [OR REPLACE]` に続くと PL/SQL 単位になる語。 */
 const PLSQL_OBJECT_KEYWORDS = new Set(['FUNCTION', 'PROCEDURE', 'PACKAGE', 'TRIGGER', 'TYPE'])
 
-/** `q'[...]'` の開き括弧と閉じ括弧の対応。 */
-const QUOTE_DELIMITER_PAIRS: Record<string, string> = {
-  '[': ']',
-  '(': ')',
-  '{': '}',
-  '<': '>',
-}
-
 /**
- * 位置 `index` から始まる語を読み取る。
+ * 位置 `index` から始まる語を読み取り、大文字へ揃える。
  *
- * 識別子として使える文字（英数字・`_`・`$`・`#`）が続く限りを 1 語とする。
+ * 綴りをそのまま返す `scan.ts` の `readWord` を包んだもの。ここでの語はキー
+ * ワードの照合に使うだけであり、`BEGIN` と `begin` を分けても意味が無い。
  *
  * @param sql 対象の文字列
  * @param index 読み始める位置
@@ -53,76 +60,8 @@ const QUOTE_DELIMITER_PAIRS: Record<string, string> = {
  * @returns 大文字に揃えた語と、その次の位置
  */
 function readWord(sql: string, index: number): { word: string; next: number } {
-  let end = index
-  while (end < sql.length && /[A-Za-z0-9_$#]/.test(sql[end])) {
-    end += 1
-  }
-  return { word: sql.slice(index, end).toUpperCase(), next: end }
-}
-
-/**
- * 位置 `index` が Oracle の引用符リテラル `q'...'` の始まりかを判定する。
- *
- * `q` または `Q` の直後に `'` が続き、さらにその次が区切り文字である形をとる。
- * 直前が識別子の一部である場合（`abcq'` など）は始まりではない。
- *
- * @param sql 対象の文字列
- * @param index 判定する位置
- */
-function isQuotedLiteralStart(sql: string, index: number): boolean {
-  if (sql[index] !== 'q' && sql[index] !== 'Q') {
-    return false
-  }
-  if (sql[index + 1] !== "'") {
-    return false
-  }
-  if (index > 0 && /[A-Za-z0-9_$#]/.test(sql[index - 1])) {
-    return false
-  }
-  return index + 2 < sql.length
-}
-
-/**
- * Oracle の引用符リテラル `q'[...]'` の終わりを探す。
- *
- * @param sql 対象の文字列
- * @param index `q` の位置
- *
- * @returns リテラルの次の位置
- */
-function skipQuotedLiteral(sql: string, index: number): number {
-  const opener = sql[index + 2]
-  const closer = QUOTE_DELIMITER_PAIRS[opener] ?? opener
-  const terminator = `${closer}'`
-
-  const end = sql.indexOf(terminator, index + 3)
-  return end === -1 ? sql.length : end + terminator.length
-}
-
-/**
- * 単純な引用符で囲まれた範囲の終わりを探す。
- *
- * `''` は文字列中の引用符 1 つを表すため、終わりとは見なさない。
- *
- * @param sql 対象の文字列
- * @param index 開き引用符の位置
- * @param quote 引用符の文字（`'` または `"`）
- *
- * @returns 閉じ引用符の次の位置
- */
-function skipQuoted(sql: string, index: number, quote: string): number {
-  let cursor = index + 1
-  while (cursor < sql.length) {
-    if (sql[cursor] === quote) {
-      if (sql[cursor + 1] === quote) {
-        cursor += 2
-        continue
-      }
-      return cursor + 1
-    }
-    cursor += 1
-  }
-  return sql.length
+  const { text, next } = readRawWord(sql, index)
+  return { word: text.toUpperCase(), next }
 }
 
 /** 走査中に持ち回る、PL/SQL ブロックの状態。 */
@@ -271,14 +210,12 @@ export function splitStatements(sql: string): SqlStatement[] {
     const character = sql[cursor]
 
     if (character === '-' && sql[cursor + 1] === '-') {
-      const lineEnd = sql.indexOf('\n', cursor)
-      cursor = lineEnd === -1 ? sql.length : lineEnd + 1
+      cursor = skipLineComment(sql, cursor)
       continue
     }
 
     if (character === '/' && sql[cursor + 1] === '*') {
-      const blockEnd = sql.indexOf('*/', cursor + 2)
-      cursor = blockEnd === -1 ? sql.length : blockEnd + 2
+      cursor = skipBlockComment(sql, cursor)
       continue
     }
 
@@ -377,13 +314,11 @@ function skipLeadingTrivia(sql: string): string {
       continue
     }
     if (rest.startsWith('--')) {
-      const lineEnd = sql.indexOf('\n', index)
-      index = lineEnd === -1 ? sql.length : lineEnd + 1
+      index = skipLineComment(sql, index)
       continue
     }
     if (rest.startsWith('/*')) {
-      const commentEnd = sql.indexOf('*/', index + 2)
-      index = commentEnd === -1 ? sql.length : commentEnd + 2
+      index = skipBlockComment(sql, index)
       continue
     }
     break
@@ -408,9 +343,6 @@ export function isSelectStatement(sql: string): boolean {
   return /^(select|with)\b/i.test(head)
 }
 
-/** バインド変数の名前に使える文字。 */
-const BIND_NAME_CHARACTER = /[A-Za-z0-9_$#]/
-
 /**
  * 位置 `index` から始まるバインド変数の名前を読み取る。
  *
@@ -424,7 +356,7 @@ const BIND_NAME_CHARACTER = /[A-Za-z0-9_$#]/
  */
 function readBindName(sql: string, index: number): { name: string | null; next: number } {
   let end = index
-  while (end < sql.length && BIND_NAME_CHARACTER.test(sql[end])) {
+  while (end < sql.length && IDENTIFIER_CHARACTER.test(sql[end])) {
     end += 1
   }
   return end === index ? { name: null, next: index } : { name: sql.slice(index, end), next: end }
@@ -486,14 +418,12 @@ export function collectBindOccurrences(sql: string): BindOccurrence[] {
     const character = sql[cursor]
 
     if (character === '-' && sql[cursor + 1] === '-') {
-      const lineEnd = sql.indexOf('\n', cursor)
-      cursor = lineEnd === -1 ? sql.length : lineEnd + 1
+      cursor = skipLineComment(sql, cursor)
       continue
     }
 
     if (character === '/' && sql[cursor + 1] === '*') {
-      const blockEnd = sql.indexOf('*/', cursor + 2)
-      cursor = blockEnd === -1 ? sql.length : blockEnd + 2
+      cursor = skipBlockComment(sql, cursor)
       continue
     }
 
