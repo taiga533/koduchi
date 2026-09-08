@@ -124,12 +124,41 @@ function buildColumnKinds(columns: Record<string, TableColumn[]>): Map<string, B
   return kinds
 }
 
+/** 直前に型表を作った元の列。参照でしか比べない。 */
+let lastColumns: Record<string, TableColumn[]> | null = null
+
+/** 直前に作った型表。 */
+let lastColumnKinds: Map<string, BindKind | null> | null = null
+
+/**
+ * 列名で引ける型の表を返す。直前と同じ列であれば作り直さない。
+ *
+ * 列は段階 2 を読み終えた中規模のデータベースで数万件になる一方（ADR 0007）、
+ * 実行の合間にはまず変わらない。
+ * `schema` ストアは列を差し替えるたびに新しい入れ物を作るため、参照が同じで
+ * あれば中身も同じと見てよい。
+ *
+ * @param columns スキーマ名ごとの列情報
+ */
+function columnKindsOf(columns: Record<string, TableColumn[]>): Map<string, BindKind | null> {
+  if (lastColumns === columns && lastColumnKinds !== null) {
+    return lastColumnKinds
+  }
+
+  const kinds = buildColumnKinds(columns)
+  lastColumns = columns
+  lastColumnKinds = kinds
+  return kinds
+}
+
 /**
  * 変数ごとの既定の型を、比べている列の型から決める（ADR 0016）。
  *
  * 同じ変数が複数の場所で別々の型の列と比べられていたら、その変数は推し量らない。
  * 列がまだ読み込まれていなければ（ADR 0007 の段階 2 の途中）何も返らず、
  * 呼び出し側の既定に落ちる。
+ *
+ * 列から作る型表は `columnKindsOf` が覚えており、実行のたびには組み直さない。
  *
  * @param occurrences バインド変数が出てきた場所
  * @param columns スキーマ名ごとの列情報
@@ -140,7 +169,7 @@ export function inferBindKinds(
   occurrences: BindOccurrence[],
   columns: Record<string, TableColumn[]>,
 ): Record<string, BindKind> {
-  const columnKinds = buildColumnKinds(columns)
+  const columnKinds = columnKindsOf(columns)
   const found = new Map<string, BindKind | null>()
 
   for (const { name, column } of occurrences) {

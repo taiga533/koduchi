@@ -199,6 +199,28 @@ describe('inferBindKinds', () => {
     expect(kinds).toEqual({})
   })
 
+  it('同じ列の表を渡したときは型表を組み直さない', () => {
+    // Arrange: 列は数万件になりうるため、参照が同じであれば作り直さない
+    let 読んだ回数 = 0
+    const 覚える列 = {} as Record<string, TableColumn[]>
+    Object.defineProperty(覚える列, 'KODUCHI', {
+      enumerable: true,
+      get: () => {
+        読んだ回数 += 1
+        return [列('USERS', 'USER_ID', 'NUMBER(12)')]
+      },
+    })
+    const occurrences = collectBindOccurrences('select * from users where user_id = :id')
+
+    // Act
+    const 一度目 = inferBindKinds(occurrences, 覚える列)
+    const 二度目 = inferBindKinds(occurrences, 覚える列)
+
+    // Assert
+    expect(読んだ回数).toBe(1)
+    expect(二度目).toEqual(一度目)
+  })
+
   it('列がまだ読み込まれていなければ推し量らない', () => {
     // Arrange
     const occurrences = collectBindOccurrences('select * from users where user_id = :id')
