@@ -343,3 +343,20 @@ describe('CommandPalette の IME 対応（ADR 0025）', () => {
     expect(先頭).toHaveAttribute('aria-selected', 'false')
   })
 })
+
+describe('CommandPalette の本物の IME 対応（ADR 0025 の測り直し）', () => {
+  it('変換確定の ⏎（keyCode 229・isComposing 偽）では候補を決定しない', async () => {
+    // Arrange
+    const 走った: string[] = []
+    let 閉じた = false
+    パレットを描く({ commands: コマンド(走った), onClose: () => (閉じた = true) })
+    const 入力 = await screen.findByRole('textbox', { name: /検索/ })
+
+    // Act
+    fireEvent.keyDown(入力, { key: 'Enter', keyCode: 229, isComposing: false })
+
+    // Assert
+    expect(走った).toEqual([])
+    expect(閉じた).toBe(false)
+  })
+})

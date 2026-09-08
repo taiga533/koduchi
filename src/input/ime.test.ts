@@ -95,3 +95,65 @@ describe('blockComposingSubmit', () => {
     expect(preventDefault).not.toHaveBeenCalled()
   })
 })
+
+describe('本物の IME で変換を確定した ⏎（keyCode 229）', () => {
+  it('isComposing が偽でも keyCode が 229 なら変換中と見なす', () => {
+    // Arrange: 実機の Kotoeri で観測した組み合わせ（ADR 0025 の測り直し）
+    const event = { key: 'Enter', nativeEvent: { isComposing: false, keyCode: 229 } }
+
+    // Act
+    const 結果 = isComposingKey(event)
+
+    // Assert
+    expect(結果).toBe(true)
+  })
+
+  it('window の listener が受ける DOM の event でも keyCode 229 を見る', () => {
+    // Arrange
+    const event = { key: 'Enter', isComposing: false, keyCode: 229 }
+
+    // Act
+    const 結果 = isComposingKey(event)
+
+    // Assert
+    expect(結果).toBe(true)
+  })
+
+  it('変換の途中の打鍵は今までどおり isComposing で見分ける', () => {
+    // Arrange: 候補を選んでいる間は isComposing が真で本来の keyCode が来る
+    const event = { key: 'ArrowDown', nativeEvent: { isComposing: true, keyCode: 40 } }
+
+    // Act
+    const 結果 = isComposingKey(event)
+
+    // Assert
+    expect(結果).toBe(true)
+  })
+
+  it('変換していないときの ⏎ は keyCode が 13 で、変換中と見なさない', () => {
+    // Arrange
+    const event = { key: 'Enter', nativeEvent: { isComposing: false, keyCode: 13 } }
+
+    // Act
+    const 結果 = isComposingKey(event)
+
+    // Assert
+    expect(結果).toBe(false)
+  })
+
+  it('変換確定の ⏎ では <form> の暗黙の送信を止める', () => {
+    // Arrange
+    let 止めた = false
+    const event = {
+      key: 'Enter',
+      nativeEvent: { isComposing: false, keyCode: 229 },
+      preventDefault: () => (止めた = true),
+    }
+
+    // Act
+    blockComposingSubmit(event)
+
+    // Assert
+    expect(止めた).toBe(true)
+  })
+})
