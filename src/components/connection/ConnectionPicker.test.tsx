@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
 import type { SavedConnection } from '../../types/db'
+import { defaultSchemaFilter } from '../../types/db'
 import { useConnectionStore } from '../../stores/connection'
 import { ConnectionPicker } from './ConnectionPicker'
 
@@ -13,7 +14,7 @@ const 開発: SavedConnection = {
   username: 'koduchi',
   readOnly: false,
   autoCommit: false,
-  schemaFilter: { excludeSystem: true, hideEmpty: true },
+  schemaFilter: defaultSchemaFilter,
   completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }
@@ -24,7 +25,7 @@ const 本番: SavedConnection = {
   username: 'app',
   readOnly: true,
   autoCommit: false,
-  schemaFilter: { excludeSystem: false, hideEmpty: true },
+  schemaFilter: { ...defaultSchemaFilter, excludeSystem: false },
   completion: { identifierCase: 'preserve' },
   target: { method: 'tns', directory: '/etc/oracle', alias: 'PROD' },
 }

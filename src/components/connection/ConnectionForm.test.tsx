@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
 import type { SavedConnection } from '../../types/db'
+import { defaultSchemaFilter } from '../../types/db'
 import { useConnectionStore } from '../../stores/connection'
 import { ConnectionForm, type ConnectionFormProps } from './ConnectionForm'
 
@@ -13,7 +14,7 @@ const 保存済み: SavedConnection = {
   username: 'koduchi',
   readOnly: false,
   autoCommit: false,
-  schemaFilter: { excludeSystem: true, hideEmpty: true },
+  schemaFilter: defaultSchemaFilter,
   completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }

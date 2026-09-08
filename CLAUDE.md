@@ -52,7 +52,7 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 | ---------------------------- | -------------------------------------------------------------------- |
 | `src-tauri/src/commands/`    | Tauri コマンド。薄い層に留め、待ちは `run_blocking` へ逃がす         |
 | `src-tauri/src/db/`          | `Driver` trait とアクター・接続プール・Oracle 実装（ADR 0002・0003） |
-| `src-tauri/src/db/schema.rs` | スキーマツリーの型とフィルタ（ADR 0007）                             |
+| `src-tauri/src/db/schema.rs` | スキーマツリーの型とフィルタ（ADR 0007・0014）                       |
 | `src-tauri/src/tnsnames/`    | tnsnames.ora の自前パーサ（ADR 0006）                                |
 | `src-tauri/src/config/`      | `connections.toml` の読み書き（ADR 0004）                            |
 | `src-tauri/src/keychain/`    | `keyring` の包み。パスワードだけを置く（ADR 0004）                   |
@@ -72,6 +72,8 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 **アイコン**: `lucide-react` を使う。`✕` / `＋` / `⌕` のような文字の記号を直接置かない（字形が環境任せになり、字送りの都合で小さく潰れる）。大きさは `size` で 12〜15px の範囲に収め、色は `className` の `text-fg5` などトークン側で決める。
 
 **補完**（ADR 0013）: 識別子の候補は `src/components/editor/sqlCompletion.ts` の自前の補完ソースが出す。`@codemirror/lang-sql` の `schemaCompletionSource` は**使わない**（階層の解決が大文字小文字を区別し、候補を必ず引用符付きで挿入するため）。名前は `catalog.ts` が大文字へ畳んだ鍵で引き、挿入する綴りは `identifiers.ts` が決める。**引用符は必要なときだけ付け、付けるときは綴りを変えない。** 方言は `dialect.ts` の `koduchiOracleDialect`（`PLSQL` から `doubleQuotedStrings` だけを落としたもの）で、補完ソースは**この方言の `language`** へ足す（`PLSQL.language` へ足しても繋がらない）。挿入する綴りは接続ごとの設定で `connections.toml` に持つ。
+
+**スキーマツリーの種別**（ADR 0014）: 種別は 12 個（`ObjectKind`）。列挙元は `ALL_OBJECTS` の 10 種別に加え、索引が `ALL_INDEXES`（`GENERATED = 'N'` のみ）、DB link が `ALL_DB_LINKS` である。**所有者が `PUBLIC` のものは列挙しない**（公開シノニムだけで数万件になる）。**制約はツリーに出さない**（理由は ADR 0014。テーブル定義ビューを作る波で扱う）。ツリーはスキーマとオブジェクトの間に**種別の束**を 1 段挟む。束の並びは `OBJECT_KIND_ORDER`、鍵は `kindGroupKey`（`KODUCHI.#table`）。絞り込み中だけ束は既定で開く。種別ごとの表示可否は `SchemaFilter.kinds` として `connections.toml` に持ち、**落とした種別は問い合わせにも行かない**。補完のカタログには索引・トリガー・DB link を流さない（`catalog.ts` の `isCompletable`）。
 
 **キーバインドの置き場所**: エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` と検索の `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` は CodeMirror の keymap に、それ以外（`⌘E` / `⇧⌘E` / `⌥⌘S` / `⌥⌘C` / `⌥⌘R` / `⌘S` / `⌘O` / `⌘T` / `⌘W` / `⌃⌘N`）は `App.tsx` の `keydown` に置く。後者は `event.defaultPrevented` を見て、エディタが既に処理したものを二重に扱わない。結果テーブルの中でしか意味を持たない `⌘C` / `⇧⌘C` / `⌘A` は `ResultTable` の `keydown` に置く。`⌘K` と `⌘I` は**割り当てない**（将来のための予約）。
 

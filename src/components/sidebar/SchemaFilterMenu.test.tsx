@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls } from '../../test/fakeDbApi'
 import type { SavedConnection } from '../../types/db'
+import { defaultSchemaFilter } from '../../types/db'
 import { useSchemaStore } from '../../stores/schema'
 import { SchemaFilterMenu } from './SchemaFilterMenu'
 
@@ -13,7 +14,7 @@ const 保存済み: SavedConnection = {
   username: 'koduchi',
   readOnly: false,
   autoCommit: false,
-  schemaFilter: { excludeSystem: true, hideEmpty: true },
+  schemaFilter: defaultSchemaFilter,
   completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }
@@ -32,7 +33,7 @@ afterEach(() => {
 })
 
 describe('SchemaFilterMenu', () => {
-  it('条件は 2 つで既定はどちらも有効である', async () => {
+  it('スキーマを隠す条件は 2 つで既定はどちらも有効である', async () => {
     // Arrange
     render(
       <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
@@ -58,7 +59,10 @@ describe('SchemaFilterMenu', () => {
 
     // Assert
     await waitFor(() => expect(calls.schemaOverview).toHaveLength(1))
-    expect(calls.schemaOverview[0].filter).toEqual({ excludeSystem: false, hideEmpty: true })
+    expect(calls.schemaOverview[0].filter).toEqual({
+      ...defaultSchemaFilter,
+      excludeSystem: false,
+    })
   })
 
   it('条件は接続のエントリへ書き戻される', async () => {
@@ -74,10 +78,59 @@ describe('SchemaFilterMenu', () => {
     // Assert
     await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
     expect(calls.saveConnection[0].connection.schemaFilter).toEqual({
-      excludeSystem: true,
+      ...defaultSchemaFilter,
       hideEmpty: false,
     })
     expect(calls.saveConnection[0].password).toBeNull()
+  })
+
+  it('種別の可否は既定ですべて有効である', async () => {
+    // Arrange
+    render(
+      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
+    )
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
+
+    // Assert
+    expect(screen.getByLabelText('索引')).toBeChecked()
+    expect(screen.getByLabelText('トリガー')).toBeChecked()
+    expect(screen.getByLabelText('シノニム')).toBeChecked()
+    expect(screen.getByLabelText('DB link')).toBeChecked()
+  })
+
+  it('種別を落とすとその種別だけを外して取得し直す', async () => {
+    // Arrange
+    render(
+      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
+
+    // Act
+    await userEvent.click(screen.getByLabelText('索引'))
+
+    // Assert
+    await waitFor(() => expect(calls.schemaOverview).toHaveLength(1))
+    expect(calls.schemaOverview[0].filter.kinds).toEqual({
+      ...defaultSchemaFilter.kinds,
+      index: false,
+    })
+  })
+
+  it('種別の可否も接続のエントリへ書き戻される', async () => {
+    // Arrange
+    render(
+      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
+
+    // Act
+    await userEvent.click(screen.getByLabelText('トリガー'))
+
+    // Assert
+    await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
+    expect(calls.saveConnection[0].connection.schemaFilter.kinds.trigger).toBe(false)
   })
 
   it('保存していない接続では書き戻さない', async () => {

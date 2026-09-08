@@ -1,8 +1,13 @@
 /**
- * スキーマツリー（ADR 0007）。
+ * スキーマツリー（ADR 0007・0014）。
  *
- * スキーマ行の右にオブジェクト数を出し、展開するとオブジェクトが並ぶ。
- * テーブルとビューはさらに展開でき、読み込み済みの列が型付きで並ぶ。
+ * スキーマ行の右にオブジェクト数を出し、展開すると**種別ごとの束**が並ぶ。
+ * 束を開くとその種別のオブジェクトが並び、テーブルとビューはさらに展開できて
+ * 読み込み済みの列が型付きで出る。
+ *
+ * 種別で束ねるのは、索引やシノニムまで載せると 1 スキーマのオブジェクトが
+ * 数千行に届くためである。束ねてあれば、スキーマを開いたときに増える行数は
+ * 種別の数（高々 12）に収まる（ADR 0014）。
  *
  * テーブル定義ビューは器のみで開かない（ADR の機能スコープ）。
  *
@@ -21,23 +26,34 @@ import {
   Eye,
   Hash,
   Layers,
+  Link2,
+  ListOrdered,
+  Network,
   PlayCircle,
+  Shapes,
   Sigma,
   Table2,
+  Zap,
   type LucideIcon,
 } from 'lucide-react'
 import type { ObjectKind, SchemaNode, TableColumn } from '../../types/db'
-import { filterSchemas, nodeKey, useSchemaStore } from '../../stores/schema'
+import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER } from '../../types/db'
+import { filterSchemas, kindGroupKey, nodeKey, useSchemaStore } from '../../stores/schema'
 
 /** オブジェクトの種類ごとの目印。 */
 const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
   table: Table2,
   view: Eye,
   materializedView: Layers,
+  index: ListOrdered,
+  trigger: Zap,
+  sequence: Hash,
+  synonym: Link2,
+  type: Shapes,
   function: Sigma,
   procedure: PlayCircle,
   package: Boxes,
-  sequence: Hash,
+  databaseLink: Network,
 }
 
 /** 列を持ちうる種類。展開して列を出せるのはこれだけである。 */
@@ -46,6 +62,7 @@ const EXPANDABLE: ObjectKind[] = ['table', 'view', 'materializedView']
 /** 平らにした 1 行。仮想スクロールに載せる単位である。 */
 export type TreeRow =
   | { kind: 'schema'; key: string; name: string; objectCount: number; open: boolean }
+  | { kind: 'kindGroup'; key: string; objectKind: ObjectKind; count: number; open: boolean }
   | {
       kind: 'object'
       key: string
@@ -64,6 +81,7 @@ export type TreeRow =
  */
 const ESTIMATED_HEIGHTS: Record<TreeRow['kind'], number> = {
   schema: 26,
+  kindGroup: 24,
   object: 24,
   column: 20,
   columnsLoading: 20,
@@ -90,18 +108,46 @@ function groupByObject(columns: TableColumn[]): Map<string, TableColumn[]> {
 }
 
 /**
+ * オブジェクトを種別ごとに束ねる（ADR 0014）。
+ *
+ * 並びは `OBJECT_KIND_ORDER` に従い、1 件も無い種別は束ごと出さない。
+ * スキーマの中の並びは Rust 側で名前順に整えてあるため、ここでは崩さない。
+ *
+ * @param objects スキーマ 1 つ分のオブジェクト
+ */
+function groupByKind(objects: SchemaNode['objects']): [ObjectKind, SchemaNode['objects']][] {
+  const grouped = new Map<ObjectKind, SchemaNode['objects']>()
+  for (const object of objects) {
+    const 束 = grouped.get(object.kind)
+    if (束) {
+      束.push(object)
+    } else {
+      grouped.set(object.kind, [object])
+    }
+  }
+
+  return OBJECT_KIND_ORDER.filter((kind) => grouped.has(kind)).map((kind) => [
+    kind,
+    grouped.get(kind) as SchemaNode['objects'],
+  ])
+}
+
+/**
  * 木を、開いている枝だけを含む平らな行の並びに直す。
  *
  * 畳んだ枝の中身は行にしない。閉じたものを描く手間はここで消える。
+ * スキーマとオブジェクトの間には種別の束が 1 段挟まる（ADR 0014）。
  *
  * @param schemas 絞り込み済みのスキーマ
  * @param columns スキーマ名ごとの列
  * @param expanded 展開している節の表
+ * @param groupsOpenByDefault 覚えていない束を開いたものとして扱うか。絞り込み中は真
  */
 export function flattenSchemas(
   schemas: SchemaNode[],
   columns: Record<string, TableColumn[]>,
   expanded: Record<string, boolean>,
+  groupsOpenByDefault = false,
 ): TreeRow[] {
   const rows: TreeRow[] = []
 
@@ -122,35 +168,51 @@ export function flattenSchemas(
 
     const 列の束 = groupByObject(columns[schema.name] ?? [])
 
-    for (const object of schema.objects) {
-      const objectKey = nodeKey(schema.name, object.name)
-      const expandable = EXPANDABLE.includes(object.kind)
-      const objectOpen = expandable && (expanded[objectKey] ?? false)
+    for (const [objectKind, objects] of groupByKind(schema.objects)) {
+      const groupKey = kindGroupKey(schema.name, objectKind)
+      const groupOpen = expanded[groupKey] ?? groupsOpenByDefault
       rows.push({
-        kind: 'object',
-        key: objectKey,
-        name: object.name,
-        objectKind: object.kind,
-        expandable,
-        open: objectOpen,
+        kind: 'kindGroup',
+        key: groupKey,
+        objectKind,
+        count: objects.length,
+        open: groupOpen,
       })
 
-      if (!objectOpen) {
+      if (!groupOpen) {
         continue
       }
 
-      const 列 = 列の束.get(object.name) ?? []
-      if (列.length === 0) {
-        rows.push({ kind: 'columnsLoading', key: `${objectKey} loading` })
-        continue
-      }
-      for (const column of 列) {
+      for (const object of objects) {
+        const objectKey = nodeKey(schema.name, object.name)
+        const expandable = EXPANDABLE.includes(object.kind)
+        const objectOpen = expandable && (expanded[objectKey] ?? false)
         rows.push({
-          kind: 'column',
-          key: `${objectKey} ${column.name}`,
-          name: column.name,
-          typeName: column.typeName,
+          kind: 'object',
+          key: objectKey,
+          name: object.name,
+          objectKind: object.kind,
+          expandable,
+          open: objectOpen,
         })
+
+        if (!objectOpen) {
+          continue
+        }
+
+        const 列 = 列の束.get(object.name) ?? []
+        if (列.length === 0) {
+          rows.push({ kind: 'columnsLoading', key: `${objectKey} loading` })
+          continue
+        }
+        for (const column of 列) {
+          rows.push({
+            kind: 'column',
+            key: `${objectKey} ${column.name}`,
+            name: column.name,
+            typeName: column.typeName,
+          })
+        }
       }
     }
   }
@@ -174,9 +236,11 @@ export function SchemaTree() {
     () => filterSchemas(allSchemas, columns, search),
     [allSchemas, columns, search],
   )
+  // 絞り込み中は束を開いたものとして扱う。当たったオブジェクトへ辿り着くのに
+  // 束をいちいち開かせるのでは、検索の意味が薄れる。
   const rows = useMemo(
-    () => flattenSchemas(schemas, columns, expanded),
-    [columns, expanded, schemas],
+    () => flattenSchemas(schemas, columns, expanded, search.trim() !== ''),
+    [columns, expanded, schemas, search],
   )
 
   const virtualizer = useVirtualizer({
@@ -223,12 +287,12 @@ export function SchemaTree() {
 }
 
 /** 平らにした 1 行を、種類に応じて描き分ける。 */
-function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string) => void }) {
+function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string, open: boolean) => void }) {
   if (row.kind === 'schema') {
     return (
       <button
         type="button"
-        onClick={() => onToggle(row.key)}
+        onClick={() => onToggle(row.key, !row.open)}
         aria-expanded={row.open}
         className="w-full flex items-center gap-7px px-10px py-5px bg-transparent border-none cursor-pointer font-inherit text-left text-12px text-fg hover:bg-fill"
       >
@@ -243,14 +307,35 @@ function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string) => void 
     )
   }
 
+  if (row.kind === 'kindGroup') {
+    const Icon = KIND_ICONS[row.objectKind]
+    return (
+      <button
+        type="button"
+        onClick={() => onToggle(row.key, !row.open)}
+        aria-expanded={row.open}
+        className="w-full flex items-center gap-6px pl-22px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
+      >
+        {row.open ? (
+          <ChevronDown size={12} className="text-fg5 shrink-0" />
+        ) : (
+          <ChevronRight size={12} className="text-fg5 shrink-0" />
+        )}
+        <Icon size={13} className="text-fg5 shrink-0" />
+        <span className="flex-1 truncate">{OBJECT_KIND_LABELS[row.objectKind]}</span>
+        <span className="text-10.5px text-fg5 shrink-0">{row.count}</span>
+      </button>
+    )
+  }
+
   if (row.kind === 'object') {
     const Icon = KIND_ICONS[row.objectKind]
     return (
       <button
         type="button"
-        onClick={() => (row.expandable ? onToggle(row.key) : undefined)}
+        onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
         aria-expanded={row.expandable ? row.open : undefined}
-        className="w-full flex items-center gap-6px pl-22px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
+        className="w-full flex items-center gap-6px pl-38px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
       >
         <span className="w-13px shrink-0 flex items-center">
           {row.expandable ? (
@@ -278,11 +363,11 @@ function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string) => void 
   }
 
   if (row.kind === 'columnsLoading') {
-    return <p className="m-0 pl-48px pr-10px py-3px text-11px text-fg5">列情報を読み込み中…</p>
+    return <p className="m-0 pl-64px pr-10px py-3px text-11px text-fg5">列情報を読み込み中…</p>
   }
 
   return (
-    <div className="flex items-center gap-8px pl-48px pr-10px py-3px text-11px">
+    <div className="flex items-center gap-8px pl-64px pr-10px py-3px text-11px">
       <span className="flex-1 truncate text-fg3">{row.name}</span>
       <span className="text-10.5px text-fg5 shrink-0">{row.typeName}</span>
     </div>
