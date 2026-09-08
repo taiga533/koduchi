@@ -48,16 +48,17 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 **モジュールの割り当て**: 実装を置く場所は ADR README の「ディレクトリ構成」に従う。
 
-| 場所                         | 役割                                                                 |
-| ---------------------------- | -------------------------------------------------------------------- |
-| `src-tauri/src/commands/`    | Tauri コマンド。薄い層に留め、待ちは `run_blocking` へ逃がす         |
-| `src-tauri/src/db/`          | `Driver` trait とアクター・接続プール・Oracle 実装（ADR 0002・0003） |
-| `src-tauri/src/db/schema.rs` | スキーマツリーの型とフィルタ（ADR 0007・0014）                       |
-| `src-tauri/src/tnsnames/`    | tnsnames.ora の自前パーサ（ADR 0006）                                |
-| `src-tauri/src/config/`      | `connections.toml` の読み書き（ADR 0004）                            |
-| `src-tauri/src/keychain/`    | `keyring` の包み。パスワードだけを置く（ADR 0004）                   |
-| `src-tauri/src/history/`     | 履歴・保存済みクエリ・セッション復元の SQLite（ADR 0005・0018）      |
-| `src-tauri/src/csv/`         | CSV の書き出し                                                       |
+| 場所                             | 役割                                                                 |
+| -------------------------------- | -------------------------------------------------------------------- |
+| `src-tauri/src/commands/`        | Tauri コマンド。薄い層に留め、待ちは `run_blocking` へ逃がす         |
+| `src-tauri/src/db/`              | `Driver` trait とアクター・接続プール・Oracle 実装（ADR 0002・0003） |
+| `src-tauri/src/db/schema.rs`     | スキーマツリーの型とフィルタ（ADR 0007・0014）                       |
+| `src-tauri/src/db/definition.rs` | テーブル定義の型と制約・索引の組み立て（ADR 0019）                   |
+| `src-tauri/src/tnsnames/`        | tnsnames.ora の自前パーサ（ADR 0006）                                |
+| `src-tauri/src/config/`          | `connections.toml` の読み書き（ADR 0004）                            |
+| `src-tauri/src/keychain/`        | `keyring` の包み。パスワードだけを置く（ADR 0004）                   |
+| `src-tauri/src/history/`         | 履歴・保存済みクエリ・セッション復元の SQLite（ADR 0005・0018）      |
+| `src-tauri/src/csv/`             | CSV の書き出し                                                       |
 
 **設定ファイルの置き場所**: すべて `app_config_dir()`（`~/Library/Application Support/ninja.taiga533.koduchi/`）の下に置く。`instant_client.toml`（ADR 0001）/ `connections.toml`（ADR 0004・0013）/ `settings.toml`（テーマと CSV の書式）/ `history.sqlite3`（ADR 0005）の 4 つ。**パスワードはどれにも書かない。** キーチェーンのサービス名は `ninja.taiga533.koduchi`、アカウント名は接続の一意 ID である。接続を削除したらキーチェーンのエントリも必ず消す。
 
@@ -73,20 +74,24 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 **補完**（ADR 0013）: 識別子の候補は `src/components/editor/sqlCompletion.ts` の自前の補完ソースが出す。`@codemirror/lang-sql` の `schemaCompletionSource` は**使わない**（階層の解決が大文字小文字を区別し、候補を必ず引用符付きで挿入するため）。名前は `catalog.ts` が大文字へ畳んだ鍵で引き、挿入する綴りは `identifiers.ts` が決める。**引用符は必要なときだけ付け、付けるときは綴りを変えない。** 方言は `dialect.ts` の `koduchiOracleDialect`（`PLSQL` から `doubleQuotedStrings` だけを落としたもの）で、補完ソースは**この方言の `language`** へ足す（`PLSQL.language` へ足しても繋がらない）。挿入する綴りは接続ごとの設定で `connections.toml` に持つ。
 
-**スキーマツリーの種別**（ADR 0014）: 種別は 12 個（`ObjectKind`）。列挙元は `ALL_OBJECTS` の 10 種別に加え、索引が `ALL_INDEXES`（`GENERATED = 'N'` のみ）、DB link が `ALL_DB_LINKS` である。**所有者が `PUBLIC` のものは列挙しない**（公開シノニムだけで数万件になる）。**制約はツリーに出さない**（理由は ADR 0014。テーブル定義ビューを作る波で扱う）。ツリーはスキーマとオブジェクトの間に**種別の束**を 1 段挟む。束の並びは `OBJECT_KIND_ORDER`、鍵は `kindGroupKey`（`KODUCHI.#table`）。絞り込み中だけ束は既定で開く。種別ごとの表示可否は `SchemaFilter.kinds` として `connections.toml` に持ち、**落とした種別は問い合わせにも行かない**。補完のカタログには索引・トリガー・DB link を流さない（`catalog.ts` の `isCompletable`）。
+**スキーマツリーの種別**（ADR 0014）: 種別は 12 個（`ObjectKind`）。列挙元は `ALL_OBJECTS` の 10 種別に加え、索引が `ALL_INDEXES`（`GENERATED = 'N'` のみ）、DB link が `ALL_DB_LINKS` である。**所有者が `PUBLIC` のものは列挙しない**（公開シノニムだけで数万件になる）。**制約はツリーに出さない**（理由は ADR 0014。置き場所はテーブル定義ビューであり、ADR 0019 で実装した）。ツリーはスキーマとオブジェクトの間に**種別の束**を 1 段挟む。束の並びは `OBJECT_KIND_ORDER`、鍵は `kindGroupKey`（`KODUCHI.#table`）。絞り込み中だけ束は既定で開く。種別ごとの表示可否は `SchemaFilter.kinds` として `connections.toml` に持ち、**落とした種別は問い合わせにも行かない**。補完のカタログには索引・トリガー・DB link を流さない（`catalog.ts` の `isCompletable`）。
 
-**スキーマツリーからの操作**（ADR 0020）: ツリーの行から名前をエディタへ入れられる。**挿入する綴りと引用符は `identifiers.ts` の `styleIdentifier` が決める**（ADR 0013）。自前で書き直さないこと。文字列の組み立ては `src/components/editor/insertion.ts` の純粋な関数（`qualifiedIdentifier` / `withLeadingSpace` / `selectAllStatement`）に寄せてある。オブジェクトは**スキーマで修飾**し、**列は修飾しない**。挿入は `SqlEditor` の `insertAtCursor`（`SqlEditorHandle`）越しに CodeMirror へ差分として渡す。タブの内容を丸ごと差し替えるとカーソルが末尾へ飛ぶ。**挿入しても焦点はエディタへ移さない。**右クリックのメニューは「名前をコピー」「エディタへ挿入」「`SELECT` を開く」の 3 つで、3 つめは列を持つ種別だけに出す。**`SELECT` は新しいタブに入れるだけで実行しない**（結果セットのカーソルは接続 1 本につき高々 1 つで、実行すると別タブの結果が閉じられる。ADR 0003）。クリップボードは `src/api/clipboard.ts` 越しに呼ぶ。
+**テーブル定義ビューと DDL**（ADR 0019）: ツリーの行の右の「定義」から `TableDefinitionPanel` をオーバーレイで開く（`SessionsPanel` と同じ器。結果ペインの動的タブにはしない）。タブは**列 / 制約 / 索引 / DDL** の 4 つで並びは固定。取得は 2 つのコマンドに分かれ、`object_definition`（列・制約・索引）は開いた時点で、`object_ddl`（`DBMS_METADATA.GET_DDL`）は **DDL タブを開いたときに初めて**走る。GET_DDL の権限が無いというだけで列も制約も見られなくなってはいけないためである。どちらもプールの `background_handle` で取り、利用者のカーソルには触れない（ADR 0003）。**GET_DDL の型名は `ALL_OBJECTS.OBJECT_TYPE` の綴りと違う**（`MATERIALIZED_VIEW` / `DB_LINK` とアンダースコアで繋ぐ）。`ObjectKind::ddl_object_type()` から引き、`object_type()` と取り違えない（`ORA-31600` になる）。**パッケージは仕様と本体を 2 度取る**（`PACKAGE` と `PACKAGE_BODY`）。整形は `SET_TRANSFORM_PARAM` で `SQLTERMINATOR` / `PRETTY` を真、`SEGMENT_ATTRIBUTES` / `STORAGE` を偽にする。**制約はツリーではなくここに出す**（ADR 0014 からの申し送り）。外部キーは参照先の表と列まで出し、`NOT NULL` を言っているだけの検査制約は落とす（`is_not_null_check`）。**索引は自動生成のものも出す。** ツリー（ADR 0014）と逆だが、主キーの索引が見えないと「この列で引けるのか」が分からない。列は段階 2 のキャッシュを使い回さず引き直す（読み込み中のスキーマで 0 件に見えないため）。絞り込みは列・制約・索引の 3 タブに効き、判定は `src/components/definition/definitionSearch.ts` の純粋な関数に寄せてある。**ツリーの入口は「定義」のボタン 1 つだけで、マウス操作の割り振りは足していない。**
+
+**スキーマツリーからの操作**（ADR 0020）: ツリーの行から名前をエディタへ入れられる。**挿入する綴りと引用符は `identifiers.ts` の `styleIdentifier` が決める**（ADR 0013）。自前で書き直さないこと。文字列の組み立ては `src/components/editor/insertion.ts` の純粋な関数（`qualifiedIdentifier` / `withLeadingSpace` / `selectAllStatement`）に寄せてある。オブジェクトは `TreeRow` の `owner`（ADR 0019 と共用）で**スキーマ修飾**し、**列は修飾しない**。挿入は `SqlEditor` の `insertAtCursor`（`SqlEditorHandle`）越しに CodeMirror へ差分として渡す。タブの内容を丸ごと差し替えるとカーソルが末尾へ飛ぶ。**挿入しても焦点はエディタへ移さない。**右クリックのメニューは「名前をコピー」「エディタへ挿入」「`SELECT` を開く」の 3 つで、3 つめは列を持つ種別だけに出す。**`SELECT` は新しいタブに入れるだけで実行しない**（結果セットのカーソルは接続 1 本につき高々 1 つで、実行すると別タブの結果が閉じられる。ADR 0003）。クリップボードは `src/api/clipboard.ts` 越しに呼ぶ。
 
 マウス操作の割り振りは次のとおり。**この表がスキーマツリーの操作の持ち主である。**入口を足すときはここに 1 行を足す。
 
-| 操作                 | 起きること                                    |
-| -------------------- | --------------------------------------------- |
-| 行を単クリック       | 開閉する（開けない行では何も起きない）        |
-| 行をダブルクリック   | 名前をエディタのカーソル位置へ挿入する        |
-| 行を右クリック       | 名前のコピー・挿入・`SELECT` を開くのメニュー |
-| 「定義」を単クリック | テーブル定義ビュー（ADR 0019）                |
+| 操作                     | 起きること                                    |
+| ------------------------ | --------------------------------------------- |
+| 行を単クリック           | 開閉する（開けない行では何も起きない）        |
+| 行をダブルクリック       | 名前をエディタのカーソル位置へ挿入する        |
+| 行を右クリック           | 名前のコピー・挿入・`SELECT` を開くのメニュー |
+| 「定義」を単クリック     | テーブル定義ビューを開く（ADR 0019）          |
+| 「定義」をダブルクリック | 定義ビューが開くだけ。**挿入は起こさない**    |
+| 「定義」を右クリック     | 行と同じメニュー                              |
 
-ダブルクリックは 1 回目と 2 回目の押し下げでそれぞれ `click` が起き、開閉が 2 度切り替わって元へ戻る。**`event.detail` を見て打ち消す細工は入れない**（結果テーブルの「ダブルクリックは 1 回目の押し下げで選択も起こる」と同じ扱い）。ツリーの中でだけ効くキーは `↑` / `↓` / `→` / `←` と `⌥⏎`（挿入）/ `⌘C`（コピー）で、`SchemaTree` の `keydown` に置く。仮想スクロールのため焦点は 1 行だけが持ち（roving tabindex）、行が描かれるまで待ってから当てる。
+ダブルクリックは 1 回目と 2 回目の押し下げでそれぞれ `click` が起き、開閉が 2 度切り替わって元へ戻る。**`event.detail` を見て打ち消す細工は入れない**（結果テーブルの「ダブルクリックは 1 回目の押し下げで選択も起こる」と同じ扱い）。行の右に押しどころを足すときは `data-row-action` を付け、ダブルクリックの挿入から外すこと（「定義」がそうしている）。ツリーの中でだけ効くキーは `↑` / `↓` / `→` / `←` と `⌥⏎`（挿入）/ `⌘C`（コピー）で、`SchemaTree` の `keydown` に置く。仮想スクロールのため焦点は 1 行だけが持ち（roving tabindex）、行が描かれるまで待ってから当てる。
 
 **キーバインドの置き場所**: エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` と検索の `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` は CodeMirror の keymap に、それ以外（`⌘E` / `⇧⌘E` / `⌥⌘S` / `⌥⌘C` / `⌥⌘R` / `⌘S` / `⇧⌘S` / `⌘O` / `⌘T` / `⌘W` / `⌃⌘N` / `⌘K`）は `App.tsx` の `keydown` に置く。後者は `event.defaultPrevented` を見て、エディタが既に処理したものを二重に扱わない。修飾の重なる `⌘S` / `⇧⌘S` / `⌥⌘S` は、絞りの強い枝から先に見る。結果テーブルの中でしか意味を持たない `⌘C` / `⇧⌘C` / `⌘A` は `ResultTable` の `keydown` に置き、スキーマツリーの中でしか意味を持たない `↑` / `↓` / `→` / `←` / `⌥⏎` / `⌘C` は `SchemaTree` の `keydown` に置く（ADR 0020）。`⌘I`（Ask AI）は**割り当てない**（将来のための予約）。`⌘K` はコマンドパレット（ADR 0018）に割り当て済みである。
 

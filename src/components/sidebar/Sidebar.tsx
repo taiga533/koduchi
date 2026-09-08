@@ -158,7 +158,11 @@ export function Sidebar({
         className={`flex-1 min-h-0 ${segment === 'schema' ? 'overflow-hidden' : 'overflow-auto'}`}
       >
         {segment === 'schema' ? (
-          <SchemaTree onInsert={onInsertIdentifier} onOpenSelect={onOpenSelect} />
+          <SchemaTree
+            connectionId={connectionId}
+            onInsert={onInsertIdentifier}
+            onOpenSelect={onOpenSelect}
+          />
         ) : null}
         {segment === 'history' ? <HistoryList onUse={onUseHistory} /> : null}
         {segment === 'saved' ? <SavedQueryList onUse={onUseHistory} /> : null}

@@ -43,6 +43,7 @@ import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition, SqlEditorHandle } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
 import { ResultPane } from './components/results/ResultPane'
+import { TableDefinitionPanel } from './components/definition/TableDefinitionPanel'
 import { SessionsPanel } from './components/sessions/SessionsPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
@@ -65,6 +66,7 @@ import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { nodeKey, useSchemaStore } from './stores/schema'
 import { useSavedQueryStore } from './stores/savedQuery'
+import { useDefinitionStore } from './stores/definition'
 import { useSessionsStore } from './stores/sessions'
 import type { BindInput } from './stores/tab'
 import {
@@ -201,6 +203,8 @@ export function App() {
 
   const saveQuery = useSavedQueryStore((state) => state.save)
   const clearSessions = useSessionsStore((state) => state.clear)
+  const clearDefinition = useDefinitionStore((state) => state.clear)
+  const definitionOpen = useDefinitionStore((state) => state.target !== null)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
@@ -562,6 +566,8 @@ export function App() {
     // セッションの一覧は接続に属する。切断したら捨てる（ADR 0017）。
     clearSessions()
     closeSessions()
+    // テーブル定義も接続に属する（ADR 0019）。
+    clearDefinition()
 
     try {
       await disconnect()
@@ -571,6 +577,7 @@ export function App() {
 
     setConnectionView({ mode: 'picker' })
   }, [
+    clearDefinition,
     clearExecutions,
     clearSchemas,
     clearSessions,
@@ -1001,6 +1008,7 @@ export function App() {
           onClose={closeSessions}
         />
       ) : null}
+      {definitionOpen ? <TableDefinitionPanel connectionId={connection.id} /> : null}
       {bindPrompt ? (
         <BindPrompt
           names={bindPrompt.names}

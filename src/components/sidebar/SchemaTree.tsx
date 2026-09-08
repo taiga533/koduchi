@@ -1,5 +1,5 @@
 /**
- * スキーマツリー（ADR 0007・0014・0020）。
+ * スキーマツリー（ADR 0007・0014・0019・0020）。
  *
  * スキーマ行の右にオブジェクト数を出し、展開すると**種別ごとの束**が並ぶ。
  * 束を開くとその種別のオブジェクトが並び、テーブルとビューはさらに展開できて
@@ -9,8 +9,6 @@
  * 数千行に届くためである。束ねてあれば、スキーマを開いたときに増える行数は
  * 種別の数（高々 12）に収まる（ADR 0014）。
  *
- * テーブル定義ビューは器のみで開かない（ADR の機能スコープ）。
- *
  * 木のまま描くと、描き直しの手間が中身の量に比例する。Oracle のスキーマは
  * オブジェクトが数千に達することがあり、列の読み込みが進むたびに全体を組み直すと
  * 絞り込みの入力が目に見えて詰まる。そこで一度平らな行の並びに直し、見えている
@@ -19,16 +17,21 @@
  * ここからエディタへ手を伸ばせる（ADR 0020）。マウスの操作は場所と回数で
  * 割り振ってあり、互いに食い合わない。
  *
- * | 操作                       | 起きること                                   |
- * | -------------------------- | -------------------------------------------- |
- * | 行を単クリック             | 開閉する（開けない行では何も起きない）       |
- * | 行をダブルクリック         | 名前をエディタのカーソル位置へ挿入する       |
- * | 行を右クリック             | 名前のコピー・挿入・`SELECT` を開くのメニュー |
- * | 「定義」を単クリック       | テーブル定義ビュー（ADR 0019 の持ち物）      |
+ * | 操作                 | 起きること                                    |
+ * | -------------------- | --------------------------------------------- |
+ * | 行を単クリック       | 開閉する（開けない行では何も起きない）        |
+ * | 行をダブルクリック   | 名前をエディタのカーソル位置へ挿入する        |
+ * | 行を右クリック       | 名前のコピー・挿入・`SELECT` を開くのメニュー |
+ * | 「定義」を単クリック | テーブル定義ビューを開く（ADR 0019）          |
  *
  * ダブルクリックは 1 回目と 2 回目の押し下げでそれぞれ `onClick` が起き、開閉が
  * 2 度切り替わって元の状態へ戻る。**打ち消す細工はしない。**結果テーブルの
  * 「ダブルクリックは 1 回目の押し下げで選択も起こる」と同じ扱いである。
+ *
+ * 「定義」は行とは別の押しどころであり、行のクリックの意味を変えない
+ * （ADR 0019）。そのため**「定義」の上ではダブルクリックの挿入を起こさない**。
+ * ボタンを 2 度押したのは押した人の意図であり、そこに挿入まで重ねない。
+ * 右クリックだけは行と同じメニューを出す（「定義」もその行の一部だからである）。
  *
  * 挿入する綴りと引用符は `identifiers.ts` が決める（ADR 0013）。文字列の
  * 組み立ては `editor/insertion.ts` の純粋な関数に寄せてある。
@@ -55,9 +58,10 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { getClipboardApi } from '../../api/clipboard'
-import type { ObjectKind, SchemaNode, TableColumn } from '../../types/db'
+import type { DefinitionTarget, ObjectKind, SchemaNode, TableColumn } from '../../types/db'
 import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER, defaultCompletionSettings } from '../../types/db'
 import { useConnectionStore } from '../../stores/connection'
+import { useDefinitionStore } from '../../stores/definition'
 import { filterSchemas, kindGroupKey, nodeKey, useSchemaStore } from '../../stores/schema'
 import { qualifiedIdentifier, selectAllStatement } from '../editor/insertion'
 import { SchemaTreeContextMenu } from './SchemaTreeContextMenu'
@@ -81,34 +85,34 @@ const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
 /** 列を持ちうる種類。展開して列を出せるのはこれだけである。 */
 const EXPANDABLE: ObjectKind[] = ['table', 'view', 'materializedView']
 
+/**
+ * 行の中の、行そのものとは別の押しどころに付ける目印。
+ *
+ * 今のところ「定義」のボタンだけである。ここでのダブルクリックは行への挿入に
+ * 使わない（ADR 0019・0020）。
+ */
+const ROW_ACTION = 'data-row-action'
+
 /** 平らにした 1 行。仮想スクロールに載せる単位である。 */
 export type TreeRow =
   | { kind: 'schema'; key: string; name: string; objectCount: number; open: boolean }
-  | {
-      kind: 'kindGroup'
-      key: string
-      schemaName: string
-      objectKind: ObjectKind
-      count: number
-      open: boolean
-    }
+  | { kind: 'kindGroup'; key: string; objectKind: ObjectKind; count: number; open: boolean }
   | {
       kind: 'object'
       key: string
-      schemaName: string
+      /**
+       * 所有者のスキーマ名。
+       *
+       * 定義ビューを開くのに要り（ADR 0019）、挿入する名前をスキーマで修飾する
+       * のにも使う（ADR 0020）。`ALL_OBJECTS.OWNER` と同じ意味である。
+       */
+      owner: string
       name: string
       objectKind: ObjectKind
       expandable: boolean
       open: boolean
     }
-  | {
-      kind: 'column'
-      key: string
-      schemaName: string
-      objectName: string
-      name: string
-      typeName: string
-    }
+  | { kind: 'column'; key: string; name: string; typeName: string }
   | { kind: 'columnsLoading'; key: string }
 
 /**
@@ -127,10 +131,10 @@ const ESTIMATED_HEIGHTS: Record<TreeRow['kind'], number> = {
 /**
  * 行が指す名前を、外側から並べて返す（ADR 0020）。
  *
- * オブジェクトはスキーマで修飾する。ツリーから入れた名前が、その場では
- * 通っても既定スキーマの違う接続で通らない、という取り違えを防ぐためである。
- * **列は修飾しない。**`SELECT` の並びや `WHERE` へ貼るのが主な使い道であり、
- * そこでは表の別名で修飾するか、修飾しないかのどちらかになる。
+ * オブジェクトは所有者のスキーマで修飾する。ツリーが**どのスキーマの下で
+ * 見つけたか**を知っている唯一の場所だからである。**列は修飾しない。**
+ * `SELECT` の並びや `WHERE` へ貼るのが主な使い道であり、そこでは表の別名で
+ * 修飾するか、修飾しないかのどちらかになる。
  *
  * 種別の束と読み込み中の行は名前を持たないため `null` を返す。
  *
@@ -141,7 +145,7 @@ export function rowIdentifierPath(row: TreeRow): string[] | null {
     case 'schema':
       return [row.name]
     case 'object':
-      return [row.schemaName, row.name]
+      return [row.owner, row.name]
     case 'column':
       return [row.name]
     default:
@@ -223,9 +227,9 @@ function groupByKind(objects: SchemaNode['objects']): [ObjectKind, SchemaNode['o
  * 畳んだ枝の中身は行にしない。閉じたものを描く手間はここで消える。
  * スキーマとオブジェクトの間には種別の束が 1 段挟まる（ADR 0014）。
  *
- * 行にはスキーマ名と所属オブジェクト名を持たせる。ツリーからの操作が
- * スキーマ修飾した名前を組み立てるためであり、鍵の文字列を割って取り出すのは
- * 名前に `.` を含む識別子で壊れる（ADR 0020）。
+ * オブジェクトの行には所有者のスキーマ名を持たせる。定義ビュー（ADR 0019）と
+ * 挿入する名前の修飾（ADR 0020）の両方が要るためであり、鍵の文字列を `.` で
+ * 割って取り出すのは名前に `.` を含む識別子で壊れる。
  *
  * @param schemas 絞り込み済みのスキーマ
  * @param columns スキーマ名ごとの列
@@ -263,7 +267,6 @@ export function flattenSchemas(
       rows.push({
         kind: 'kindGroup',
         key: groupKey,
-        schemaName: schema.name,
         objectKind,
         count: objects.length,
         open: groupOpen,
@@ -280,7 +283,7 @@ export function flattenSchemas(
         rows.push({
           kind: 'object',
           key: objectKey,
-          schemaName: schema.name,
+          owner: schema.name,
           name: object.name,
           objectKind: object.kind,
           expandable,
@@ -300,8 +303,6 @@ export function flattenSchemas(
           rows.push({
             kind: 'column',
             key: `${objectKey} ${column.name}`,
-            schemaName: schema.name,
-            objectName: object.name,
             name: column.name,
             typeName: column.typeName,
           })
@@ -315,6 +316,12 @@ export function flattenSchemas(
 
 interface SchemaTreeProps {
   /**
+   * 接続の識別子。テーブル定義ビューを開くのに要る（ADR 0019）。
+   *
+   * 繋がっていなければ `null`。そのときは「定義」を押せない。
+   */
+  connectionId: string | null
+  /**
    * 名前をエディタのカーソル位置へ入れる（ADR 0020）。
    *
    * 受け取るのは組み立て済みの文字列である。綴りをどう決めたかはツリーの
@@ -325,7 +332,7 @@ interface SchemaTreeProps {
   onOpenSelect: (sql: string) => void
 }
 
-export function SchemaTree({ onInsert, onOpenSelect }: SchemaTreeProps) {
+export function SchemaTree({ connectionId, onInsert, onOpenSelect }: SchemaTreeProps) {
   const allSchemas = useSchemaStore((state) => state.schemas)
   const columns = useSchemaStore((state) => state.columns)
   const search = useSchemaStore((state) => state.search)
@@ -333,6 +340,7 @@ export function SchemaTree({ onInsert, onOpenSelect }: SchemaTreeProps) {
   const toggle = useSchemaStore((state) => state.toggle)
   const status = useSchemaStore((state) => state.status)
   const error = useSchemaStore((state) => state.error)
+  const openDefinition = useDefinitionStore((state) => state.open)
 
   // 挿入する綴りは接続ごとの設定である（ADR 0013）。補完と同じ値を引く。
   const identifierCase = useConnectionStore(
@@ -400,7 +408,7 @@ export function SchemaTree({ onInsert, onOpenSelect }: SchemaTreeProps) {
   /** `select * from …` を新しいタブに開く。 */
   const openSelectFor = (row: TreeRow) => {
     if (row.kind === 'object' && canOpenSelect(row)) {
-      onOpenSelect(selectAllStatement([row.schemaName, row.name], identifierCase))
+      onOpenSelect(selectAllStatement([row.owner, row.name], identifierCase))
     }
   }
 
@@ -459,6 +467,19 @@ export function SchemaTree({ onInsert, onOpenSelect }: SchemaTreeProps) {
     }
   }
 
+  /**
+   * ダブルクリック。名前をカーソル位置へ入れる。
+   *
+   * 「定義」の上では起こさない。行とは別の押しどころであり、ボタンを 2 度
+   * 押したことに挿入まで重ねない（ADR 0019・0020）。
+   */
+  const onDoubleClick = (event: ReactMouseEvent, row: TreeRow) => {
+    if (event.target instanceof Element && event.target.closest(`[${ROW_ACTION}]`)) {
+      return
+    }
+    insertRow(row)
+  }
+
   /** 右クリック。名前を持たない行ではメニューを出さない。 */
   const openMenu = (event: ReactMouseEvent, row: TreeRow) => {
     if (rowIdentifierPath(row) === null) {
@@ -500,7 +521,7 @@ export function SchemaTree({ onInsert, onOpenSelect }: SchemaTreeProps) {
               width: '100%',
               transform: `translateY(${item.start}px)`,
             }}
-            onDoubleClick={() => insertRow(rows[item.index])}
+            onDoubleClick={(event) => onDoubleClick(event, rows[item.index])}
             onContextMenu={(event) => openMenu(event, rows[item.index])}
           >
             <Row
@@ -508,6 +529,9 @@ export function SchemaTree({ onInsert, onOpenSelect }: SchemaTreeProps) {
               focused={item.index === focused}
               onToggle={toggle}
               onFocus={() => setFocusedIndex(item.index)}
+              onOpenDefinition={
+                connectionId === null ? null : (target) => void openDefinition(connectionId, target)
+              }
             />
           </div>
         ))}
@@ -543,10 +567,12 @@ interface RowProps {
   focused: boolean
   onToggle: (key: string, open: boolean) => void
   onFocus: () => void
+  /** 定義ビューを開く。繋がっていなければ `null`（ADR 0019）。 */
+  onOpenDefinition: ((target: DefinitionTarget) => void) | null
 }
 
 /** 平らにした 1 行を、種類に応じて描き分ける。 */
-function Row({ row, focused, onToggle, onFocus }: RowProps) {
+function Row({ row, focused, onToggle, onFocus, onOpenDefinition }: RowProps) {
   // 焦点を持てるのは 1 行だけにする。仮想スクロールで描かれている行がすべて
   // タブ順に並ぶと、ツリーを抜けるのに数十回打鍵することになる。
   const focus = { tabIndex: focused ? 0 : -1, 'data-tree-focused': focused, onFocus }
@@ -595,36 +621,46 @@ function Row({ row, focused, onToggle, onFocus }: RowProps) {
 
   if (row.kind === 'object') {
     const Icon = KIND_ICONS[row.objectKind]
+    // 行そのものと「定義」は押しどころが違う。入れ子のボタンにできないため、
+    // 行を包む器を 1 つ挟んで横に並べる（ADR 0019）。焦点は行そのものが持ち、
+    // 「定義」へは `Tab` で降りる（ADR 0020 の roving tabindex）。
     return (
-      <button
-        type="button"
-        {...focus}
-        onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
-        aria-expanded={row.expandable ? row.open : undefined}
-        className="w-full flex items-center gap-6px pl-38px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
-      >
-        <span className="w-13px shrink-0 flex items-center">
-          {row.expandable ? (
-            row.open ? (
-              <ChevronDown size={12} className="text-fg5" />
-            ) : (
-              <ChevronRight size={12} className="text-fg5" />
-            )
-          ) : null}
-        </span>
-        <Icon size={13} className="text-fg5 shrink-0" />
-        <span className="flex-1 truncate">{row.name}</span>
-        {row.expandable ? (
-          // テーブル定義ビューは器だけで、開かない（ADR の機能スコープ）。
-          <span
-            aria-disabled="true"
-            title="テーブル定義ビューは未実装です"
-            className="shrink-0 text-10px text-fg5 opacity-50"
+      <div className="w-full flex items-center hover:bg-fill">
+        <button
+          type="button"
+          {...focus}
+          onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
+          aria-expanded={row.expandable ? row.open : undefined}
+          className="min-w-0 flex-1 flex items-center gap-6px pl-38px pr-4px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2"
+        >
+          <span className="w-13px shrink-0 flex items-center">
+            {row.expandable ? (
+              row.open ? (
+                <ChevronDown size={12} className="text-fg5" />
+              ) : (
+                <ChevronRight size={12} className="text-fg5" />
+              )
+            ) : null}
+          </span>
+          <Icon size={13} className="text-fg5 shrink-0" />
+          <span className="flex-1 truncate">{row.name}</span>
+        </button>
+        {onOpenDefinition === null ? null : (
+          <button
+            type="button"
+            {...{ [ROW_ACTION]: true }}
+            tabIndex={focused ? 0 : -1}
+            onFocus={onFocus}
+            onClick={() =>
+              onOpenDefinition({ owner: row.owner, name: row.name, kind: row.objectKind })
+            }
+            aria-label={`${row.name} の定義を開く`}
+            className="shrink-0 mr-10px px-5px py-1px rounded-5px bg-transparent border-none text-10px text-fg5 cursor-pointer font-inherit hover:text-fg3"
           >
             定義
-          </span>
-        ) : null}
-      </button>
+          </button>
+        )}
+      </div>
     )
   }
 

@@ -8,6 +8,7 @@
 //! そのときは `DbErrorKind::Permission` へ写して「空だった」と混同させない。
 
 use crate::db::error::{DbError, DbResult};
+use crate::db::oracle::errors::{map_oracle_error, PERMISSION_ERRORS};
 use crate::db::sessions::{check_kill_allowed, SessionOverview, SessionRow};
 use oracle::Connection;
 
@@ -42,16 +43,11 @@ const SESSIONS_SQL: &str = "select s.sid,
 const IDENTITY_SQL: &str =
     "select sys_context('userenv','sid'), sys_context('userenv','instance') from dual";
 
-/// 権限が足りないことを示す Oracle のエラー番号。
-///
-/// `ORA-00942` は「表またはビューが存在しません」だが、`V$SESSION` に対しては
-/// 実際には参照権限が無いことを意味する。
-const PERMISSION_ERRORS: [&str; 2] = ["ORA-00942", "ORA-01031"];
-
 /// Oracle のエラーを、権限不足なら `Permission` へ写す。
 ///
 /// 権限が無いことと「見た結果が空だった」ことを、呼び出し側が区別できるように
-/// するための変換である（ADR 0017）。データベースが返した原文はそのまま残す。
+/// するための変換である（ADR 0017）。判定そのものは `oracle::errors` にある
+/// （`DBMS_METADATA.GET_DDL` も同じ判定を使うため、ADR 0019 で切り出した）。
 ///
 /// # 引数
 ///
@@ -59,13 +55,7 @@ const PERMISSION_ERRORS: [&str; 2] = ["ORA-00942", "ORA-01031"];
 /// * `error` - Oracle が返したエラー
 /// * `hint` - 権限不足のときに添える案内
 fn 権限を見分ける(context: &str, error: &oracle::Error, hint: &str) -> DbError {
-    let text = error.to_string();
-
-    if PERMISSION_ERRORS.iter().any(|code| text.contains(code)) {
-        return DbError::permission(format!("{context}{hint}（{text}）"));
-    }
-
-    DbError::execute(format!("{context}: {text}"))
+    map_oracle_error(context, error, hint, &PERMISSION_ERRORS)
 }
 
 /// `SYS_CONTEXT` の返す文字列を番号として読む。
