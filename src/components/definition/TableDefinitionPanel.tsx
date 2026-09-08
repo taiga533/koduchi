@@ -12,10 +12,16 @@
  * DDL は DDL の内訳を開いたときに初めて取る（ADR 0019）。
  * `DBMS_METADATA.GET_DDL` の権限が無いというだけで、列も制約も索引も
  * 見られなくなってはいけない。
+ *
+ * **4 つの内訳はどれもコピーできる。**入口は内訳のタブの並びの右端に置いた
+ * 「コピー」の 1 つで、写すのは今開いている内訳の、今画面に出ているものである
+ * （組み立ては `definitionCopy.ts`）。DDL が仕様と本体に割れているときは、
+ * 断片ごとのボタンも見出しの横に添える。
  */
 
-import { useMemo } from 'react'
-import { Search } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Check, Copy, Search } from 'lucide-react'
+import { getClipboardApi } from '../../api/clipboard'
 import {
   DEFINITION_TABS,
   DEFINITION_TAB_LABELS,
@@ -32,6 +38,12 @@ import {
   formatIndexColumns,
   formatReference,
 } from './definitionSearch'
+import {
+  buildDdlCopyText,
+  buildDefinitionCopy,
+  describeDefinitionCopy,
+  type DefinitionCopy,
+} from './definitionCopy'
 
 interface TableDefinitionPanelProps {
   /** 接続の識別子。DDL の内訳を開いたときの取得に使う。 */
@@ -49,7 +61,10 @@ export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPan
     return null
   }
 
-  const { target, definition, status, error, permissionDenied, search, tab } = entry
+  const { target, definition, ddl, status, error, permissionDenied, search, tab } = entry
+
+  // 写すのは今開いている内訳の、今画面に出ているものである（`definitionCopy.ts`）。
+  const コピー = buildDefinitionCopy(tab, definition, ddl, search)
 
   return (
     <section
@@ -64,24 +79,33 @@ export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPan
         <span className="text-10.5px text-fg5 shrink-0">{OBJECT_KIND_LABELS[target.kind]}</span>
       </div>
 
-      <div className="flex items-center gap-2px" role="tablist" aria-label="定義の内訳">
-        {DEFINITION_TABS.map((each) => (
-          <button
-            key={each}
-            type="button"
-            role="tab"
-            aria-selected={tab === each}
-            onClick={() => selectTab(connectionId, tabId, each)}
-            className={`px-11px py-5px rounded-7px border-none text-11.5px cursor-pointer font-inherit ${
-              tab === each ? 'bg-fill text-fg' : 'bg-transparent text-fg4'
-            }`}
-          >
-            {DEFINITION_TAB_LABELS[each]}
-            {each !== 'ddl' ? (
-              <span className="ml-6px text-10.5px text-fg5">{数える(definition, each)}</span>
-            ) : null}
-          </button>
-        ))}
+      <div className="flex items-center gap-10px">
+        <div className="flex items-center gap-2px" role="tablist" aria-label="定義の内訳">
+          {DEFINITION_TABS.map((each) => (
+            <button
+              key={each}
+              type="button"
+              role="tab"
+              aria-selected={tab === each}
+              onClick={() => selectTab(connectionId, tabId, each)}
+              className={`px-11px py-5px rounded-7px border-none text-11.5px cursor-pointer font-inherit ${
+                tab === each ? 'bg-fill text-fg' : 'bg-transparent text-fg4'
+              }`}
+            >
+              {DEFINITION_TAB_LABELS[each]}
+              {each !== 'ddl' ? (
+                <span className="ml-6px text-10.5px text-fg5">{数える(definition, each)}</span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+
+        <CopyControl
+          className="ml-auto shrink-0"
+          copy={コピー}
+          label={コピーのラベル(コピー)}
+          ariaLabel={コピーの説明(tab, コピー)}
+        />
       </div>
 
       {tab === 'ddl' ? null : (
@@ -134,6 +158,114 @@ function 数える(definition: ObjectDefinition | null, tab: DefinitionTab): num
     default:
       return 0
   }
+}
+
+/**
+ * コピーのボタンに出す文字。
+ *
+ * **絞り込んでいるときは押す前にそう分かるようにする。**押した後の一言
+ * （`describeDefinitionCopy`）だけでは、欠けたものを貼ってから気づくことになる。
+ * 件数までボタンに書くと絞り込むたびに幅が動くため、件数は `aria-label` と
+ * `title` に回す。
+ *
+ * @param copy 組み立てたコピーの中身。写せるものが無ければ `null`
+ */
+function コピーのラベル(copy: DefinitionCopy | null): string {
+  return copy !== null && copy.filtered ? '絞り込んだぶんをコピー' : 'コピー'
+}
+
+/**
+ * コピーのボタンの `aria-label` と `title`。
+ *
+ * @param tab 開いている内訳
+ * @param copy 組み立てたコピーの中身。写せるものが無ければ `null`
+ */
+function コピーの説明(tab: DefinitionTab, copy: DefinitionCopy | null): string {
+  if (copy === null) {
+    return 'コピーできるものがありません'
+  }
+
+  if (copy.count === null) {
+    return 'DDL をコピー'
+  }
+
+  const 件数 = `${copy.count.toLocaleString('ja-JP')} 件の${DEFINITION_TAB_LABELS[tab]}`
+  return copy.filtered ? `絞り込んだ ${件数}をコピー` : `${件数}をコピー`
+}
+
+interface CopyControlProps {
+  /** 押したときに写す中身。`null` なら押せない。 */
+  copy: DefinitionCopy | null
+  /** ボタンに出す文字。`compact` のときは出さない。 */
+  label: string
+  /** 支援技術と `title` へ伝える説明。 */
+  ariaLabel: string
+  /** アイコンだけの小さい見た目にするか（DDL の断片ごとのボタン）。 */
+  compact?: boolean
+  /** 位置を決めるためのクラス。見た目は親に決めさせない。 */
+  className?: string
+}
+
+/**
+ * コピーのボタンと、押したことを伝える一言。
+ *
+ * **コピーは何も起きないように見える操作である。**押した後に何が起きたのかを
+ * 出さないと、失敗したのか写せたのかが分からない。設定画面の「保存しました。」
+ * と同じ形で、ボタンの隣に一言を出す。違いは自分で消えることだけで、定義タブは
+ * 開いたまま使う画面であり、古い報せが残り続けるのは邪魔になる。
+ *
+ * クリップボードは `src/api/clipboard.ts` 越しに呼ぶ（ADR 0010）。
+ */
+function CopyControl({
+  copy,
+  label,
+  ariaLabel,
+  compact = false,
+  className = '',
+}: CopyControlProps) {
+  const [notice, setNotice] = useState<{ text: string } | null>(null)
+
+  useEffect(() => {
+    if (notice === null) {
+      return
+    }
+    const timer = window.setTimeout(() => setNotice(null), 2500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  const 押す = () => {
+    if (copy === null) {
+      return
+    }
+    void getClipboardApi().writeText(copy.text)
+    // 同じ文でも押すたびに時計を巻き戻すため、毎回新しい物を作る。
+    setNotice({ text: describeDefinitionCopy(copy) })
+  }
+
+  return (
+    <div className={`flex items-center gap-8px ${className}`}>
+      <span role="status" aria-live="polite" className="text-10.5px text-fg5 whitespace-nowrap">
+        {notice === null ? '' : notice.text}
+      </span>
+      <button
+        type="button"
+        onClick={押す}
+        disabled={copy === null}
+        aria-label={ariaLabel}
+        title={ariaLabel}
+        className={`flex items-center gap-6px rounded-7px border-none bg-fill text-11.5px text-fg cursor-pointer font-inherit disabled:opacity-40 disabled:cursor-default ${
+          compact ? 'p-5px' : 'px-9px py-5px'
+        }`}
+      >
+        {notice === null ? (
+          <Copy size={12} className="text-fg4" />
+        ) : (
+          <Check size={12} className="text-ac" />
+        )}
+        {compact ? null : label}
+      </button>
+    </div>
+  )
 }
 
 interface PanelBodyProps {
@@ -406,7 +538,16 @@ function DdlView({ tabId }: { tabId: string }) {
       {ddl.parts.map((part) => (
         <section key={part.label} className="flex flex-col gap-5px">
           {ddl.parts.length > 1 ? (
-            <h3 className="m-0 text-11.5px font-500 text-fg4">{part.label}</h3>
+            <div className="flex items-center gap-10px">
+              <h3 className="m-0 text-11.5px font-500 text-fg4">{part.label}</h3>
+              <CopyControl
+                className="ml-auto shrink-0"
+                compact
+                copy={{ text: buildDdlCopyText([part]), count: null, filtered: false }}
+                label=""
+                ariaLabel={`${part.label}をコピー`}
+              />
+            </div>
           ) : null}
           <pre className="m-0 p-11px rounded-8px bg-fill text-11.5px text-fg2 leading-[1.6] whitespace-pre-wrap break-all">
             {part.sql}
