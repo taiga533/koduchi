@@ -17,7 +17,7 @@ use koduchi_lib::db::driver::{Chunk, ConnectTarget, ConnectionParams, ExecuteOut
 use koduchi_lib::db::error::DbErrorKind;
 use koduchi_lib::db::oracle::instant_client::{self, ClientStatus};
 use koduchi_lib::db::pool::{ConnectionPool, DEFAULT_CHUNK_SIZE};
-use koduchi_lib::db::schema::{ObjectKind, SchemaFilter};
+use koduchi_lib::db::schema::{ObjectKind, ObjectKindFilter, SchemaFilter};
 use koduchi_lib::db::value::{Cell, CellKind};
 use serial_test::serial;
 
@@ -526,6 +526,7 @@ fn フィルタを外すとシステムスキーマも並ぶ() {
     let filter = SchemaFilter {
         exclude_system: false,
         hide_empty: false,
+        ..SchemaFilter::default()
     };
 
     // Act
@@ -559,6 +560,148 @@ fn スキーマはオブジェクトの名前と数を持つ() {
         .objects
         .iter()
         .any(|object| object.name == "SESSION_ROLLUP" && object.kind == ObjectKind::View));
+}
+
+/// スキーマ 1 つぶんのオブジェクトから、種別の合う名前を取り出す。
+///
+/// # 引数
+///
+/// * `schemas` - 段階 1 の結果
+/// * `owner` - 見たいスキーマ名
+/// * `kind` - 見たい種別
+fn 種別の名前(
+    schemas: &[koduchi_lib::db::schema::SchemaNode],
+    owner: &str,
+    kind: ObjectKind,
+) -> Vec<String> {
+    schemas
+        .iter()
+        .find(|schema| schema.name == owner)
+        .map(|schema| {
+            schema
+                .objects
+                .iter()
+                .filter(|object| object.kind == kind)
+                .map(|object| object.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+#[serial]
+fn 索引とトリガーとシノニムと型がツリーに並ぶ() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Index)
+        .contains(&String::from("IX_EVENTS_CREATED")));
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Trigger)
+        .contains(&String::from("TRG_USER_TRAITS_TOUCH")));
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Synonym).contains(&String::from("DAILY_GMV"))
+    );
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Type).contains(&String::from("ORDER_SUMMARY"))
+    );
+}
+
+#[test]
+#[serial]
+fn 自動生成された索引は並ばない() {
+    // Arrange: 主キーの索引は SYS_C0012345 のような名前で作られる
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    let 索引 = 種別の名前(&schemas, "KODUCHI", ObjectKind::Index);
+    assert!(!索引.is_empty());
+    assert!(!索引.iter().any(|name| name.starts_with("SYS_")));
+}
+
+#[test]
+#[serial]
+fn 種別を落とすとその種別が並ばなくなる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let filter = SchemaFilter {
+        kinds: ObjectKindFilter {
+            index: false,
+            trigger: false,
+            ..ObjectKindFilter::default()
+        },
+        ..SchemaFilter::default()
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&filter).unwrap();
+
+    // Assert
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Index).is_empty());
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Trigger).is_empty());
+    assert!(!種別の名前(&schemas, "KODUCHI", ObjectKind::Table).is_empty());
+}
+
+#[test]
+#[serial]
+fn 公開シノニムはツリーに並ばない() {
+    // Arrange: PUBLIC は ALL_USERS に載らない擬似的な所有者である
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let filter = SchemaFilter {
+        exclude_system: false,
+        hide_empty: false,
+        ..SchemaFilter::default()
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&filter).unwrap();
+
+    // Assert
+    let names: Vec<&str> = schemas.iter().map(|schema| schema.name.as_str()).collect();
+    assert!(!names.contains(&"PUBLIC"));
+}
+
+#[test]
+#[serial]
+fn db_linkは所有者のスキーマに並ぶ() {
+    // Arrange: DB link は接続中のユーザーのスキーマにしか作れない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let _ = pool.execute(TAB, "drop database link koduchi_selflink", &[]);
+    pool.execute(
+        TAB,
+        "create database link koduchi_selflink
+         connect to koduchi identified by koduchi_dev
+         using 'localhost:1521/FREEPDB1'",
+        &[],
+    )
+    .unwrap();
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    let links = 種別の名前(&schemas, "KODUCHI", ObjectKind::DatabaseLink);
+    pool.execute(TAB, "drop database link koduchi_selflink", &[])
+        .unwrap();
+    assert!(links
+        .iter()
+        .any(|name| name.starts_with("KODUCHI_SELFLINK")));
 }
 
 #[test]

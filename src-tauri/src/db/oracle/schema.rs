@@ -1,24 +1,47 @@
-//! Oracle のスキーマ取得（ADR 0007）。
+//! Oracle のスキーマ取得（ADR 0007・0014）。
 //!
 //! 列挙元は `ALL_USERS` である。`ALL_TABLES` の `DISTINCT owner` から列挙すると
 //! 常に権限のあるスキーマだけになり、フィルタのチェックボックスが意味を失う。
 //!
-//! 取得は 2 回のクエリに分かれる。段階 1 は `ALL_USERS` と `ALL_OBJECTS` で
-//! スキーマ名・オブジェクト数・オブジェクト名まで、段階 2 は
-//! `ALL_TAB_COLUMNS` をスキーマ 1 つずつ引く。`ALL_TAB_COLUMNS` は中規模の
-//! データベースでも 10 万行を超えるため、接続時に一括取得はできない。
+//! 段階 1 は `ALL_USERS` に加えて次の 3 つのビューを引く。オブジェクトの種類に
+//! よって置き場所が違うためである（ADR 0014）。
+//!
+//! | ビュー          | 取るもの                                                   |
+//! | --------------- | ---------------------------------------------------------- |
+//! | `ALL_OBJECTS`   | 表・ビュー・マテビュー・トリガー・順序・シノニム・型・関数・手続 |
+//! | `ALL_INDEXES`   | 索引。自動生成されたものは除く                             |
+//! | `ALL_DB_LINKS`  | DB link。`ALL_OBJECTS` の所有者の考え方と噛み合わない       |
+//!
+//! 段階 2 は `ALL_TAB_COLUMNS` をスキーマ 1 つずつ引く。`ALL_TAB_COLUMNS` は
+//! 中規模のデータベースでも 10 万行を超えるため、接続時に一括取得はできない。
+//!
+//! 所有者が `PUBLIC` のオブジェクトは列挙しない。`PUBLIC` は `ALL_USERS` に
+//! 載らない擬似的な所有者であり、そこに数万件の公開シノニムがぶら下がる。
 
 use crate::db::error::{DbError, DbResult};
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, SchemaObject, TableColumn};
+use crate::db::schema::{
+    ObjectKind, ObjectKindFilter, SchemaFilter, SchemaNode, SchemaObject, TableColumn,
+};
 use crate::db::value::CellKind;
 use oracle::Connection;
 use std::collections::BTreeMap;
 
-/// ツリーに載せるオブジェクトの種類。
+/// `ALL_OBJECTS` から取る種別（ADR 0014）。
 ///
-/// `SYNONYM` を含めると PUBLIC シノニムだけで数万件になり、段階 1 が重くなる。
-const LISTED_OBJECT_TYPES: &str =
-    "'TABLE','VIEW','MATERIALIZED VIEW','FUNCTION','PROCEDURE','PACKAGE','SEQUENCE'";
+/// 索引と DB link はここに含めない。索引は `ALL_OBJECTS` だと制約や LOB のために
+/// 自動生成された `SYS_C0012345` まで並んでしまい、DB link はそもそも
+/// `ALL_OBJECTS` の所有者の考え方と噛み合わない。どちらも専用のビューから取る。
+const OBJECT_VIEW_KINDS: [ObjectKind; 9] = [
+    ObjectKind::Table,
+    ObjectKind::View,
+    ObjectKind::MaterializedView,
+    ObjectKind::Trigger,
+    ObjectKind::Sequence,
+    ObjectKind::Synonym,
+    ObjectKind::Type,
+    ObjectKind::Function,
+    ObjectKind::Procedure,
+];
 
 /// Oracle が内蔵するスキーマの名前。
 ///
@@ -153,8 +176,10 @@ pub fn kind_of_type_name(data_type: &str) -> CellKind {
 
 /// 段階 1。スキーマ名・オブジェクト数・オブジェクト名を取る。
 ///
-/// `ALL_USERS` で全スキーマを並べ、`ALL_OBJECTS` で参照可能なオブジェクトを
-/// 数と名前の両方に使う。フィルタは取得後に当てる。
+/// `ALL_USERS` で全スキーマを並べ、`ALL_OBJECTS` / `ALL_INDEXES` /
+/// `ALL_DB_LINKS` で参照可能なオブジェクトを数と名前の両方に使う。種別の
+/// 絞り込みは問い合わせの段で当て、隠す種別は取りにいかない（ADR 0014）。
+/// スキーマの絞り込みは取得後に当てる。
 ///
 /// # 引数
 ///
@@ -181,42 +206,133 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
         );
     }
 
-    let sql = format!(
-        "select owner, object_name, object_type from all_objects
-         where object_type in ({LISTED_OBJECT_TYPES})
-         order by owner, object_name"
-    );
+    let types = listed_object_types(&filter.kinds);
+    if !types.is_empty() {
+        let sql = format!(
+            "select owner, object_name, object_type from all_objects
+             where object_type in ({types}) and owner <> 'PUBLIC'
+             order by owner, object_name"
+        );
 
-    let objects = connection
-        .query_as::<(String, String, String)>(&sql, &[])
-        .map_err(|error| {
-            DbError::execute(format!("オブジェクトを取得できませんでした: {error}"))
-        })?;
+        let objects = connection
+            .query_as::<(String, String, String)>(&sql, &[])
+            .map_err(|error| {
+                DbError::execute(format!("オブジェクトを取得できませんでした: {error}"))
+            })?;
 
-    for object in objects {
-        let (owner, object_name, object_type) = object.map_err(|error| {
-            DbError::execute(format!("オブジェクトを取得できませんでした: {error}"))
-        })?;
+        for object in objects {
+            let (owner, object_name, object_type) = object.map_err(|error| {
+                DbError::execute(format!("オブジェクトを取得できませんでした: {error}"))
+            })?;
 
-        let Some(kind) = ObjectKind::from_object_type(&object_type) else {
-            continue;
-        };
+            let Some(kind) = ObjectKind::from_object_type(&object_type) else {
+                continue;
+            };
 
-        // `ALL_USERS` に無い所有者は通常あり得ないが、あれば節点を足しておく。
-        let schema = schemas.entry(owner.clone()).or_insert_with(|| SchemaNode {
-            name: owner,
-            object_count: 0,
-            objects: Vec::new(),
-        });
-
-        schema.object_count += 1;
-        schema.objects.push(SchemaObject {
-            name: object_name,
-            kind,
-        });
+            push_object(&mut schemas, owner, object_name, kind);
+        }
     }
 
-    Ok(apply_filter(schemas.into_values().collect(), filter))
+    if filter.kinds.index {
+        // 制約や LOB のために自動生成された索引（`SYS_C0012345` など）は名前が
+        // 利用者の付けたものではなく、ツリーに並べても読めない。
+        let sql = "select owner, index_name from all_indexes
+                   where generated = 'N'
+                   order by owner, index_name";
+
+        let indexes = connection
+            .query_as::<(String, String)>(sql, &[])
+            .map_err(|error| DbError::execute(format!("索引を取得できませんでした: {error}")))?;
+
+        for index in indexes {
+            let (owner, index_name) = index.map_err(|error| {
+                DbError::execute(format!("索引を取得できませんでした: {error}"))
+            })?;
+            push_object(&mut schemas, owner, index_name, ObjectKind::Index);
+        }
+    }
+
+    if filter.kinds.database_link {
+        let sql = "select owner, db_link from all_db_links
+                   where owner <> 'PUBLIC'
+                   order by owner, db_link";
+
+        let links = connection
+            .query_as::<(String, String)>(sql, &[])
+            .map_err(|error| {
+                DbError::execute(format!("DB link を取得できませんでした: {error}"))
+            })?;
+
+        for link in links {
+            let (owner, db_link) = link.map_err(|error| {
+                DbError::execute(format!("DB link を取得できませんでした: {error}"))
+            })?;
+            push_object(&mut schemas, owner, db_link, ObjectKind::DatabaseLink);
+        }
+    }
+
+    let mut nodes: Vec<SchemaNode> = schemas.into_values().collect();
+    for node in &mut nodes {
+        sort_objects(&mut node.objects);
+    }
+
+    Ok(apply_filter(nodes, filter))
+}
+
+/// 取ってきたオブジェクト 1 件をスキーマへ足す。
+///
+/// 列挙元が 3 つに分かれるため、足す手順だけを切り出してある。
+///
+/// # 引数
+///
+/// * `schemas` - 組み立て中のスキーマの表
+/// * `owner` - 所有者のスキーマ名
+/// * `name` - オブジェクト名
+/// * `kind` - オブジェクトの種類
+fn push_object(
+    schemas: &mut BTreeMap<String, SchemaNode>,
+    owner: String,
+    name: String,
+    kind: ObjectKind,
+) {
+    // `ALL_USERS` に無い所有者は通常あり得ないが、あれば節点を足しておく。
+    let schema = schemas.entry(owner.clone()).or_insert_with(|| SchemaNode {
+        name: owner,
+        object_count: 0,
+        objects: Vec::new(),
+    });
+
+    schema.object_count += 1;
+    schema.objects.push(SchemaObject { name, kind });
+}
+
+/// スキーマ 1 つぶんのオブジェクトを名前順に並べ直す。
+///
+/// 列挙元が 3 つに分かれた結果、ビューごとにかたまって並ぶ。名前が同じ別種別
+/// （表と同名の索引など）もありうるため、種別を第 2 の鍵にして安定させる。
+///
+/// # 引数
+///
+/// * `objects` - 並べ直すオブジェクト
+pub fn sort_objects(objects: &mut [SchemaObject]) {
+    objects.sort_by(|left, right| left.name.cmp(&right.name).then(left.kind.cmp(&right.kind)));
+}
+
+/// フィルタが有効にしている `ALL_OBJECTS.OBJECT_TYPE` の並びを組み立てる。
+///
+/// `in (...)` の中身をそのまま返す。有効な種別が 1 つも無ければ空文字列を
+/// 返し、呼び出し側は問い合わせそのものを飛ばす。
+///
+/// # 引数
+///
+/// * `kinds` - 種別ごとの表示可否
+pub fn listed_object_types(kinds: &ObjectKindFilter) -> String {
+    OBJECT_VIEW_KINDS
+        .iter()
+        .filter(|kind| kinds.allows(**kind))
+        .map(|kind| format!("'{}'", kind.object_type()))
+        .collect::<Vec<String>>()
+        .join(",")
 }
 
 /// 段階 2。スキーマ 1 つぶんの列情報を取る。
@@ -335,7 +451,7 @@ mod tests {
         let schemas = vec![スキーマ("SYS", 900), スキーマ("KODUCHI", 8)];
         let filter = SchemaFilter {
             exclude_system: false,
-            hide_empty: true,
+            ..SchemaFilter::default()
         };
 
         // Act
@@ -350,8 +466,8 @@ mod tests {
         // Arrange
         let schemas = vec![スキーマ("KODUCHI", 8), スキーマ("KODUCHI_EMPTY", 0)];
         let filter = SchemaFilter {
-            exclude_system: true,
             hide_empty: false,
+            ..SchemaFilter::default()
         };
 
         // Act
@@ -359,6 +475,102 @@ mod tests {
 
         // Assert
         assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn 既定の種別ではall_objectsから取る九種別が並ぶ() {
+        // Arrange
+        let kinds = ObjectKindFilter::default();
+
+        // Act
+        let types = listed_object_types(&kinds);
+
+        // Assert: 索引と DB link は別のビューから取るため入らない
+        assert_eq!(
+            types,
+            "'TABLE','VIEW','MATERIALIZED VIEW','TRIGGER','SEQUENCE','SYNONYM','TYPE','FUNCTION','PROCEDURE'"
+        );
+    }
+
+    #[test]
+    fn 落とした種別は問い合わせの並びから消える() {
+        // Arrange
+        let kinds = ObjectKindFilter {
+            synonym: false,
+            r#type: false,
+            trigger: false,
+            ..ObjectKindFilter::default()
+        };
+
+        // Act
+        let types = listed_object_types(&kinds);
+
+        // Assert
+        assert!(!types.contains("SYNONYM"));
+        assert!(!types.contains("'TYPE'"));
+        assert!(!types.contains("TRIGGER"));
+        assert!(types.contains("'TABLE'"));
+    }
+
+    #[test]
+    fn 索引とdb_linkだけを残すとall_objectsは引かずに済む() {
+        // Arrange: 索引と DB link は `ALL_OBJECTS` から取らない
+        let kinds = ObjectKindFilter {
+            table: false,
+            view: false,
+            materialized_view: false,
+            trigger: false,
+            sequence: false,
+            synonym: false,
+            r#type: false,
+            function: false,
+            procedure: false,
+            package: false,
+            index: true,
+            database_link: true,
+        };
+
+        // Act
+        let types = listed_object_types(&kinds);
+
+        // Assert
+        assert_eq!(types, "");
+    }
+
+    #[test]
+    fn オブジェクトは名前順に並び同名は種別順になる() {
+        // Arrange
+        let mut objects = vec![
+            SchemaObject {
+                name: String::from("ORDERS"),
+                kind: ObjectKind::Index,
+            },
+            SchemaObject {
+                name: String::from("EVENTS"),
+                kind: ObjectKind::Table,
+            },
+            SchemaObject {
+                name: String::from("ORDERS"),
+                kind: ObjectKind::Table,
+            },
+        ];
+
+        // Act
+        sort_objects(&mut objects);
+
+        // Assert
+        let 並び: Vec<(&str, ObjectKind)> = objects
+            .iter()
+            .map(|object| (object.name.as_str(), object.kind))
+            .collect();
+        assert_eq!(
+            並び,
+            vec![
+                ("EVENTS", ObjectKind::Table),
+                ("ORDERS", ObjectKind::Table),
+                ("ORDERS", ObjectKind::Index),
+            ]
+        );
     }
 
     #[test]

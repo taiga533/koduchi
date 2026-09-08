@@ -160,23 +160,102 @@ export function toErrorMessage(value: unknown): string {
   return String(value)
 }
 
-/** スキーマツリーの絞り込み条件（ADR 0007）。接続ごとに保存される。 */
+/** スキーマツリーの絞り込み条件（ADR 0007・0014）。接続ごとに保存される。 */
 export interface SchemaFilter {
   /** システムスキーマを除外する。既定は真。 */
   excludeSystem: boolean
   /** 参照可能なオブジェクトが無いスキーマを隠す。既定は真。 */
   hideEmpty: boolean
+  /** ツリーに載せるオブジェクトの種別。既定はすべて真（ADR 0014）。 */
+  kinds: ObjectKindFilter
+}
+
+/**
+ * スキーマ内のオブジェクトの種類（ADR 0014）。
+ *
+ * 制約は含まない。`ALL_OBJECTS` に出てこないうえ、名前の大半が
+ * `SYS_C0012345` の自動生成であるためである（ADR 0014）。
+ */
+export type ObjectKind =
+  | 'table'
+  | 'view'
+  | 'materializedView'
+  | 'index'
+  | 'trigger'
+  | 'sequence'
+  | 'synonym'
+  | 'type'
+  | 'function'
+  | 'procedure'
+  | 'package'
+  | 'databaseLink'
+
+/**
+ * ツリーに束を出す順。
+ *
+ * Rust 側の `ObjectKind` の宣言順と同じである。よく見るものを先に置く。
+ */
+export const OBJECT_KIND_ORDER: ObjectKind[] = [
+  'table',
+  'view',
+  'materializedView',
+  'index',
+  'trigger',
+  'sequence',
+  'synonym',
+  'type',
+  'function',
+  'procedure',
+  'package',
+  'databaseLink',
+]
+
+/** 種別の表示名。ツリーの束の見出しと絞り込みメニューに出す。 */
+export const OBJECT_KIND_LABELS: Record<ObjectKind, string> = {
+  table: 'テーブル',
+  view: 'ビュー',
+  materializedView: 'マテリアライズドビュー',
+  index: '索引',
+  trigger: 'トリガー',
+  sequence: 'シーケンス',
+  synonym: 'シノニム',
+  type: '型',
+  function: 'ファンクション',
+  procedure: 'プロシージャ',
+  package: 'パッケージ',
+  databaseLink: 'DB link',
+}
+
+/**
+ * 種別ごとの表示可否（ADR 0014）。
+ *
+ * 鍵は `ObjectKind` そのものであり、Rust 側の `ObjectKindFilter` の項目名と
+ * 一致する。`filter.kinds[kind]` で直に引ける。
+ */
+export type ObjectKindFilter = Record<ObjectKind, boolean>
+
+/** 種別の絞り込みの既定値。すべて表示する。 */
+export const defaultObjectKindFilter: ObjectKindFilter = {
+  table: true,
+  view: true,
+  materializedView: true,
+  index: true,
+  trigger: true,
+  sequence: true,
+  synonym: true,
+  type: true,
+  function: true,
+  procedure: true,
+  package: true,
+  databaseLink: true,
 }
 
 /** スキーマフィルタの既定値。 */
 export const defaultSchemaFilter: SchemaFilter = {
   excludeSystem: true,
   hideEmpty: true,
+  kinds: defaultObjectKindFilter,
 }
-
-/** スキーマ内のオブジェクトの種類。 */
-export type ObjectKind =
-  'table' | 'view' | 'materializedView' | 'function' | 'procedure' | 'package' | 'sequence'
 
 /** スキーマ内のオブジェクト 1 件。 */
 export interface SchemaObject {

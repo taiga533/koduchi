@@ -29,6 +29,22 @@ const スキーマ一覧: SchemaNode[] = [
   },
 ]
 
+/** 種別を増やしたスキーマ（ADR 0014）。束ね方の確認に使う。 */
+const 種別の多いスキーマ: SchemaNode[] = [
+  {
+    name: 'KODUCHI',
+    objectCount: 6,
+    objects: [
+      { name: 'DAILY_GMV', kind: 'synonym' },
+      { name: 'IX_EVENTS_USER', kind: 'index' },
+      { name: 'ORDER_SUMMARY', kind: 'type' },
+      { name: 'REPORTS', kind: 'databaseLink' },
+      { name: 'TRG_TOUCH', kind: 'trigger' },
+      { name: 'USERS', kind: 'table' },
+    ],
+  },
+]
+
 const 列一覧: Record<string, TableColumn[]> = {
   KODUCHI: [
     {
@@ -71,7 +87,7 @@ describe('SchemaTree', () => {
     expect(row).toHaveTextContent('2')
   })
 
-  it('スキーマを展開するとオブジェクトが並ぶ', async () => {
+  it('スキーマを展開すると種別の束が並ぶ', async () => {
     // Arrange
     render(<SchemaTree />)
 
@@ -79,14 +95,45 @@ describe('SchemaTree', () => {
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
 
     // Assert
+    expect(screen.getByRole('button', { name: /テーブル/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /ファンクション/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /USERS/ })).not.toBeInTheDocument()
+  })
+
+  it('種別の束を展開するとその種別のオブジェクトだけが並ぶ', async () => {
+    // Arrange
+    render(<SchemaTree />)
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Assert
     expect(screen.getByRole('button', { name: /USERS/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /ORDER_TOTAL/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /ORDER_TOTAL/ })).not.toBeInTheDocument()
+  })
+
+  it('追加した種別もそれぞれの束として並ぶ', async () => {
+    // Arrange
+    useSchemaStore.setState({ schemas: 種別の多いスキーマ, columns: {} })
+    render(<SchemaTree />)
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Assert
+    expect(screen.getByRole('button', { name: /索引/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /トリガー/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /シノニム/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /型/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /DB link/ })).toBeInTheDocument()
   })
 
   it('テーブルを展開すると列名と型が並ぶ', async () => {
     // Arrange
     render(<SchemaTree />)
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /USERS/ }))
@@ -100,6 +147,7 @@ describe('SchemaTree', () => {
     // Arrange
     render(<SchemaTree />)
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
 
     // Act
     const 関数 = screen.getByRole('button', { name: /ORDER_TOTAL/ })
@@ -108,7 +156,7 @@ describe('SchemaTree', () => {
     expect(関数).not.toHaveAttribute('aria-expanded')
   })
 
-  it('絞り込み語に当たったオブジェクトだけが残る', async () => {
+  it('絞り込み中は束を開かなくても当たったオブジェクトが見える', async () => {
     // Arrange
     useSchemaStore.setState({ search: 'order' })
     render(<SchemaTree />)
@@ -119,6 +167,7 @@ describe('SchemaTree', () => {
     // Assert
     expect(screen.getByRole('button', { name: /ORDER_TOTAL/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /USERS/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /テーブル/ })).not.toBeInTheDocument()
   })
 
   it('取得に失敗するとその旨を出す', () => {
@@ -146,7 +195,7 @@ describe('flattenSchemas', () => {
     expect(rows[0]).toMatchObject({ kind: 'schema', name: 'KODUCHI', open: false })
   })
 
-  it('展開したスキーマの下にオブジェクトが並ぶ', () => {
+  it('展開したスキーマの下には種別の束だけが並ぶ', () => {
     // Arrange
     const expanded = { KODUCHI: true }
 
@@ -154,13 +203,44 @@ describe('flattenSchemas', () => {
     const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
 
     // Assert
-    expect(rows.map((row) => row.kind)).toEqual(['schema', 'object', 'object'])
-    expect(rows[2]).toMatchObject({ name: 'ORDER_TOTAL', expandable: false })
+    expect(rows.map((row) => row.kind)).toEqual(['schema', 'kindGroup', 'kindGroup'])
+    expect(rows[1]).toMatchObject({ objectKind: 'table', count: 1 })
+    expect(rows[2]).toMatchObject({ objectKind: 'function', count: 1 })
+  })
+
+  it('種別の束は決まった順に並ぶ', () => {
+    // Arrange
+    const expanded = { KODUCHI: true }
+
+    // Act
+    const rows = flattenSchemas(種別の多いスキーマ, {}, expanded)
+
+    // Assert
+    expect(rows.filter((row) => row.kind === 'kindGroup').map((row) => row.objectKind)).toEqual([
+      'table',
+      'index',
+      'trigger',
+      'synonym',
+      'type',
+      'databaseLink',
+    ])
+  })
+
+  it('展開した束の下にその種別のオブジェクトが並ぶ', () => {
+    // Arrange
+    const expanded = { KODUCHI: true, 'KODUCHI.#table': true }
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
+
+    // Assert
+    expect(rows.map((row) => row.kind)).toEqual(['schema', 'kindGroup', 'object', 'kindGroup'])
+    expect(rows[2]).toMatchObject({ name: 'USERS', expandable: true })
   })
 
   it('展開したテーブルの下に自分の列だけが並ぶ', () => {
     // Arrange
-    const expanded = { KODUCHI: true, 'KODUCHI.USERS': true }
+    const expanded = { KODUCHI: true, 'KODUCHI.#table': true, 'KODUCHI.USERS': true }
 
     // Act
     const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
@@ -174,24 +254,61 @@ describe('flattenSchemas', () => {
 
   it('列が未取得のテーブルには読み込み中の行が入る', () => {
     // Arrange
-    const expanded = { KODUCHI: true, 'KODUCHI.USERS': true }
+    const expanded = { KODUCHI: true, 'KODUCHI.#table': true, 'KODUCHI.USERS': true }
 
     // Act
     const rows = flattenSchemas(スキーマ一覧, {}, expanded)
 
     // Assert
-    expect(rows.map((row) => row.kind)).toEqual(['schema', 'object', 'columnsLoading', 'object'])
+    expect(rows.map((row) => row.kind)).toEqual([
+      'schema',
+      'kindGroup',
+      'object',
+      'columnsLoading',
+      'kindGroup',
+    ])
   })
 
   it('展開できない種類は開いた印を付けても展開されない', () => {
     // Arrange
-    const expanded = { KODUCHI: true, 'KODUCHI.ORDER_TOTAL': true }
+    const expanded = {
+      KODUCHI: true,
+      'KODUCHI.#function': true,
+      'KODUCHI.ORDER_TOTAL': true,
+    }
 
     // Act
     const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded)
 
     // Assert
-    expect(rows.map((row) => row.kind)).toEqual(['schema', 'object', 'object'])
+    expect(rows.map((row) => row.kind)).toEqual(['schema', 'kindGroup', 'kindGroup', 'object'])
+  })
+
+  it('束を既定で開くと展開の印が無くてもオブジェクトが並ぶ', () => {
+    // Arrange: 絞り込み中の挙動である
+    const expanded = { KODUCHI: true }
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded, true)
+
+    // Assert
+    expect(rows.filter((row) => row.kind === 'object').map((row) => row.name)).toEqual([
+      'USERS',
+      'ORDER_TOTAL',
+    ])
+  })
+
+  it('束を既定で開いても閉じた印があればその束は閉じたままになる', () => {
+    // Arrange
+    const expanded = { KODUCHI: true, 'KODUCHI.#table': false }
+
+    // Act
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, expanded, true)
+
+    // Assert
+    expect(rows.filter((row) => row.kind === 'object').map((row) => row.name)).toEqual([
+      'ORDER_TOTAL',
+    ])
   })
 })
 
@@ -200,6 +317,7 @@ describe('テーブル定義ビュー', () => {
     // Arrange
     render(<SchemaTree />)
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
     // Act
     const 入口 = screen.getByTitle('テーブル定義ビューは未実装です')

@@ -21,6 +21,7 @@ import type { Completion, CompletionContext, CompletionResult } from '@codemirro
 import type { Text } from '@codemirror/state'
 import type { SyntaxNode } from '@lezer/common'
 import type { IdentifierCase, ObjectKind } from '../../types/db'
+import { OBJECT_KIND_LABELS } from '../../types/db'
 import type { Catalog, CatalogObject } from './catalog'
 import { findObject, findSchema, foldName, resolveObject } from './catalog'
 import { styleIdentifier } from './identifiers'
@@ -46,21 +47,15 @@ const ICONS: Record<ObjectKind, string> = {
   table: 'class',
   view: 'class',
   materializedView: 'class',
+  index: 'property',
+  trigger: 'method',
+  sequence: 'variable',
+  synonym: 'class',
+  type: 'type',
   function: 'function',
   procedure: 'method',
   package: 'namespace',
-  sequence: 'variable',
-}
-
-/** オブジェクトの種類ごとの説明文。 */
-const KIND_LABELS: Record<ObjectKind, string> = {
-  table: 'テーブル',
-  view: 'ビュー',
-  materializedView: 'マテリアライズドビュー',
-  function: 'ファンクション',
-  procedure: 'プロシージャ',
-  package: 'パッケージ',
-  sequence: 'シーケンス',
+  databaseLink: 'namespace',
 }
 
 /** 候補の並び順。数が大きいほど上に出る。 */
@@ -358,7 +353,7 @@ function columnCompletion(
 function objectCompletion(object: CatalogObject, style: NameStyle): Completion {
   return nameCompletion(object.name, style, {
     type: ICONS[object.kind],
-    detail: KIND_LABELS[object.kind],
+    detail: OBJECT_KIND_LABELS[object.kind],
     boost: BOOST.object,
   })
 }
