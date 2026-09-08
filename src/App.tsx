@@ -195,6 +195,7 @@ export function App() {
   const rollback = useExecutionStore((state) => state.rollback)
   const releaseTab = useExecutionStore((state) => state.releaseTab)
   const markExhausted = useExecutionStore((state) => state.markExhausted)
+  const noteFormatFailure = useExecutionStore((state) => state.noteFormatFailure)
   const clearExecutions = useExecutionStore((state) => state.clear)
 
   const selectSidebarSegment = useUiStore((state) => state.selectSidebarSegment)
@@ -709,6 +710,30 @@ export function App() {
   }, [])
 
   /**
+   * `⇧⌥F`。今のタブの SQL を整形する（ADR 0024）。
+   *
+   * 定義タブでは `EditorPanel` がエディタを描かず、この口も繋がらないため
+   * 何も起きない（ADR 0022）。
+   */
+  const formatEditor = useCallback(() => {
+    editorRef.current?.formatDocument()
+  }, [])
+
+  /**
+   * 整形できなかったことをメッセージタブへ出す（ADR 0024）。
+   *
+   * 押した本人が結果を見に行かないと気づけないのでは、押した意味が分からない。
+   * 記録を積んだうえでメッセージタブへ切り替える。**本文には触れていない。**
+   */
+  const onFormatFailed = useCallback(
+    (message: string) => {
+      noteFormatFailure(message)
+      selectResultTab('messages')
+    },
+    [noteFormatFailure, selectResultTab],
+  )
+
+  /**
    * ツリーの `SELECT` を新しいタブに開く（ADR 0020）。
    *
    * **実行はしない。**結果セットのカーソルは接続 1 本につき高々 1 つであり
@@ -882,6 +907,7 @@ export function App() {
         run: () => void runPlan(true),
       },
       { id: 'cancel', label: '実行を中止', shortcut: '⌘.', run: cancelExecution },
+      { id: 'format', label: 'SQL を整形', shortcut: '⇧⌥F', run: formatEditor },
       { id: 'csv', label: '結果を CSV で保存', shortcut: '⌥⌘S', run: openCsvDialog },
       { id: 'commit', label: 'コミット', shortcut: '⌥⌘C', run: commitTransaction },
       { id: 'rollback', label: 'ロールバック', shortcut: '⌥⌘R', run: rollbackTransaction },
@@ -907,6 +933,7 @@ export function App() {
     [
       cancelExecution,
       commitTransaction,
+      formatEditor,
       openCsvDialog,
       openNewConnectionWindow,
       openNewTab,
@@ -1193,6 +1220,7 @@ export function App() {
                 onRunSelection={runSelection}
                 onRunScript={runScript}
                 onCancel={cancelExecution}
+                onFormatFailed={onFormatFailed}
               />
               <RunControls
                 tabId={activeTabId}
