@@ -11,7 +11,8 @@
  */
 
 import { create } from 'zustand'
-import type { Bind, SessionState } from '../types/db'
+import { autoBindKind } from '../sql/bindTypes'
+import type { Bind, BindKind, SessionState } from '../types/db'
 
 /** エディタタブ 1 枚。 */
 export interface EditorTab {
@@ -30,17 +31,19 @@ export interface EditorTab {
  * バインド変数 1 つへの入力。
  *
  * NULL のときも入力した文字は残す。チェックを外せば元の値に戻るほうが、
- * 値を尋ね直される場面では扱いやすい。
+ * 値を尋ね直される場面では扱いやすい。型も同じ理由で覚える（ADR 0016）。
  */
 export interface BindInput {
   /** 入力された値。 */
   text: string
+  /** バインドする型（ADR 0016）。 */
+  kind: BindKind
   /** NULL としてバインドするか。 */
   isNull: boolean
 }
 
 /** 何も入力されていない変数の既定値。 */
-export const emptyBindInput: BindInput = { text: '', isNull: false }
+export const emptyBindInput: BindInput = { text: '', kind: 'varchar2', isNull: false }
 
 interface TabState {
   tabs: EditorTab[]
@@ -286,10 +289,10 @@ export function selectBindValues(
 }
 
 /**
- * 入力を Rust 側へ渡す形へ変換する（ADR の「バインド変数」節）。
+ * 入力を Rust 側へ渡す形へ変換する（ADR の「バインド変数」節・ADR 0016）。
  *
  * 尋ねた名前の順に並べる。NULL のチェックが付いていれば値は `null` になり、
- * 入力していない変数は空文字列として渡る。
+ * 入力していない変数は空文字列として渡る。型はそのまま添える。
  *
  * @param names 尋ねた変数の名前
  * @param values 名前をキーにした入力
@@ -297,6 +300,48 @@ export function selectBindValues(
 export function toBinds(names: string[], values: Record<string, BindInput>): Bind[] {
   return names.map((name) => {
     const input = values[name] ?? emptyBindInput
-    return [name, input.isNull ? null : input.text]
+    return { name, kind: input.kind, value: input.isNull ? null : input.text }
   })
+}
+
+/**
+ * 尋ねる変数の入力を、前回の値と推し量った型で埋める（ADR 0016）。
+ *
+ * 既に覚えている変数はそのまま残す。利用者が選んだ型を推し量りで上書きしない
+ * ためである。初めて尋ねる変数には、比べている列から推し量った型を入れる。
+ * 覚えていた他の変数の入力も落とさずに残す。
+ *
+ * @param names 尋ねる変数の名前
+ * @param values 覚えている入力
+ * @param kinds 大文字に揃えた変数名で引く、推し量った型
+ */
+export function fillBindDefaults(
+  names: string[],
+  values: Record<string, BindInput>,
+  kinds: Record<string, BindKind>,
+): Record<string, BindInput> {
+  const filled: Record<string, BindInput> = { ...values }
+
+  for (const name of names) {
+    if (filled[name]) {
+      continue
+    }
+    filled[name] = { ...emptyBindInput, kind: kinds[name.toUpperCase()] ?? 'varchar2' }
+  }
+
+  return filled
+}
+
+/**
+ * 値を打ち直したときの入力を組み立てる（ADR 0016）。
+ *
+ * 利用者がまだ型を選び直していなければ、値の見た目に合わせて型も変える。
+ * 選び直したあと（今の型が値から決まる型と違うとき）は型に触れない。
+ *
+ * @param input 打ち直す前の入力
+ * @param text 新しい値
+ */
+export function applyBindText(input: BindInput, text: string): BindInput {
+  const following = input.kind === autoBindKind(input.text)
+  return { ...input, text, kind: following ? autoBindKind(text) : input.kind }
 }

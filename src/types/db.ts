@@ -80,12 +80,35 @@ export type ExecuteResponse = ExecuteOutcome & {
 }
 
 /**
- * バインド変数 1 つ。名前と与える値の対（ADR の「バインド変数」節）。
+ * バインド変数へ与える型（ADR 0016）。
  *
- * 値は型を選ばせずすべて文字列として渡し、Oracle 側では `VARCHAR2` として
- * バインドする。`null` は NULL を意味する。名前に前置きの `:` は含めない。
+ * 値そのものは常に文字列で渡し、Rust 側がこの区分に従って Oracle の型へ
+ * 変換する。読み取れない値は実行を始める前にエラーになる。
  */
-export type Bind = [name: string, value: string | null]
+export type BindKind = 'varchar2' | 'number' | 'date' | 'timestamp'
+
+/** 型を選ぶ欄に並べる順。既定の `varchar2` を先頭に置く。 */
+export const bindKinds: BindKind[] = ['varchar2', 'number', 'date', 'timestamp']
+
+/** 型を選ぶ欄に出す表示名。Oracle の型名をそのまま使う。 */
+export const bindKindLabels: Record<BindKind, string> = {
+  varchar2: 'VARCHAR2',
+  number: 'NUMBER',
+  date: 'DATE',
+  timestamp: 'TIMESTAMP',
+}
+
+/**
+ * バインド変数 1 つ。名前・型・値の 3 つ組（ADR 0016）。
+ *
+ * 値は常に文字列として渡し、`kind` の型へ Rust 側で変換する。`value` が `null`
+ * なら型に関わらず NULL としてバインドする。名前に前置きの `:` は含めない。
+ */
+export interface Bind {
+  name: string
+  kind: BindKind
+  value: string | null
+}
 
 /** 接続先の指定方法（ADR 0006）。 */
 export type ConnectTarget =

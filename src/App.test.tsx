@@ -330,7 +330,7 @@ describe('App', () => {
 
     // Assert
     await waitFor(() => expect(calls.execute).toHaveLength(1))
-    expect(calls.execute[0].binds).toEqual([['id', '42']])
+    expect(calls.execute[0].binds).toEqual([{ name: 'id', kind: 'number', value: '42' }])
   })
 
   it('null にチェックを付けると null として渡す', async () => {
@@ -350,7 +350,41 @@ describe('App', () => {
 
     // Assert
     await waitFor(() => expect(calls.execute).toHaveLength(1))
-    expect(calls.execute[0].binds).toEqual([['memo', null]])
+    expect(calls.execute[0].binds).toEqual([{ name: 'memo', kind: 'varchar2', value: null }])
+  })
+
+  it('比べている列の型を既定として選ぶ', async () => {
+    // Arrange: 列が読み込まれていれば、その型を初期値にする（ADR 0016）
+    const { api } = createFakeDbApi({
+      onExecute: () => 二行の結果,
+      schemas: [{ name: 'KODUCHI', objectCount: 1, objects: [{ name: 'USERS', kind: 'table' }] }],
+      columns: {
+        KODUCHI: [
+          {
+            objectName: 'USERS',
+            name: 'SIGNED_UP_AT',
+            typeName: 'TIMESTAMP(6)',
+            nullable: false,
+            kind: 'datetime',
+          },
+        ],
+      },
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    await waitFor(() => expect(useSchemaStore.getState().columnStatus).toBe('ready'))
+    useTabStore
+      .getState()
+      .updateContent(選択中のタブ(), 'select * from users where signed_up_at > :from')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('バインド変数の値')
+
+    // Assert
+    expect(screen.getByLabelText(':from の型')).toHaveValue('timestamp')
   })
 
   it('前回の値は次に尋ねられたとき初期値になる', async () => {
@@ -373,6 +407,7 @@ describe('App', () => {
 
     // Assert
     expect(screen.getByLabelText(':id')).toHaveValue('42')
+    expect(screen.getByLabelText(':id の型')).toHaveValue('number')
   })
 
   it('取り消すと実行しない', async () => {
@@ -429,7 +464,7 @@ describe('App', () => {
 
     // Assert
     await waitFor(() => expect(calls.explainPlan).toHaveLength(1))
-    expect(calls.explainPlan[0].binds).toEqual([['id', '7']])
+    expect(calls.explainPlan[0].binds).toEqual([{ name: 'id', kind: 'number', value: '7' }])
   })
 
   it('実行に失敗するとメッセージタブが現れる', async () => {
@@ -893,8 +928,8 @@ describe('App', () => {
     expect(screen.queryByText('バインド変数の値')).not.toBeInTheDocument()
     for (const call of calls.execute) {
       expect(call.binds).toEqual([
-        ['id', '7'],
-        ['name', 'あ'],
+        { name: 'id', kind: 'number', value: '7' },
+        { name: 'name', kind: 'varchar2', value: 'あ' },
       ])
     }
   })

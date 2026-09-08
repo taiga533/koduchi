@@ -332,8 +332,8 @@ describe('executeScript（スクリプト実行）', () => {
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
     const binds: Bind[] = [
-      ['id', '7'],
-      ['name', null],
+      { name: 'id', kind: 'number', value: '7' },
+      { name: 'name', kind: 'varchar2', value: null },
     ]
 
     // Act
@@ -923,8 +923,8 @@ describe('バインド変数の受け渡し', () => {
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
     const binds: Bind[] = [
-      ['id', '42'],
-      ['memo', null],
+      { name: 'id', kind: 'number', value: '42' },
+      { name: 'memo', kind: 'varchar2', value: null },
     ]
 
     // Act
@@ -940,7 +940,7 @@ describe('バインド変数の受け渡し', () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
-    const binds: Bind[] = [['id', '個人情報']]
+    const binds: Bind[] = [{ name: 'id', kind: 'varchar2', value: '個人情報' }]
 
     // Act
     await useExecutionStore
@@ -955,7 +955,7 @@ describe('バインド変数の受け渡し', () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
-    const binds: Bind[] = [['id', '42']]
+    const binds: Bind[] = [{ name: 'id', kind: 'number', value: '42' }]
 
     // Act
     await useExecutionStore
@@ -970,7 +970,7 @@ describe('バインド変数の受け渡し', () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
-    const binds: Bind[] = [['id', '42']]
+    const binds: Bind[] = [{ name: 'id', kind: 'number', value: '42' }]
 
     // Act
     await useExecutionStore
