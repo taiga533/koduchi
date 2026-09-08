@@ -111,8 +111,8 @@ export type TransactionAction = 'commit' | 'rollback'
 /** 整形の報せをログに出すときの見出し（ADR 0024）。 */
 const FORMAT_LOG_LABEL = 'SQL の整形'
 
-/** 接続断の報せをログに出すときの見出し（ADR 0026）。 */
-const CONNECTION_LOST_LOG_LABEL = '接続'
+/** 接続にまつわる報せをログに出すときの見出し（ADR 0026）。 */
+const CONNECTION_LOG_LABEL = '接続'
 
 /**
  * 未コミットのまま接続が切れたことを告げる文言（ADR 0026）。
@@ -123,6 +123,27 @@ const CONNECTION_LOST_LOG_LABEL = '接続'
  */
 const LOST_TRANSACTION_NOTICE =
   '未コミットの変更はデータベース側でロールバックされました。繋ぎ直した接続は別のセッションです'
+
+/** 繋ぎ直せなかったことを告げる文言（ADR 0026）。 */
+const RECONNECT_FAILURE_NOTICE = '繋ぎ直せませんでした'
+
+/**
+ * 接続にまつわる報せをログの 1 行として組み立てる（ADR 0026）。
+ *
+ * @param error 出す文言
+ */
+function 接続のログ(error: string): LogEntry {
+  return {
+    id: crypto.randomUUID(),
+    startedAt: new Date(),
+    sql: CONNECTION_LOG_LABEL,
+    elapsedMs: null,
+    rowCount: null,
+    error,
+    notices: [],
+    statement: null,
+  }
+}
 
 /** トランザクションの操作をログに出す文言（ADR 0012）。 */
 const TRANSACTION_LABELS: Record<TransactionAction, string> = {
@@ -226,6 +247,14 @@ interface ExecutionState {
    *    読み切ったタブの行はクライアント側にあるため、そのまま残す。
    */
   noteConnectionLost: (message: string) => void
+  /**
+   * 繋ぎ直せなかったことを記録する（ADR 0026）。
+   *
+   * 「再接続」を押した結果は、成功しても失敗しても分かる必要がある。失敗は
+   * 断そのものではないため `noteConnectionLost` とは別の入口にしてあり、
+   * 押すたびに 1 行が積まれる（押した回数だけ結果があるのが正しい）。
+   */
+  noteReconnectFailure: (message: string) => void
   /** すべての結果とログを捨てる。接続を切り替えたときに使う。 */
   clear: () => void
 }
@@ -636,21 +665,15 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         return {
           inTransaction: false,
           byTab: discardOpenCursors(state.byTab),
-          log: [
-            ...state.log,
-            {
-              id: crypto.randomUUID(),
-              startedAt: new Date(),
-              sql: CONNECTION_LOST_LOG_LABEL,
-              elapsedMs: null,
-              rowCount: null,
-              error,
-              notices: [],
-              statement: null,
-            },
-          ],
+          log: [...state.log, 接続のログ(error)],
         }
       })
+    },
+
+    noteReconnectFailure: (message) => {
+      set((state) => ({
+        log: [...state.log, 接続のログ(`${RECONNECT_FAILURE_NOTICE}: ${message}`)],
+      }))
     },
 
     noteFormatFailure: (message) => {

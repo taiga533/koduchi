@@ -1138,6 +1138,21 @@ describe('接続が切れたときの記録（ADR 0026）', () => {
     expect(最後?.error).toBe('ORA-03113: 通信路が切れました')
   })
 
+  it('繋ぎ直せなかったことは押すたびにログへ残る', () => {
+    // Arrange: 押した結果が分からないと、押したのかどうかも見分けられない
+    useExecutionStore.setState({ inTransaction: false })
+
+    // Act
+    useExecutionStore.getState().noteReconnectFailure('ORA-12541: TNS:no listener')
+    useExecutionStore.getState().noteReconnectFailure('ORA-12541: TNS:no listener')
+
+    // Assert
+    const 接続の行 = useExecutionStore.getState().log.filter((entry) => entry.sql === '接続')
+    expect(接続の行).toHaveLength(2)
+    expect(接続の行[0].error).toContain('繋ぎ直せませんでした')
+    expect(接続の行[0].error).toContain('ORA-12541')
+  })
+
   it('開いたままだった結果セットは破棄済みになる', async () => {
     // Arrange: 千行ちょうど返れば、まだ続きがあるかは分からずカーソルが残る
     const { api } = createFakeDbApi({

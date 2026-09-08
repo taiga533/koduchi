@@ -86,8 +86,14 @@ interface ConnectionState {
    *
    * 繋がっている最中にだけ効く。切断したあとに遅れて届いたエラーで、
    * 接続を選ぶ画面を「切れました」に戻さないためである。
+   *
+   * **段階が実際に変わったかを返す。**印が立った後のプールは往復せずその場で
+   * 断を返すため、切れたあとに触るたびに同じ報せが届く。呼び出し側はこの
+   * 戻り値を見て、2 度目以降の報せを数えない。
+   *
+   * @returns この呼び出しで初めて切れた状態になったか
    */
-  markLost: (message: string) => void
+  markLost: (message: string) => boolean
   /**
    * 同じ接続先へ繋ぎ直す（ADR 0026）。
    *
@@ -179,9 +185,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   markLost: (message) => {
     if (get().status !== 'connected') {
-      return
+      return false
     }
     set({ status: 'lost', error: message })
+    return true
   },
 
   reconnect: async () => {

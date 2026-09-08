@@ -215,14 +215,46 @@ describe('接続断からの回復（ADR 0026）', () => {
     expect(state.error).toBe('ORA-02396: 最大アイドル時間を超過しました')
   })
 
+  it('初めての接続断だけが段階を動かしたと答える', async () => {
+    // Arrange: 印が立った後のプールは往復せずその場で断を返すため、
+    // 切れたあとに触るたび同じ報せが届く（ADR 0026）
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    const 一度目 = useConnectionStore.getState().markLost('ORA-02396')
+    const 二度目 = useConnectionStore.getState().markLost('ORA-02396')
+
+    // Assert
+    expect(一度目).toBe(true)
+    expect(二度目).toBe(false)
+  })
+
+  it('繋ぎ直したあとの接続断はまた段階を動かしたと答える', async () => {
+    // Arrange: 2 度目の断を 1 度目と同じものとして飲み込まない
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+    useConnectionStore.getState().markLost('ORA-02396')
+    await useConnectionStore.getState().reconnect()
+
+    // Act
+    const 二度目の断 = useConnectionStore.getState().markLost('ORA-03113')
+
+    // Assert
+    expect(二度目の断).toBe(true)
+  })
+
   it('接続していないときの接続断は状態を動かさない', () => {
     // Arrange: 切断のあとに遅れて届いたエラーで画面を戻さない
     useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
 
     // Act
-    useConnectionStore.getState().markLost('ORA-03113')
+    const 動いた = useConnectionStore.getState().markLost('ORA-03113')
 
     // Assert
+    expect(動いた).toBe(false)
     expect(useConnectionStore.getState().status).toBe('disconnected')
   })
 

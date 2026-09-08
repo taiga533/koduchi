@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
-import { resetDbApi, setDbApi } from './api/db'
+import { getDbApi, resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, emptyResponse, queryResponse } from './test/fakeDbApi'
 import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingChanges'
 import { resetCloseTabDialog, setCloseTabDialog } from './components/editor/closing'
@@ -11,7 +11,7 @@ import { useConnectionStore } from './stores/connection'
 import { emptyExecution, useExecutionStore } from './stores/execution'
 import { useDefinitionStore } from './stores/definition'
 import { useSchemaStore } from './stores/schema'
-import type { SchemaNode } from './types/db'
+import type { SchemaFilter, SchemaNode } from './types/db'
 import { selectActiveSqlTab, selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
 
@@ -32,6 +32,11 @@ const 二行の結果 = queryResponse(
     ],
   ],
 )
+
+/** メッセージタブに積まれた「接続」の行を数える（ADR 0026）。 */
+function 断の行を数える(): number {
+  return useExecutionStore.getState().log.filter((entry) => entry.sql === '接続').length
+}
 
 /** 選択中のタブの ID を返す。 */
 function 選択中のタブ(): string {
@@ -1267,6 +1272,13 @@ describe('接続断の検出と回復（ADR 0026）', () => {
     useTabStore.setState({ tabs: [tab], activeTabId: tab.id, bindValues: {} })
   })
 
+  /** スキーマ取得に渡す既定の絞り込み。中身は問わない。 */
+  const 既定のフィルタ = {
+    excludeSystem: true,
+    hideEmpty: true,
+    kinds: {},
+  } as unknown as SchemaFilter
+
   /** アイドル時間の超過。昼休みのあとに最初に出会う番号である。 */
   const アイドル切断 = {
     kind: 'connectionLost' as const,
@@ -1357,6 +1369,86 @@ describe('接続断の検出と回復（ADR 0026）', () => {
     // 断の報せは、失敗した文そのもののログとは別の 1 行として積まれる
     const 断の行 = useExecutionStore.getState().log.find((entry) => entry.sql === '接続')
     expect(断の行?.error).toContain('ロールバックされました')
+  })
+
+  it('切れたあと何度往復してもメッセージタブの断の行は増えない', async () => {
+    // Arrange: 印が立った後のプールは往復せずその場で断を返す。数えてしまうと、
+    // いちばん読みたい最初の 1 行が上へ押し流される（ADR 0026）
+    const { api } = createFakeDbApi({ onExecute: () => Promise.reject(アイドル切断) })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select 1 from dual')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('接続が切れました')
+
+    // Act: 切れたあとに触りうる操作を重ねる
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await act(async () => {
+      await getDbApi()
+        .listSessions('c1')
+        .catch(() => {})
+      await getDbApi()
+        .schemaOverview('c1', 既定のフィルタ)
+        .catch(() => {})
+    })
+
+    // Assert
+    expect(断の行を数える()).toBe(1)
+  })
+
+  it('繋ぎ直したあとに再び切れたら新しい行が出る', async () => {
+    // Arrange: 2 度目の断を 1 度目と同じものとして飲み込まない（ADR 0026）
+    let 断を返す = true
+    const { api } = createFakeDbApi({
+      onExecute: () => (断を返す ? Promise.reject(アイドル切断) : emptyResponse),
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select 1 from dual')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('接続が切れました')
+    断を返す = false
+    await userEvent.click(screen.getByRole('button', { name: '再接続' }))
+    await screen.findByRole('button', { name: '接続中' })
+    断を返す = true
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+
+    // Assert
+    await screen.findByText('接続が切れました')
+    expect(断の行を数える()).toBe(2)
+  })
+
+  it('繋ぎ直せなかったら押した結果がメッセージタブへ残る', async () => {
+    // Arrange: 押した結果が分からないと、押したのかどうかも見分けられない
+    const { api } = createFakeDbApi({
+      onExecute: () => Promise.reject(アイドル切断),
+      connectError: { kind: 'connect', message: 'ORA-12541: TNS:no listener' },
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    useTabStore.getState().updateContent(選択中のタブ(), 'select 1 from dual')
+    await userEvent.click(screen.getByRole('button', { name: '実行' }))
+    await screen.findByText('接続が切れました')
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '再接続' }))
+
+    // Assert: 切れたままで、押した結果が 1 行として残る
+    expect(await screen.findByRole('button', { name: '再接続' })).toBeInTheDocument()
+    const 失敗の行 = useExecutionStore
+      .getState()
+      .log.filter((entry) => entry.error?.includes('繋ぎ直せませんでした'))
+    expect(失敗の行).toHaveLength(1)
+    expect(失敗の行[0].error).toContain('ORA-12541')
   })
 
   it('接続が切れているときの切断は未コミットを尋ねずに接続を選ぶ画面へ戻る', async () => {

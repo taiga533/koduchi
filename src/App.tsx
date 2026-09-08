@@ -198,6 +198,7 @@ export function App() {
   const markExhausted = useExecutionStore((state) => state.markExhausted)
   const noteFormatFailure = useExecutionStore((state) => state.noteFormatFailure)
   const noteConnectionLost = useExecutionStore((state) => state.noteConnectionLost)
+  const noteReconnectFailure = useExecutionStore((state) => state.noteReconnectFailure)
   const clearExecutions = useExecutionStore((state) => state.clear)
 
   const selectSidebarSegment = useUiStore((state) => state.selectSidebarSegment)
@@ -486,12 +487,21 @@ export function App() {
    * `execution` 側では未コミットの表示を降ろし、そのことをメッセージタブへ
    * 残す。切れた時点で Oracle はロールバック済みであり、表示を出し続けるのも、
    * 黙って消すのも、どちらも嘘になる。
+   *
+   * **配るのは段階が実際に変わったときだけである。**印が立った後のプールは
+   * 往復せずその場で断を返すため、切れたあとにツリーの枝を開く・定義タブを
+   * 開く・もう一度実行する、のたびに同じ報せが届く。数えてしまうと、
+   * いちばん読みたい最初の 1 行——未コミットがロールバックされたことを
+   * 添えた行——がメッセージタブの上へ押し流される。**この機能が守ろうとした
+   * 情報を、この機能自身のノイズで隠さない。**繋ぎ直したあとにもう一度
+   * 切れれば段階は `connected` から動くため、新しい行が必ず出る。
    */
   useEffect(
     () =>
       onConnectionLost((message) => {
-        useConnectionStore.getState().markLost(message)
-        noteConnectionLost(message)
+        if (useConnectionStore.getState().markLost(message)) {
+          noteConnectionLost(message)
+        }
       }),
     [noteConnectionLost],
   )
@@ -505,10 +515,19 @@ export function App() {
    * 開いていた結果セットは断の時点で破棄済みにしてあるため、ここでは何も
    * 捨てない。エディタのタブと内容も残す。スキーマツリーは同じデータベースの
    * ものであり、繋ぎ直しても中身は変わらない。
+   *
+   * **繋ぎ直せなかったときはメッセージタブへ残す。**押した結果が分からないと、
+   * 押したのかどうかすら見分けられない。繋ぎ直しの失敗は断そのものではなく
+   * `Connect` のエラーであり、断の見張り（`onConnectionLost`）には乗らない。
    */
   const reconnectConnection = useCallback(async () => {
     await useConnectionStore.getState().reconnect()
-  }, [])
+
+    const { status, error } = useConnectionStore.getState()
+    if (status === 'lost') {
+      noteReconnectFailure(error ?? '接続を確立できませんでした')
+    }
+  }, [noteReconnectFailure])
 
   /**
    * 未コミットの変更を片付けてから進めてよいかを決める（ADR 0012）。
