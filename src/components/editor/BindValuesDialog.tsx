@@ -1,9 +1,10 @@
 /**
- * バインド変数の値を尋ねるダイアログ（ADR の「バインド変数」節）。
+ * バインド変数の値を尋ねるダイアログ（ADR の「バインド変数」節・ADR 0016）。
  *
  * `⌘⏎` / `⇧⌘⏎` / `⌘E` / `⇧⌘E` の実行対象にバインド変数が含まれていたら、実行の
- * 前にここで値を尋ねる。値は型を選ばせず、すべて文字列として渡す。NULL を渡したい
- * ときは行ごとのチェックを付ける。
+ * 前にここで値を尋ねる。値は文字列として入力し、型は行ごとに選ぶ。既定の型は
+ * 呼び出し側が推し量って入れてあり、ここで選び直せる。NULL を渡したいときは行ごとの
+ * チェックを付ける。
  *
  * 見た目と作りは CSV 保存ダイアログ（`src/components/csv/CsvSaveDialog.tsx`）に
  * 揃えてある。`⏎` で実行、`esc` で取り消し。
@@ -11,7 +12,9 @@
 
 import { X } from 'lucide-react'
 import type { BindInput } from '../../stores/tab'
-import { emptyBindInput } from '../../stores/tab'
+import { applyBindText, emptyBindInput } from '../../stores/tab'
+import type { BindKind } from '../../types/db'
+import { bindKindLabels, bindKinds } from '../../types/db'
 
 interface BindValuesDialogProps {
   /** 尋ねる変数の名前。SQL に出てきた順。 */
@@ -37,6 +40,12 @@ export function BindValuesDialog({
   const 差し替える = (name: string, patch: Partial<BindInput>): void => {
     const current = values[name] ?? emptyBindInput
     onChange({ ...values, [name]: { ...current, ...patch } })
+  }
+
+  /** 値を打ち直す。まだ型を選び直していなければ、型も値の見た目に合わせる。 */
+  const 値を打ち直す = (name: string, text: string): void => {
+    const current = values[name] ?? emptyBindInput
+    onChange({ ...values, [name]: applyBindText(current, text) })
   }
 
   return (
@@ -77,13 +86,25 @@ export function BindValuesDialog({
                   {`:${name}`}
                 </label>
                 <div className="flex items-center gap-10px">
+                  <select
+                    aria-label={`:${name} の型`}
+                    value={input.kind}
+                    onChange={(event) => 差し替える(name, { kind: event.target.value as BindKind })}
+                    className="px-6px py-5px rounded-6px bg-bg border border-line text-11.5px text-fg font-inherit outline-none focus:border-ac"
+                  >
+                    {bindKinds.map((kind) => (
+                      <option key={kind} value={kind}>
+                        {bindKindLabels[kind]}
+                      </option>
+                    ))}
+                  </select>
                   <input
                     id={`bind-${name}`}
                     type="text"
                     autoFocus={index === 0}
                     value={input.text}
                     disabled={input.isNull}
-                    onChange={(event) => 差し替える(name, { text: event.target.value })}
+                    onChange={(event) => 値を打ち直す(name, event.target.value)}
                     className="flex-1 min-w-0 px-8px py-5px rounded-6px bg-bg border border-line text-12px text-fg font-inherit"
                   />
                   <label className="flex items-center gap-5px text-12px text-fg whitespace-nowrap">
@@ -101,7 +122,8 @@ export function BindValuesDialog({
         </div>
 
         <p className="m-0 text-11px text-fg4 leading-[1.6]">
-          値はすべて文字列として渡します。⏎ で実行、esc で取り消します。
+          値は選んだ型に直して渡します。日付は YYYY-MM-DD、時刻を含めるときは YYYY-MM-DD HH:MI:SS
+          の形式で書きます。⏎ で実行、esc で取り消します。
         </p>
 
         <div className="flex items-center gap-8px pt-2px border-t border-line2">

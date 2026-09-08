@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  collectBindOccurrences,
+  collectBindOccurrencesAcross,
   collectBindVariables,
   collectBindVariablesAcross,
   isSelectStatement,
@@ -608,5 +610,125 @@ describe('collectBindVariablesAcross', () => {
 
     // Assert
     expect(names).toEqual([])
+  })
+})
+
+describe('collectBindOccurrences', () => {
+  it('比べている列の名前を大文字で添える', () => {
+    // Arrange
+    const sql = 'select * from users where user_id = :id'
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([{ name: 'id', column: 'USER_ID' }])
+  })
+
+  it('等号以外の比較演算子でも列を拾う', () => {
+    // Arrange
+    const sql = 'select * from events where created_at >= :from and duration_ms <> :d'
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([
+      { name: 'from', column: 'CREATED_AT' },
+      { name: 'd', column: 'DURATION_MS' },
+    ])
+  })
+
+  it('like と between でも列を拾う', () => {
+    // Arrange
+    const sql = 'select * from t where name not like :p and created_on between :from and :to'
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([
+      { name: 'p', column: 'NAME' },
+      { name: 'from', column: 'CREATED_ON' },
+      { name: 'to', column: 'CREATED_ON' },
+    ])
+  })
+
+  it('修飾された列は最後の部分を名前とする', () => {
+    // Arrange
+    const sql = 'select * from users u where u.user_id = :id'
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([{ name: 'id', column: 'USER_ID' }])
+  })
+
+  it('関数を挟んだ形では列を拾わない', () => {
+    // Arrange: 取り違えて誤った型を既定にするくらいなら推し量らない
+    const sql = 'select * from t where created_at = trunc(:d)'
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([{ name: 'd', column: null }])
+  })
+
+  it('比較の形になっていなければ列は付かない', () => {
+    // Arrange
+    const sql = 'insert into t (id) values (:id)'
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([{ name: 'id', column: null }])
+  })
+
+  it('同じ名前が何度出てくればその数だけ並ぶ', () => {
+    // Arrange
+    const sql = 'select * from t where a = :x or b = :x'
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([
+      { name: 'x', column: 'A' },
+      { name: 'x', column: 'B' },
+    ])
+  })
+
+  it('文字列リテラルやコメントの中は拾わない', () => {
+    // Arrange
+    const sql = "select ':x' -- id = :y\nfrom t where id = :z"
+
+    // Act
+    const occurrences = collectBindOccurrences(sql)
+
+    // Assert
+    expect(occurrences).toEqual([{ name: 'z', column: 'ID' }])
+  })
+})
+
+describe('collectBindOccurrencesAcross', () => {
+  it('複数の文から場所を文の順に集める', () => {
+    // Arrange
+    const statements = [
+      'select * from t where id = :id',
+      'update t set memo = :memo where id = :id',
+    ]
+
+    // Act
+    const occurrences = collectBindOccurrencesAcross(statements)
+
+    // Assert
+    expect(occurrences).toEqual([
+      { name: 'id', column: 'ID' },
+      { name: 'memo', column: 'MEMO' },
+      { name: 'id', column: 'ID' },
+    ])
   })
 })

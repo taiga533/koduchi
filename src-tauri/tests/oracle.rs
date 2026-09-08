@@ -13,7 +13,9 @@
 //! `oracle::InitParams::init()` がプロセス 1 回きりであるため、テストは
 //! `serial_test` で直列に走らせる。
 
-use koduchi_lib::db::driver::{Chunk, ConnectTarget, ConnectionParams, ExecuteOutcome};
+use koduchi_lib::db::driver::{
+    Bind, BindKind, Chunk, ConnectTarget, ConnectionParams, ExecuteOutcome,
+};
 use koduchi_lib::db::error::DbErrorKind;
 use koduchi_lib::db::oracle::instant_client::{self, ClientStatus};
 use koduchi_lib::db::pool::{ConnectionPool, DEFAULT_CHUNK_SIZE};
@@ -775,7 +777,7 @@ fn バインド変数へ与えた値で絞り込める() {
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("keyword"), Some(String::from("dual")))];
+    let binds = vec![Bind::text("keyword", Some("dual"))];
 
     // Act
     let outcome = pool
@@ -797,7 +799,7 @@ fn nullを与えたバインド変数はnullとして届く() {
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("memo"), None)];
+    let binds = vec![Bind::text("memo", None)];
 
     // Act
     let outcome = pool
@@ -824,8 +826,8 @@ fn 文に無いバインド変数を渡しても実行できる() {
         return;
     };
     let binds = vec![
-        (String::from("id"), Some(String::from("1"))),
-        (String::from("使わない"), Some(String::from("x"))),
+        Bind::text("id", Some("1")),
+        Bind::text("使わない", Some("x")),
     ];
 
     // Act
@@ -843,12 +845,117 @@ fn 文に無いバインド変数を渡しても実行できる() {
 
 #[test]
 #[serial]
+fn 選んだ型のままoracleへ届く() {
+    // Arrange: `DUMP` の `Typ` はデータ型の番号で、1 が VARCHAR2、2 が NUMBER、
+    // 12 が DATE、180 が TIMESTAMP である（ADR 0016）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![
+        Bind::text("t", Some("42")),
+        Bind::new("n", BindKind::Number, Some(String::from("42"))),
+        Bind::new("d", BindKind::Date, Some(String::from("2024-03-04"))),
+        Bind::new(
+            "s",
+            BindKind::Timestamp,
+            Some(String::from("2024-03-04 05:06:07.123456")),
+        ),
+    ];
+
+    // Act
+    let outcome = pool
+        .execute(
+            TAB,
+            "select dump(:t), dump(:n), dump(:d), dump(:s) from dual",
+            &binds,
+        )
+        .unwrap()
+        .outcome;
+
+    // Assert
+    match outcome {
+        ExecuteOutcome::Query { chunk, .. } => {
+            let 型番号: Vec<&str> = chunk.rows[0]
+                .iter()
+                .map(|cell| cell.text.split(['=', ' ']).nth(1).unwrap_or(""))
+                .collect();
+            assert_eq!(型番号, vec!["1", "2", "12", "180"]);
+        }
+        other => panic!("問い合わせの結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn 日付として渡した値は時刻まで保たれる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![Bind::new(
+        "day",
+        BindKind::Date,
+        Some(String::from("2024-03-04 05:06:07")),
+    )];
+
+    // Act
+    let outcome = pool
+        .execute(
+            TAB,
+            "select to_char(:day, 'YYYY-MM-DD HH24:MI:SS') from dual",
+            &binds,
+        )
+        .unwrap()
+        .outcome;
+
+    // Assert
+    match outcome {
+        ExecuteOutcome::Query { chunk, .. } => {
+            assert_eq!(chunk.rows[0][0].text, "2024-03-04 05:06:07")
+        }
+        other => panic!("問い合わせの結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn 型として読めない値は実行する前にエラーになる() {
+    // Arrange: `ORA-` の文言ではなく、どの変数のどの値かが分かる形で返す
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![Bind::new(
+        "day",
+        BindKind::Date,
+        Some(String::from("きのう")),
+    )];
+
+    // Act
+    let error = pool
+        .execute(TAB, "select :day from dual", &binds)
+        .unwrap_err();
+
+    // Assert
+    assert_eq!(error.kind, DbErrorKind::Execute);
+    assert!(
+        error.message.contains(":day") && error.message.contains("きのう"),
+        "メッセージ: {}",
+        error.message
+    );
+}
+
+#[test]
+#[serial]
 fn バインド変数を含む文でも見積りの実行計画を取れる() {
     // Arrange
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("user_id"), Some(String::from("1")))];
+    let binds = vec![Bind::new(
+        "user_id",
+        BindKind::Number,
+        Some(String::from("1")),
+    )];
 
     // Act
     let plan = pool
@@ -866,7 +973,11 @@ fn バインド変数を含む文でも実測付きの実行計画を取れる()
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("user_id"), Some(String::from("1")))];
+    let binds = vec![Bind::new(
+        "user_id",
+        BindKind::Number,
+        Some(String::from("1")),
+    )];
 
     // Act
     let plan = pool

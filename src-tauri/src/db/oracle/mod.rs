@@ -296,7 +296,7 @@ impl Driver for OracleDriver {
             .build()
             .map_err(|error| DbError::execute(error.to_string()))?;
 
-        let bound = bind::bound_values(&statement, binds);
+        let bound = bind::bound_values(&statement, binds)?;
 
         if statement.is_query() {
             let result_set = statement
