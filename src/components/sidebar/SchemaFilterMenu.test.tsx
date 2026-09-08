@@ -14,6 +14,7 @@ const 保存済み: SavedConnection = {
   readOnly: false,
   autoCommit: false,
   schemaFilter: { excludeSystem: true, hideEmpty: true },
+  completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }
 

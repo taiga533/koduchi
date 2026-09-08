@@ -41,6 +41,7 @@ function 接続済みにする(readOnly = false, autoCommit = false): void {
       savedId: null,
       name: 'dev',
       params: 接続の設定(readOnly, autoCommit),
+      completion: { identifierCase: 'preserve' },
     },
     error: null,
   })

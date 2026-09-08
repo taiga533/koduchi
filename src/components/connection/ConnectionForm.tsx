@@ -18,14 +18,33 @@ import { useCallback, useEffect, useState } from 'react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getDbApi } from '../../api/db'
 import { useConnectionStore } from '../../stores/connection'
-import type { ConnectionParams, SavedConnection, SchemaFilter, TnsEntry } from '../../types/db'
-import { defaultSchemaFilter, toErrorMessage } from '../../types/db'
+import type {
+  ConnectionParams,
+  IdentifierCase,
+  SavedConnection,
+  SchemaFilter,
+  TnsEntry,
+} from '../../types/db'
+import { defaultCompletionSettings, defaultSchemaFilter, toErrorMessage } from '../../types/db'
 
 /** Oracle の既定のリスナーポート。 */
 const DEFAULT_PORT = '1521'
 
 /** 接続方式。 */
 type Method = 'ezConnect' | 'tns'
+
+/**
+ * 補完で挿入する識別子の綴りの選択肢（ADR 0013）。
+ *
+ * Oracle のカタログは名前を大文字で持つため、「大文字」と「カタログのまま」は
+ * 同じ結果になる。3 つに分けてあるのは、名前を小文字で持つ PostgreSQL を
+ * 足したときに意味が分かれるためである。
+ */
+const IDENTIFIER_CASES: { value: IdentifierCase; label: string; example: string }[] = [
+  { value: 'preserve', label: 'カタログのまま', example: 'ORDERS' },
+  { value: 'lower', label: '小文字', example: 'orders' },
+  { value: 'upper', label: '大文字', example: 'ORDERS' },
+]
 
 export interface ConnectionFormProps {
   /** 編集する保存済みの接続。`null` なら新規作成として開く。 */
@@ -63,6 +82,9 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
   const [autoCommit, setAutoCommit] = useState(initial?.autoCommit ?? false)
   const [remember, setRemember] = useState(true)
   const [filter] = useState<SchemaFilter>(initial?.schemaFilter ?? defaultSchemaFilter)
+  const [identifierCase, setIdentifierCase] = useState<IdentifierCase>(
+    initial?.completion.identifierCase ?? defaultCompletionSettings.identifierCase,
+  )
   const [testing, setTesting] = useState(false)
   /** 直近のテスト接続の結果。試した内容の写しを添えてある。 */
   const [tested, setTested] = useState<TestResult | null>(null)
@@ -181,7 +203,7 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
       return
     }
 
-    await connect(name.trim(), buildParams(), remember ? id : null)
+    await connect(name.trim(), buildParams(), remember ? id : null, { identifierCase })
 
     const connection = useConnectionStore.getState().connection
     if (!connection) {
@@ -198,6 +220,7 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
             readOnly,
             autoCommit,
             schemaFilter: filter,
+            completion: { identifierCase },
             target:
               method === 'ezConnect'
                 ? {
@@ -363,6 +386,23 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
           />
           実行のたびに自動でコミットする
         </label>
+        <div className="flex items-center gap-10px">
+          <span className="text-11.5px text-fg3">補完の綴り</span>
+          <div className="flex gap-2px p-2px rounded-8px bg-line2">
+            {IDENTIFIER_CASES.map((choice) => (
+              <MethodButton
+                key={choice.value}
+                active={identifierCase === choice.value}
+                onClick={() => setIdentifierCase(choice.value)}
+              >
+                {choice.label}
+              </MethodButton>
+            ))}
+          </div>
+          <span className="text-11.5px text-fg4 font-mono">
+            {IDENTIFIER_CASES.find((choice) => choice.value === identifierCase)?.example}
+          </span>
+        </div>
         <label className="flex items-center gap-8px text-12.5px text-fg cursor-pointer">
           <input
             type="checkbox"

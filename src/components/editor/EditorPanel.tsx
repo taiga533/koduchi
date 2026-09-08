@@ -8,9 +8,12 @@
  */
 
 import { useCallback, useMemo } from 'react'
-import { buildCompletionSchema, useSchemaStore } from '../../stores/schema'
+import { useConnectionStore } from '../../stores/connection'
+import { useSchemaStore } from '../../stores/schema'
 import { selectActiveTab, useTabStore } from '../../stores/tab'
 import type { TableColumn } from '../../types/db'
+import { defaultCompletionSettings } from '../../types/db'
+import { buildCatalog } from './catalog'
 import { SqlEditor, type EditorPosition } from './SqlEditor'
 
 /** 列がまだ読み込まれていないときに渡す表。参照を固定して再計算を避ける。 */
@@ -48,6 +51,13 @@ export function EditorPanel({
   const schemaColumns = useSchemaStore((state) => state.columns)
   const columnsReady = useSchemaStore((state) => state.columnStatus === 'ready')
 
+  // 非修飾で表名を出すのは接続したユーザーのスキーマだけにする（ADR 0013）。
+  const username = useConnectionStore((state) => state.connection?.params.username ?? null)
+  const identifierCase = useConnectionStore(
+    (state) =>
+      state.connection?.completion.identifierCase ?? defaultCompletionSettings.identifierCase,
+  )
+
   /**
    * 補完の元。
    *
@@ -55,9 +65,9 @@ export function EditorPanel({
    * 候補が出ている最中に言語設定が作り直されてちらつく（ADR 0007）。
    */
   const readyColumns = columnsReady ? schemaColumns : NO_COLUMNS
-  const completionSchema = useMemo(
-    () => buildCompletionSchema(schemas, readyColumns),
-    [readyColumns, schemas],
+  const catalog = useMemo(
+    () => buildCatalog(schemas, readyColumns, username),
+    [readyColumns, schemas, username],
   )
 
   const tabId = activeTab?.id ?? null
@@ -78,7 +88,8 @@ export function EditorPanel({
     <SqlEditor
       key={activeTab.id}
       value={activeTab.content}
-      schema={completionSchema}
+      catalog={catalog}
+      identifierCase={identifierCase}
       onChange={onChange}
       onCursorChange={onCursorChange}
       onRunStatement={onRunStatement}

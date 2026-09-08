@@ -69,6 +69,7 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
           autoCommit: connection.autoCommit,
         },
         connection.id,
+        connection.completion,
       )
 
       const active = useConnectionStore.getState().connection

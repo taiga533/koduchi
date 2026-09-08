@@ -3,7 +3,8 @@
 //! パスワードはここに**書かない**。パスワードだけを OS キーチェーンへ逃がすことで、
 //! この TOML は利用者が外部エディタで安全に編集できるプレーンな設定ファイルになる。
 //!
-//! スキーマツリーのフィルタ設定も接続ごとの項目としてここに持つ（ADR 0007）。
+//! スキーマツリーのフィルタ設定（ADR 0007）と補完の設定（ADR 0013）も接続ごとの
+//! 項目としてここに持つ。
 
 use crate::db::schema::SchemaFilter;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,30 @@ pub enum SavedTarget {
     Tns { directory: String, alias: String },
 }
 
+/// 補完で挿入する識別子の綴り（ADR 0013）。
+///
+/// Rust 側はこの値を使わない。`connections.toml` を往復させるためだけに持つ。
+/// 候補の組み立てはフロントエンドの `src/components/editor/` で行う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentifierCase {
+    /// カタログの綴りをそのまま挿入する。Oracle では大文字になる。
+    #[default]
+    Preserve,
+    /// 小文字で挿入する。
+    Lower,
+    /// 大文字で挿入する。
+    Upper,
+}
+
+/// 補完の設定（ADR 0013）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionSettings {
+    #[serde(default)]
+    pub identifier_case: IdentifierCase,
+}
+
 /// 保存された接続 1 件。パスワードは含まない。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +73,9 @@ pub struct SavedConnection {
     pub auto_commit: bool,
     #[serde(default)]
     pub schema_filter: SchemaFilter,
+    /// 補完の設定（ADR 0013）。項目を持たない古い設定ファイルでは既定値になる。
+    #[serde(default)]
+    pub completion: CompletionSettings,
     pub target: SavedTarget,
 }
 
@@ -157,6 +185,7 @@ mod tests {
             read_only: false,
             auto_commit: false,
             schema_filter: SchemaFilter::default(),
+            completion: CompletionSettings::default(),
             target: SavedTarget::EzConnect {
                 host: String::from("localhost"),
                 port: 1521,
@@ -366,5 +395,49 @@ serviceName = "FREEPDB1"
         // Assert
         assert!(!file.connections[0].read_only);
         assert_eq!(file.connections[0].schema_filter, SchemaFilter::default());
+    }
+
+    #[test]
+    fn 補完の項目が無い設定ファイルはカタログのままとして読める() {
+        // Arrange: 0013 より前に書かれた connections.toml を模す
+        let toml_text = r#"
+[[connection]]
+id = "id-1"
+name = "開発"
+username = "koduchi"
+
+[connection.target]
+method = "ezConnect"
+host = "localhost"
+port = 1521
+serviceName = "FREEPDB1"
+"#;
+
+        // Act
+        let file = ConnectionsFile::from_toml(toml_text);
+
+        // Assert
+        assert_eq!(
+            file.connections[0].completion.identifier_case,
+            IdentifierCase::Preserve
+        );
+    }
+
+    #[test]
+    fn 補完の綴りは書き出して読み戻しても保たれる() {
+        // Arrange
+        let mut connection = 接続を作る("id-case");
+        connection.completion.identifier_case = IdentifierCase::Lower;
+        let mut file = ConnectionsFile::default();
+        file.upsert(connection);
+
+        // Act
+        let restored = ConnectionsFile::from_toml(&file.to_toml());
+
+        // Assert
+        assert_eq!(
+            restored.connections[0].completion.identifier_case,
+            IdentifierCase::Lower
+        );
     }
 }

@@ -7,8 +7,8 @@
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
-import type { ConnectionParams } from '../types/db'
-import { toErrorMessage } from '../types/db'
+import type { CompletionSettings, ConnectionParams } from '../types/db'
+import { defaultCompletionSettings, toErrorMessage } from '../types/db'
 
 /** 接続の段階。ステータスバーの表示に使う。 */
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'failed'
@@ -27,6 +27,13 @@ export interface ActiveConnection {
   /** 利用者が付けた表示名。 */
   name: string
   params: ConnectionParams
+  /**
+   * 補完の設定（ADR 0013）。接続ごとの項目であり、接続した時点で決まる。
+   *
+   * `params` と分けてあるのは Rust へ渡さない値だからである。スキーマフィルタと
+   * 違って繋いだ後に変わらないため、設定を変える口はこのストアに持たない。
+   */
+  completion: CompletionSettings
 }
 
 interface ConnectionState {
@@ -36,7 +43,12 @@ interface ConnectionState {
   error: string | null
 
   /** 接続する。既に接続していれば先に切断する。 */
-  connect: (name: string, params: ConnectionParams, savedId?: string | null) => Promise<void>
+  connect: (
+    name: string,
+    params: ConnectionParams,
+    savedId?: string | null,
+    completion?: CompletionSettings,
+  ) => Promise<void>
   /** 切断する。接続していなければ何もしない。 */
   disconnect: () => Promise<void>
 }
@@ -67,7 +79,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   connection: null,
   error: null,
 
-  connect: async (name, params, savedId = null) => {
+  connect: async (name, params, savedId = null, completion = defaultCompletionSettings) => {
     const previous = get().connection
     if (previous) {
       await getDbApi().disconnect(previous.id)
@@ -78,7 +90,11 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
     try {
       await getDbApi().connect(id, params)
-      set({ status: 'connected', connection: { id, savedId, name, params }, error: null })
+      set({
+        status: 'connected',
+        connection: { id, savedId, name, params, completion },
+        error: null,
+      })
     } catch (error) {
       set({ status: 'failed', connection: null, error: toErrorMessage(error) })
     }
