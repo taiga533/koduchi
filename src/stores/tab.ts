@@ -11,6 +11,7 @@
  */
 
 import { create } from 'zustand'
+import { moveItem } from '../components/editor/tabOrder'
 import { autoBindKind } from '../sql/bindTypes'
 import type { Bind, BindKind, SessionState } from '../types/db'
 
@@ -61,6 +62,12 @@ interface TabState {
   closeTab: (id: string) => void
   /** タブを選択する。 */
   selectTab: (id: string) => void
+  /**
+   * タブを並びの中で動かす（ADR 0023）。
+   *
+   * 並びはそのままセッションへ保存され、再起動で復元される（ADR 0005）。
+   */
+  moveTab: (id: string, toIndex: number) => void
   /** タブの内容を書き換える。内容が変われば未保存になる。 */
   updateContent: (id: string, content: string) => void
   /** ファイルを開いて新しいタブにする（`⌘O`）。 */
@@ -153,7 +160,19 @@ export const useTabStore = create<TabState>((set) => ({
     }),
 
   selectTab: (id) =>
-    set((state) => (state.tabs.some((tab) => tab.id === id) ? { activeTabId: id } : state)),
+    set((state) =>
+      state.activeTabId !== id && state.tabs.some((tab) => tab.id === id)
+        ? { activeTabId: id }
+        : state,
+    ),
+
+  moveTab: (id, toIndex) =>
+    set((state) => {
+      const from = state.tabs.findIndex((tab) => tab.id === id)
+      const tabs = moveItem(state.tabs, from, toIndex)
+      // 動かなかったときは同じ配列が返る。参照が変わらなければ再描画も起きない。
+      return tabs === state.tabs ? state : { tabs }
+    }),
 
   updateContent: (id, content) =>
     set((state) => ({

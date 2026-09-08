@@ -1229,6 +1229,47 @@ mod tests {
         assert_eq!(restored.tabs[0].id, "t2");
     }
 
+    /// タブ 1 枚ぶんの試験用の値を作る。
+    ///
+    /// # 引数
+    ///
+    /// * `id` - タブの ID。名前は `<id>.sql` にする
+    fn 試験用のタブ(id: &str) -> SessionTab {
+        SessionTab {
+            id: String::from(id),
+            name: format!("{id}.sql"),
+            file_path: None,
+            content: String::new(),
+            dirty: false,
+        }
+    }
+
+    #[test]
+    fn 並べ替えたタブはその順序で復元される() {
+        // Arrange: 3 枚を保存したあと、1 枚目を末尾へ動かして保存し直す（ADR 0023）
+        let store = HistoryStore::open_in_memory().unwrap();
+        let 元の順 = SessionState {
+            tabs: vec![試験用のタブ("t1"), 試験用のタブ("t2"), 試験用のタブ("t3")],
+            active_tab_id: Some(String::from("t1")),
+            sidebar_segment: None,
+            sidebar_width: None,
+            editor_height: None,
+        };
+        store.save_session("main", &元の順).unwrap();
+
+        // Act
+        let 並べ替えた順 = SessionState {
+            tabs: vec![試験用のタブ("t2"), 試験用のタブ("t3"), 試験用のタブ("t1")],
+            ..元の順.clone()
+        };
+        store.save_session("main", &並べ替えた順).unwrap();
+        let restored = store.load_session("main").unwrap();
+
+        // Assert
+        let ids: Vec<&str> = restored.tabs.iter().map(|tab| tab.id.as_str()).collect();
+        assert_eq!(ids, vec!["t2", "t3", "t1"]);
+    }
+
     #[test]
     fn ウィンドウごとにセッションは独立している() {
         // Arrange

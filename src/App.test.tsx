@@ -5,6 +5,7 @@ import { App } from './App'
 import { resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, emptyResponse, queryResponse } from './test/fakeDbApi'
 import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingChanges'
+import { resetCloseTabDialog, setCloseTabDialog } from './components/editor/closing'
 import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
 import { useConnectionStore } from './stores/connection'
 import { emptyExecution, useExecutionStore } from './stores/execution'
@@ -94,6 +95,17 @@ let 確認の答え: boolean[] = []
 /** 差し替えた確認へ実際に渡された問いかけ。 */
 let 確認した問い: string[] = []
 
+/**
+ * 未保存のタブを閉じる確認に返す答え。先頭から順に使う（ADR 0023）。
+ *
+ * 未コミットの確認と同じく、ネイティブのダイアログは jsdom では開けないため
+ * 境界を差し替える。
+ */
+let タブを閉じる確認の答え: boolean[] = []
+
+/** 差し替えた確認へ実際に渡されたタブの名前。 */
+let タブを閉じるか尋ねた名前: string[] = []
+
 beforeEach(() => {
   確認の答え = []
   確認した問い = []
@@ -104,6 +116,12 @@ beforeEach(() => {
     },
     confirmCommit: async () => 確認の答え.shift() ?? false,
   }))
+  タブを閉じる確認の答え = []
+  タブを閉じるか尋ねた名前 = []
+  setCloseTabDialog(async (name) => {
+    タブを閉じるか尋ねた名前.push(name)
+    return タブを閉じる確認の答え.shift() ?? false
+  })
   useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
   useExecutionStore.getState().clear()
   useTabStore.setState({ bindValues: {} })
@@ -117,6 +135,7 @@ beforeEach(() => {
 afterEach(() => {
   resetDbApi()
   resetPendingDialogs()
+  resetCloseTabDialog()
 })
 
 describe('App', () => {
@@ -991,5 +1010,66 @@ describe('App', () => {
       'insert into t values (2)',
     ])
     expect(screen.getByText(/3 文中 2 文目で失敗しました/)).toBeInTheDocument()
+  })
+  it('書きかけのタブを閉じるときは確認を挟む（ADR 0023）', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({})
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+    act(() => {
+      useTabStore.getState().updateContent(タブ, 'select 1 from dual')
+    })
+    タブを閉じる確認の答え = [false]
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /を閉じる$/ }))
+
+    // Assert
+    expect(タブを閉じるか尋ねた名前).toHaveLength(1)
+    expect(useTabStore.getState().tabs.some((tab) => tab.id === タブ)).toBe(true)
+  })
+
+  it('確認で閉じるを選ぶとタブが閉じる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({})
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+    act(() => {
+      useTabStore.getState().updateContent(タブ, 'select 1 from dual')
+    })
+    タブを閉じる確認の答え = [true]
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /を閉じる$/ }))
+
+    // Assert
+    await waitFor(() =>
+      expect(useTabStore.getState().tabs.some((tab) => tab.id === タブ)).toBe(false),
+    )
+  })
+
+  it('何も打っていないタブは尋ねずに閉じる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({})
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /を閉じる$/ }))
+
+    // Assert
+    await waitFor(() =>
+      expect(useTabStore.getState().tabs.some((tab) => tab.id === タブ)).toBe(false),
+    )
+    expect(タブを閉じるか尋ねた名前).toHaveLength(0)
   })
 })
