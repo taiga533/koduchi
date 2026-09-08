@@ -680,3 +680,117 @@ export interface AppSettings {
   appearance: AppearanceSettings
   csv: CsvOptions
 }
+
+/**
+ * `ALL_SOURCE` に本文が載る種別（ADR 0021）。
+ *
+ * `ObjectKind`（ADR 0014）とは別の語彙である。ツリーが落としている
+ * `PACKAGE BODY` と `TYPE BODY` をここでは持つ。ソース検索では**本体こそが
+ * 探し先**だからである。表・ビュー・索引はここに無い。`ALL_SOURCE` に本文を
+ * 持たないためである。
+ */
+export type SourceKind =
+  'function' | 'procedure' | 'package' | 'packageBody' | 'trigger' | 'type' | 'typeBody'
+
+/**
+ * 種別を並べる順。
+ *
+ * Rust 側の `SourceKind` の宣言順と同じである。絞り込みのチェックの並びでもある。
+ */
+export const SOURCE_KIND_ORDER: SourceKind[] = [
+  'function',
+  'procedure',
+  'package',
+  'packageBody',
+  'trigger',
+  'type',
+  'typeBody',
+]
+
+/** 種別の表示名。当たった行の見出しと絞り込みに出す。 */
+export const SOURCE_KIND_LABELS: Record<SourceKind, string> = {
+  function: 'ファンクション',
+  procedure: 'プロシージャ',
+  package: 'パッケージ',
+  packageBody: 'パッケージ本体',
+  trigger: 'トリガー',
+  type: '型',
+  typeBody: '型の本体',
+}
+
+/**
+ * 検索する種別ごとの可否（ADR 0021）。
+ *
+ * 鍵は `SourceKind` そのものであり、Rust 側の `SourceKindFilter` の項目名と
+ * 一致する。落とした種別は問い合わせにも行かない。
+ */
+export type SourceKindFilter = Record<SourceKind, boolean>
+
+/** 種別の絞り込みの既定値。すべて探す。 */
+export const defaultSourceKindFilter: SourceKindFilter = {
+  function: true,
+  procedure: true,
+  package: true,
+  packageBody: true,
+  trigger: true,
+  type: true,
+  typeBody: true,
+}
+
+/**
+ * 検索語の最短の長さ（文字数）。
+ *
+ * Rust 側の `SOURCE_SEARCH_MIN_LENGTH` と同じ値である。短い語は投げても
+ * 上限まで拾って終わるだけであるため、押す前に画面でも止める。
+ */
+export const SOURCE_SEARCH_MIN_LENGTH = 2
+
+/** ソース検索 1 回ぶんの求め（ADR 0021）。 */
+export interface SourceSearchRequest {
+  /** 探す文字列。`%` や `_` は文字そのものとして扱う。 */
+  needle: string
+  /** 探す先のスキーマ。`null` は「すべてのスキーマ（システムを除く）」。 */
+  owner: string | null
+  kinds: SourceKindFilter
+  /** 大文字と小文字を区別するか。既定は偽。 */
+  caseSensitive: boolean
+  /** 持ち帰る当たり行数の上限。 */
+  limit: number
+}
+
+/** ソースの 1 行。 */
+export interface SourceLine {
+  /** `ALL_SOURCE.LINE`。1 始まり。 */
+  line: number
+  /** 行末の改行を落とした本文。字下げはそのまま残る。 */
+  text: string
+}
+
+/** 当たったオブジェクト 1 つ（ADR 0021）。 */
+export interface SourceObjectMatches {
+  owner: string
+  name: string
+  kind: SourceKind
+  /** 当たった行。行番号の昇順。 */
+  lines: SourceLine[]
+}
+
+/** ソース検索 1 回ぶんの結果（ADR 0021）。 */
+export interface SourceSearchResult {
+  objects: SourceObjectMatches[]
+  /** 当たった行の総数。 */
+  matchedLines: number
+  /**
+   * 上限に達して打ち切ったか。
+   *
+   * 真のときは「これで全部だ」と読ませてはならない。
+   */
+  truncated: boolean
+}
+
+/** 前後の行を読むときの相手（ADR 0021）。 */
+export interface SourceTarget {
+  owner: string
+  name: string
+  kind: SourceKind
+}

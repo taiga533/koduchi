@@ -8,7 +8,7 @@
 //! そのときは `DbErrorKind::Permission` へ写して「空だった」と混同させない。
 
 use crate::db::error::{DbError, DbResult};
-use crate::db::oracle::errors::{map_oracle_error, PERMISSION_ERRORS};
+use crate::db::oracle::errors::map_permission_error;
 use crate::db::sessions::{check_kill_allowed, SessionOverview, SessionRow};
 use oracle::Connection;
 
@@ -43,20 +43,9 @@ const SESSIONS_SQL: &str = "select s.sid,
 const IDENTITY_SQL: &str =
     "select sys_context('userenv','sid'), sys_context('userenv','instance') from dual";
 
-/// Oracle のエラーを、権限不足なら `Permission` へ写す。
-///
-/// 権限が無いことと「見た結果が空だった」ことを、呼び出し側が区別できるように
-/// するための変換である（ADR 0017）。判定そのものは `oracle::errors` にある
-/// （`DBMS_METADATA.GET_DDL` も同じ判定を使うため、ADR 0019 で切り出した）。
-///
-/// # 引数
-///
-/// * `context` - 何をしようとしていたか
-/// * `error` - Oracle が返したエラー
-/// * `hint` - 権限不足のときに添える案内
-fn 権限を見分ける(context: &str, error: &oracle::Error, hint: &str) -> DbError {
-    map_oracle_error(context, error, hint, &PERMISSION_ERRORS)
-}
+/// `V$SESSION` を参照できないときに添える案内。
+const SESSION_PERMISSION_HINT: &str =
+    "。この接続には参照権限がありません（SELECT_CATALOG_ROLE などが要ります）";
 
 /// `SYS_CONTEXT` の返す文字列を番号として読む。
 ///
@@ -103,10 +92,10 @@ pub fn load_sessions(connection: &Connection) -> DbResult<SessionOverview> {
     let (current_sid, instance) = load_identity(connection)?;
 
     let rows = connection.query(SESSIONS_SQL, &[]).map_err(|error| {
-        権限を見分ける(
+        map_permission_error(
             "V$SESSION を参照できません",
             &error,
-            "。この接続には参照権限がありません（SELECT_CATALOG_ROLE などが要ります）",
+            SESSION_PERMISSION_HINT,
         )
     })?;
 
@@ -114,10 +103,10 @@ pub fn load_sessions(connection: &Connection) -> DbResult<SessionOverview> {
 
     for row in rows {
         let row = row.map_err(|error| {
-            権限を見分ける(
+            map_permission_error(
                 "V$SESSION を参照できません",
                 &error,
-                "。この接続には参照権限がありません（SELECT_CATALOG_ROLE などが要ります）",
+                SESSION_PERMISSION_HINT,
             )
         })?;
 
@@ -210,7 +199,7 @@ pub fn kill_session(
         .execute(&kill_statement(sid, serial), &[])
         .map(|_| ())
         .map_err(|error| {
-            権限を見分ける(
+            map_permission_error(
                 &format!("SID {sid} を終了できません"),
                 &error,
                 "。この接続には ALTER SYSTEM 権限がありません",

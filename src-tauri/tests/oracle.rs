@@ -21,6 +21,10 @@ use koduchi_lib::db::error::DbErrorKind;
 use koduchi_lib::db::oracle::instant_client::{self, ClientStatus};
 use koduchi_lib::db::pool::{ConnectionPool, DEFAULT_CHUNK_SIZE};
 use koduchi_lib::db::schema::{ObjectKind, ObjectKindFilter, SchemaFilter};
+use koduchi_lib::db::source::{
+    SourceKind, SourceKindFilter, SourceObjectMatches, SourceSearchRequest, SourceSearchResult,
+    SOURCE_SEARCH_DEFAULT_LIMIT,
+};
 use koduchi_lib::db::value::{Cell, CellKind};
 use serial_test::serial;
 
@@ -1751,4 +1755,194 @@ fn 存在しないオブジェクトのddlは権限として弾かれる() {
 
     // Assert
     assert_eq!(error.kind, DbErrorKind::Permission);
+}
+
+/// 開発用データベースのパッケージ本体だけに置いてある目印
+/// （`dev/oracle/initdb/007_source_search.sql`）。
+const SOURCE_MARK: &str = "KODUCHI_SOURCE_MARK";
+
+/// `KODUCHI` スキーマを探すソース検索の求めを作る。
+///
+/// # 引数
+///
+/// * `needle` - 探す文字列
+fn ソースを探す求め(needle: &str) -> SourceSearchRequest {
+    SourceSearchRequest {
+        needle: String::from(needle),
+        owner: Some(String::from("KODUCHI")),
+        kinds: SourceKindFilter::default(),
+        case_sensitive: false,
+        limit: SOURCE_SEARCH_DEFAULT_LIMIT,
+    }
+}
+
+/// 結果から名前と種別の合うオブジェクトを取り出す。
+///
+/// # 引数
+///
+/// * `result` - 検索の結果
+/// * `name` - オブジェクト名
+/// * `kind` - 種別
+fn 当たったオブジェクト<'a>(
+    result: &'a SourceSearchResult,
+    name: &str,
+    kind: SourceKind,
+) -> Option<&'a SourceObjectMatches> {
+    result
+        .objects
+        .iter()
+        .find(|object| object.name == name && object.kind == kind)
+}
+
+#[test]
+#[serial]
+fn ソース検索はパッケージ本体を見つける() {
+    // Arrange: ツリーは本体を出さないが、ソース検索では本体こそが探し先である
+    // （ADR 0014・0021）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.search_source(ソースを探す求め(SOURCE_MARK)).unwrap();
+
+    // Assert
+    let 本体 = 当たったオブジェクト(&result, "ORDER_AUDIT", SourceKind::PackageBody)
+        .expect("パッケージ本体が当たるはず");
+    assert!(本体.lines[0].text.contains(SOURCE_MARK));
+    assert!(!result.truncated);
+
+    // 目印は仕様には置いていない
+    assert!(当たったオブジェクト(&result, "ORDER_AUDIT", SourceKind::Package).is_none());
+}
+
+#[test]
+#[serial]
+fn ソース検索は既定で大文字と小文字を区別しない() {
+    // Arrange: 本体には `koduchi.user_traits` と小文字で書いてある
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.search_source(ソースを探す求め("USER_TRAITS")).unwrap();
+
+    // Assert
+    assert!(当たったオブジェクト(&result, "ORDER_AUDIT", SourceKind::PackageBody).is_some());
+}
+
+#[test]
+#[serial]
+fn 大文字と小文字を区別すると綴りの違うものは当たらない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let mut request = ソースを探す求め("USER_TRAITS");
+    request.case_sensitive = true;
+
+    // Act
+    let result = pool.search_source(request).unwrap();
+
+    // Assert
+    assert!(当たったオブジェクト(&result, "ORDER_AUDIT", SourceKind::PackageBody).is_none());
+}
+
+#[test]
+#[serial]
+fn 落とした種別はソース検索の対象にならない() {
+    // Arrange: 落とした種別は問い合わせにも行かない（ADR 0021）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let mut request = ソースを探す求め(SOURCE_MARK);
+    request.kinds = SourceKindFilter {
+        package_body: false,
+        ..SourceKindFilter::default()
+    };
+
+    // Act
+    let result = pool.search_source(request).unwrap();
+
+    // Assert
+    assert!(当たったオブジェクト(&result, "ORDER_AUDIT", SourceKind::PackageBody).is_none());
+}
+
+#[test]
+#[serial]
+fn 上限に達したソース検索は打ち切りとして返る() {
+    // Arrange: 黙って切り詰めない。出ていないものを「無い」と読ませないため
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let mut request = ソースを探す求め("END");
+    request.limit = 1;
+
+    // Act
+    let result = pool.search_source(request).unwrap();
+
+    // Assert
+    assert!(result.truncated);
+    assert_eq!(result.matched_lines, 1);
+}
+
+#[test]
+#[serial]
+fn 短すぎる検索語は問い合わせずに弾かれる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let error = pool
+        .search_source(ソースを探す求め("a"))
+        .expect_err("1 文字では弾かれるはず");
+
+    // Assert
+    assert!(error.message.contains("2 文字以上"));
+}
+
+#[test]
+#[serial]
+fn ソース検索をしても結果セットは壊れない() {
+    // Arrange: 検索はプールの結果セットを保持していない接続で走る
+    // （ADR 0003・0021）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    pool.execute(TAB, "select event_id from koduchi.events", &[])
+        .unwrap();
+
+    // Act
+    pool.search_source(ソースを探す求め(SOURCE_MARK)).unwrap();
+
+    // Assert
+    let chunk = pool.fetch_more(TAB).unwrap();
+    assert_eq!(chunk.rows.len(), DEFAULT_CHUNK_SIZE);
+}
+
+#[test]
+#[serial]
+fn 当たった行の前後を読める() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let result = pool.search_source(ソースを探す求め(SOURCE_MARK)).unwrap();
+    let 本体 = 当たったオブジェクト(&result, "ORDER_AUDIT", SourceKind::PackageBody).unwrap();
+    let 当たり行 = 本体.lines[0].line;
+    let target = koduchi_lib::db::source::SourceTarget {
+        owner: 本体.owner.clone(),
+        name: 本体.name.clone(),
+        kind: 本体.kind,
+    };
+
+    // Act
+    let lines = pool.source_context(target, 当たり行).unwrap();
+
+    // Assert
+    assert!(lines.len() > 1, "前後の行が添えられるはず");
+    assert!(lines.iter().any(|line| line.line == 当たり行));
+    assert!(lines.windows(2).all(|pair| pair[0].line < pair[1].line));
 }

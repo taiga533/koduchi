@@ -48,7 +48,7 @@ const OBJECT_VIEW_KINDS: [ObjectKind; 10] = [
 ///
 /// 「システムスキーマを除外」が見るリストである。網羅ではなく、既定で ON の
 /// フィルタとして実用に足りる範囲を並べてある。
-const SYSTEM_SCHEMAS: [&str; 33] = [
+pub const SYSTEM_SCHEMAS: [&str; 33] = [
     "ANONYMOUS",
     "APPQOSSYS",
     "AUDSYS",

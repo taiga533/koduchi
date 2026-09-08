@@ -31,6 +31,10 @@ import type {
   SchemaNode,
   SessionOverview,
   SessionState,
+  SourceLine,
+  SourceSearchRequest,
+  SourceSearchResult,
+  SourceTarget,
   TableColumn,
   TnsnamesFile,
 } from '../types/db'
@@ -139,6 +143,22 @@ export interface DbApi {
    */
   killSession(id: string, sid: number, serial: number): Promise<void>
 
+  /**
+   * オブジェクトのソースを横断して検索する（ADR 0021）。
+   *
+   * 検索語はバインド変数として渡され、SQL へ直に埋め込まれない。当たり行数には
+   * 上限があり、達したときは `truncated` が真になる。参照権限が無い接続では
+   * `permission` の区分でエラーになる。空の結果ではない。
+   */
+  searchSource(id: string, request: SourceSearchRequest): Promise<SourceSearchResult>
+  /**
+   * 当たった行の前後を読む（ADR 0021）。
+   *
+   * 全文ではなく前後だけを読む。数千行のパッケージ本体でも持ち帰る量を
+   * 一定に保つためである。
+   */
+  sourceContext(id: string, target: SourceTarget, line: number): Promise<SourceLine[]>
+
   /** 見積りだけの実行計画をテキストで返す（`⌘E`）。 */
   explainPlan(id: string, sql: string, binds: Bind[]): Promise<string>
   /** 実測付きの実行計画をテキストで返す（`⇧⌘E`）。 */
@@ -207,6 +227,9 @@ const tauriDbApi: DbApi = {
 
   listSessions: (id) => invoke('list_sessions', { id }),
   killSession: (id, sid, serial) => invoke('kill_session', { id, sid, serial }),
+
+  searchSource: (id, request) => invoke('search_source', { id, request }),
+  sourceContext: (id, target, line) => invoke('source_context', { id, target, line }),
 
   explainPlan: (id, sql, binds) => invoke('explain_plan', { id, sql, binds }),
   actualPlan: (id, sql, binds) => invoke('actual_plan', { id, sql, binds }),

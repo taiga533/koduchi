@@ -11,12 +11,14 @@ pub mod instant_client;
 pub mod plan;
 pub mod schema;
 pub mod sessions;
+pub mod source;
 
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
+use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use oracle::sql_type::OracleType;
 use oracle::{Connection, ResultSet, Row};
 use std::sync::Arc;
@@ -451,5 +453,13 @@ impl Driver for OracleDriver {
 
     fn kill_session(&mut self, sid: u32, serial: u32) -> DbResult<()> {
         sessions::kill_session(&self.connection, sid, serial, self.read_only)
+    }
+
+    fn search_source(&mut self, request: &SourceSearchRequest) -> DbResult<SourceSearchResult> {
+        source::search_source(&self.connection, request)
+    }
+
+    fn source_context(&mut self, target: &SourceTarget, line: u32) -> DbResult<Vec<SourceLine>> {
+        source::source_context(&self.connection, target, line)
     }
 }

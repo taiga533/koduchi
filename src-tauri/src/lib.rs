@@ -68,6 +68,8 @@ pub fn run() {
             commands::definition::object_ddl,
             commands::sessions::list_sessions,
             commands::sessions::kill_session,
+            commands::source::search_source,
+            commands::source::source_context,
             commands::plan::explain_plan,
             commands::plan::actual_plan,
             commands::tns::read_tnsnames,

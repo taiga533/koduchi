@@ -64,6 +64,12 @@ interface UiState {
    */
   sessionsOpen: boolean
   /**
+   * オブジェクトのソース検索のパネルを開いているか（ADR 0021）。
+   *
+   * 検索条件と結果は `sourceSearch` ストアが持つ。ここは開閉だけを預かる。
+   */
+  sourceSearchOpen: boolean
+  /**
    * 結果テーブルで手を入れた列幅。タブ ID → 列名 → 幅（ピクセル）。
    *
    * 列名をキーにするため、同じクエリを実行し直しても幅が保たれる。設定ファイルや
@@ -108,6 +114,10 @@ interface UiState {
   openSessions: () => void
   /** セッションとロックのパネルを閉じる。 */
   closeSessions: () => void
+  /** オブジェクトのソース検索のパネルを開く（`⇧⌘F`、ADR 0021）。 */
+  openSourceSearch: () => void
+  /** オブジェクトのソース検索のパネルを閉じる。 */
+  closeSourceSearch: () => void
   /** 保存済みの設定を読み込んで反映する。起動時に 1 度呼ぶ。 */
   loadSettings: () => Promise<void>
 }
@@ -161,6 +171,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   csvOptions: defaultCsvOptions,
   settingsOpen: false,
   sessionsOpen: false,
+  sourceSearchOpen: false,
   resultColumnWidths: {},
 
   selectSidebarSegment: (segment) => set({ sidebarSegment: segment }),
@@ -255,6 +266,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   openSessions: () => set({ sessionsOpen: true }),
   closeSessions: () => set({ sessionsOpen: false }),
+
+  openSourceSearch: () => set({ sourceSearchOpen: true }),
+  closeSourceSearch: () => set({ sourceSearchOpen: false }),
 
   loadSettings: async () => {
     try {

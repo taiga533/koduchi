@@ -24,6 +24,7 @@ import {
   ArrowLeftRight,
   Check,
   ChevronUp,
+  FileSearch,
   Lock,
   Settings,
   Undo2,
@@ -48,6 +49,13 @@ interface StatusBarProps {
    * ためである。
    */
   onOpenSessions?: () => void
+  /**
+   * オブジェクトのソース検索のパネルを開く（`⇧⌘F`、ADR 0021）。
+   *
+   * 渡さないとメニューに項目が出ない。接続していない画面では意味を持たない
+   * ためである。
+   */
+  onOpenSourceSearch?: () => void
   /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
@@ -70,6 +78,7 @@ export function StatusBar({
   onDisconnect,
   onSwitchConnection,
   onOpenSessions,
+  onOpenSourceSearch,
   onCommit,
   onRollback,
 }: StatusBarProps) {
@@ -94,6 +103,7 @@ export function StatusBar({
           onDisconnect={onDisconnect}
           onSwitchConnection={onSwitchConnection}
           onOpenSessions={onOpenSessions}
+          onOpenSourceSearch={onOpenSourceSearch}
         />
       ) : (
         <span>{STATUS_LABELS[status]}</span>
@@ -164,8 +174,9 @@ function TransactionButton({
  * 接続を選ぶ画面へ戻る。同じ動きに 2 つの入口を置いてあるのは、切り替えの
  * つもりの利用者に「切断」しか見えないと、その道が無いように見えるためである。
  *
- * セッションとロック（ADR 0017）もここから開く。「今どこへ繋がっているか」を
- * 出している所は、そのデータベースのセッションを覗く入口としても自然である。
+ * セッションとロック（ADR 0017）とオブジェクトのソース検索（ADR 0021）も
+ * ここから開く。「今どこへ繋がっているか」を出している所は、そのデータベースの
+ * 中身を覗く入口としても自然である。
  *
  * ステータスバーは画面の最下段にあるため、メニューは上へ開く。
  */
@@ -173,10 +184,12 @@ function ConnectionMenu({
   onDisconnect,
   onSwitchConnection,
   onOpenSessions,
+  onOpenSourceSearch,
 }: {
   onDisconnect: () => void
   onSwitchConnection: () => void
   onOpenSessions?: () => void
+  onOpenSourceSearch?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const color = useConnectionStore((state) => state.connection?.color ?? 'none')
@@ -231,6 +244,13 @@ function ConnectionMenu({
               icon={<Activity size={13} />}
               label="セッションとロック…"
               onSelect={() => select(onOpenSessions)}
+            />
+          ) : null}
+          {onOpenSourceSearch ? (
+            <MenuItem
+              icon={<FileSearch size={13} />}
+              label="ソースを検索…"
+              onSelect={() => select(onOpenSourceSearch)}
             />
           ) : null}
         </div>

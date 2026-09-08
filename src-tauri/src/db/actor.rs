@@ -13,6 +13,7 @@ use crate::db::driver::{Bind, Canceller, Chunk, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
+use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -81,6 +82,17 @@ enum Command {
         sid: u32,
         serial: u32,
         respond: Sender<DbResult<()>>,
+    },
+    /// オブジェクトのソースを横断して検索する（ADR 0021）。
+    SearchSource {
+        request: SourceSearchRequest,
+        respond: Sender<DbResult<SourceSearchResult>>,
+    },
+    /// 当たった行の前後を読む（ADR 0021）。
+    SourceContext {
+        target: SourceTarget,
+        line: u32,
+        respond: Sender<DbResult<Vec<SourceLine>>>,
     },
     /// スレッドを終了する。
     Close,
@@ -384,6 +396,44 @@ impl ConnectionHandle {
         response.recv().map_err(|_| DbError::closed())?
     }
 
+    /// オブジェクトのソースを横断して検索する（ADR 0021）。
+    ///
+    /// 結果セットのカーソルは開かないため、この接続が保持している結果は
+    /// 壊れない。
+    ///
+    /// # 引数
+    ///
+    /// * `request` - 検索の求め
+    pub fn search_source(&self, request: SourceSearchRequest) -> DbResult<SourceSearchResult> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::SearchSource { request, respond })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
+    /// 当たった行の前後を読む（ADR 0021）。
+    ///
+    /// # 引数
+    ///
+    /// * `target` - 読むオブジェクト
+    /// * `line` - 中心にする行
+    pub fn source_context(&self, target: SourceTarget, line: u32) -> DbResult<Vec<SourceLine>> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::SourceContext {
+                target,
+                line,
+                respond,
+            })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
     /// 実行中の文を中止する。
     ///
     /// アクタースレッドが実行で塞がっている最中でも効く。
@@ -501,6 +551,16 @@ fn run_actor<D, F>(
                 respond,
             } => {
                 let _ = respond.send(driver.kill_session(sid, serial));
+            }
+            Command::SearchSource { request, respond } => {
+                let _ = respond.send(driver.search_source(&request));
+            }
+            Command::SourceContext {
+                target,
+                line,
+                respond,
+            } => {
+                let _ = respond.send(driver.source_context(&target, line));
             }
             Command::Close => break,
         }
@@ -713,6 +773,33 @@ mod tests {
         fn kill_session(&mut self, sid: u32, serial: u32) -> DbResult<()> {
             self.killした相手.lock().unwrap().push((sid, serial));
             Ok(())
+        }
+
+        fn search_source(
+            &mut self,
+            request: &crate::db::source::SourceSearchRequest,
+        ) -> DbResult<crate::db::source::SourceSearchResult> {
+            Ok(crate::db::source::group_matches(
+                vec![crate::db::source::RawSourceMatch {
+                    owner: String::from("KODUCHI"),
+                    name: request.needle.to_uppercase(),
+                    kind: crate::db::source::SourceKind::PackageBody,
+                    line: 1,
+                    text: String::from("begin\n"),
+                }],
+                request.effective_limit(),
+            ))
+        }
+
+        fn source_context(
+            &mut self,
+            target: &crate::db::source::SourceTarget,
+            line: u32,
+        ) -> DbResult<Vec<crate::db::source::SourceLine>> {
+            Ok(vec![crate::db::source::SourceLine {
+                line,
+                text: target.name.clone(),
+            }])
         }
     }
 
@@ -1015,6 +1102,45 @@ mod tests {
 
         // Assert
         assert_eq!(*killした相手.lock().unwrap(), vec![(123, 45678)]);
+    }
+
+    #[test]
+    fn ソース検索はアクタースレッドから返る() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+        let request = crate::db::source::SourceSearchRequest {
+            needle: String::from("orders"),
+            owner: None,
+            kinds: crate::db::source::SourceKindFilter::default(),
+            case_sensitive: false,
+            limit: crate::db::source::SOURCE_SEARCH_DEFAULT_LIMIT,
+        };
+
+        // Act
+        let result = handle.search_source(request).unwrap();
+
+        // Assert
+        assert_eq!(result.objects[0].name, "ORDERS");
+    }
+
+    #[test]
+    fn ソースの前後を読む求めはそのままドライバへ届く() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+        let target = crate::db::source::SourceTarget {
+            owner: String::from("KODUCHI"),
+            name: String::from("ORDER_STATS"),
+            kind: crate::db::source::SourceKind::PackageBody,
+        };
+
+        // Act
+        let lines = handle.source_context(target, 12).unwrap();
+
+        // Assert
+        assert_eq!(lines[0].line, 12);
+        assert_eq!(lines[0].text, "ORDER_STATS");
     }
 
     #[test]

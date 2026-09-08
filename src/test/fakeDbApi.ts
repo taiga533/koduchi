@@ -31,10 +31,14 @@ import type {
   SessionOverview,
   SessionRow,
   SessionState,
+  SourceLine,
+  SourceSearchRequest,
+  SourceSearchResult,
+  SourceTarget,
   TableColumn,
   TnsnamesFile,
 } from '../types/db'
-import { defaultCsvOptions } from '../types/db'
+import { defaultCsvOptions, defaultSourceKindFilter } from '../types/db'
 
 /** 呼び出しの記録。テストから中身を確かめる。 */
 export interface FakeCalls {
@@ -62,6 +66,8 @@ export interface FakeCalls {
   objectDdl: { id: string; owner: string; name: string; kind: ObjectKind }[]
   listSessions: string[]
   killSession: { id: string; sid: number; serial: number }[]
+  searchSource: { id: string; request: SourceSearchRequest }[]
+  sourceContext: { id: string; target: SourceTarget; line: number }[]
   explainPlan: { id: string; sql: string; binds: Bind[] }[]
   actualPlan: { id: string; sql: string; binds: Bind[] }[]
   saveConnection: { connection: SavedConnection; password: string | null }[]
@@ -119,6 +125,12 @@ export interface FakeDbApiOptions {
   sessionsError?: unknown
   /** kill で投げるエラー。 */
   killError?: unknown
+  /** ソース検索の結果（ADR 0021）。 */
+  sourceMatches?: SourceSearchResult
+  /** ソース検索で投げるエラー。権限不足の表示を確かめるのに使う。 */
+  sourceError?: unknown
+  /** 当たった行の前後（ADR 0021）。 */
+  sourceLines?: SourceLine[]
   /** tnsnames.ora の内容。 */
   tnsnames?: TnsnamesFile
   /** アプリ設定。 */
@@ -173,6 +185,33 @@ export function sessionRow(row: Partial<SessionRow> & { sid: number }): SessionR
     blockingInstance: null,
     own: false,
     ...row,
+  }
+}
+
+/** 何も指定しないときのソース検索の結果（ADR 0021）。 */
+export const emptySourceSearchResult: SourceSearchResult = {
+  objects: [],
+  matchedLines: 0,
+  truncated: false,
+}
+
+/**
+ * ソース検索の求めを組み立てる。
+ *
+ * 指定しなかった項目は、すべてのスキーマを全種別・大小の区別なしで探す求めになる。
+ *
+ * @param request 差し替える項目
+ */
+export function sourceSearchRequest(
+  request: Partial<SourceSearchRequest> = {},
+): SourceSearchRequest {
+  return {
+    needle: '',
+    owner: null,
+    kinds: defaultSourceKindFilter,
+    caseSensitive: false,
+    limit: 500,
+    ...request,
   }
 }
 
@@ -271,6 +310,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     objectDdl: [],
     listSessions: [],
     killSession: [],
+    searchSource: [],
+    sourceContext: [],
     explainPlan: [],
     actualPlan: [],
     saveConnection: [],
@@ -479,6 +520,19 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       if (options.killError !== undefined) {
         throw options.killError
       }
+    },
+
+    searchSource: async (id, request) => {
+      calls.searchSource.push({ id, request })
+      if (options.sourceError !== undefined) {
+        throw options.sourceError
+      }
+      return options.sourceMatches ?? emptySourceSearchResult
+    },
+
+    sourceContext: async (id, target, line) => {
+      calls.sourceContext.push({ id, target, line })
+      return options.sourceLines ?? []
     },
 
     explainPlan: async (id, sql, binds) => {

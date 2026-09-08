@@ -12,6 +12,7 @@ use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::error::DbResult;
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
+use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use crate::db::value::{Cell, CellKind};
 use serde::{Deserialize, Serialize};
 
@@ -351,6 +352,31 @@ pub trait Driver: 'static {
     /// * `sid` - 対象の `SID`
     /// * `serial` - 対象の `SERIAL#`。`SID` は使い回されるため両方が要る
     fn kill_session(&mut self, sid: u32, serial: u32) -> DbResult<()>;
+
+    /// オブジェクトのソースを横断して検索する（ADR 0021）。
+    ///
+    /// 結果セットのカーソルは開かない。利用者が見ている結果は壊れない。
+    /// 参照権限が無い場合は `DbErrorKind::Permission` のエラーを返す。空の
+    /// 結果を返してはならない。「見えない」と「無い」は別物である。
+    ///
+    /// 当たり行数には必ず上限を置く。探し先は数十万〜数百万行になりうる。
+    ///
+    /// # 引数
+    ///
+    /// * `request` - 検索の求め
+    fn search_source(&mut self, request: &SourceSearchRequest) -> DbResult<SourceSearchResult>;
+
+    /// 当たった行の前後を読む（ADR 0021）。
+    ///
+    /// 当たった行だけでは「その名前をどう使っているのか」が読めない。全文では
+    /// なく前後だけを読むのは、数千行のパッケージ本体でも持ち帰る量を一定に
+    /// 保つためである。
+    ///
+    /// # 引数
+    ///
+    /// * `target` - 読むオブジェクト
+    /// * `line` - 中心にする行
+    fn source_context(&mut self, target: &SourceTarget, line: u32) -> DbResult<Vec<SourceLine>>;
 }
 
 #[cfg(test)]

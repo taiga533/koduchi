@@ -54,6 +54,7 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 | `src-tauri/src/db/`              | `Driver` trait とアクター・接続プール・Oracle 実装（ADR 0002・0003） |
 | `src-tauri/src/db/schema.rs`     | スキーマツリーの型とフィルタ（ADR 0007・0014）                       |
 | `src-tauri/src/db/definition.rs` | テーブル定義の型と制約・索引の組み立て（ADR 0019）                   |
+| `src-tauri/src/db/source.rs`     | ソース検索の型と結果のまとめ（ADR 0021）                             |
 | `src-tauri/src/tnsnames/`        | tnsnames.ora の自前パーサ（ADR 0006）                                |
 | `src-tauri/src/config/`          | `connections.toml` の読み書き（ADR 0004）                            |
 | `src-tauri/src/keychain/`        | `keyring` の包み。パスワードだけを置く（ADR 0004）                   |
@@ -93,7 +94,7 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 ダブルクリックは 1 回目と 2 回目の押し下げでそれぞれ `click` が起き、開閉が 2 度切り替わって元へ戻る。**`event.detail` を見て打ち消す細工は入れない**（結果テーブルの「ダブルクリックは 1 回目の押し下げで選択も起こる」と同じ扱い）。行の右に押しどころを足すときは `data-row-action` を付け、ダブルクリックの挿入から外すこと（「定義」がそうしている）。ツリーの中でだけ効くキーは `↑` / `↓` / `→` / `←` と `⌥⏎`（挿入）/ `⌘C`（コピー）で、`SchemaTree` の `keydown` に置く。仮想スクロールのため焦点は 1 行だけが持ち（roving tabindex）、行が描かれるまで待ってから当てる。
 
-**キーバインドの置き場所**: エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` と検索の `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` は CodeMirror の keymap に、それ以外（`⌘E` / `⇧⌘E` / `⌥⌘S` / `⌥⌘C` / `⌥⌘R` / `⌘S` / `⇧⌘S` / `⌘O` / `⌘T` / `⌘W` / `⌃⌘N` / `⌘K`）は `App.tsx` の `keydown` に置く。後者は `event.defaultPrevented` を見て、エディタが既に処理したものを二重に扱わない。修飾の重なる `⌘S` / `⇧⌘S` / `⌥⌘S` は、絞りの強い枝から先に見る。結果テーブルの中でしか意味を持たない `⌘C` / `⇧⌘C` / `⌘A` は `ResultTable` の `keydown` に置き、スキーマツリーの中でしか意味を持たない `↑` / `↓` / `→` / `←` / `⌥⏎` / `⌘C` は `SchemaTree` の `keydown` に置く（ADR 0020）。`⌘I`（Ask AI）は**割り当てない**（将来のための予約）。`⌘K` はコマンドパレット（ADR 0018）に割り当て済みである。
+**キーバインドの置き場所**: エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` と検索の `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` は CodeMirror の keymap に、それ以外（`⌘E` / `⇧⌘E` / `⌥⌘S` / `⌥⌘C` / `⌥⌘R` / `⌘S` / `⇧⌘S` / `⌘O` / `⌘T` / `⌘W` / `⌃⌘N` / `⌘K` / `⇧⌘F`）は `App.tsx` の `keydown` に置く。後者は `event.defaultPrevented` を見て、エディタが既に処理したものを二重に扱わない。修飾の重なる `⌘S` / `⇧⌘S` / `⌥⌘S` は、絞りの強い枝から先に見る。結果テーブルの中でしか意味を持たない `⌘C` / `⇧⌘C` / `⌘A` は `ResultTable` の `keydown` に置き、スキーマツリーの中でしか意味を持たない `↑` / `↓` / `→` / `←` / `⌥⏎` / `⌘C` は `SchemaTree` の `keydown` に置く（ADR 0020）。`⌘I`（Ask AI）は**割り当てない**（将来のための予約）。`⌘K` はコマンドパレット（ADR 0018）、`⇧⌘F` はオブジェクトのソース検索（ADR 0021）に割り当て済みである。`⇧⌘F` は CodeMirror の `⌘F` とは修飾が違うため食い合わない。
 
 **結果テーブルのコピー**: セル選択は `ResultTable` の中に閉じた状態で持つ（`ui` ストアへ置くと打鍵ごとにアプリ全体が描き直る）。タブを切り替えたときは `ResultPane` が `key={tabId}` で作り直し、選択を捨てる。範囲の判定とコピー文字列の組み立ては `src/components/results/selection.ts` の純粋な関数に寄せてある。クリップボードは `src/api/clipboard.ts` 越しに呼ぶ（テストで差し替えるため）。
 
@@ -104,6 +105,8 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 **トランザクション**（ADR 0012）: 自動コミットは接続ごとの項目で、既定はオフ（手動コミット）。未コミットかどうかは実行のたびに `DBMS_TRANSACTION.LOCAL_TRANSACTION_ID` を読んで決める。**クライアント側で DML を数えない。** コミット / ロールバックはプールの全接続へ配る。未コミットのまま接続を手放させないための関所は `App.tsx` の `resolvePendingTransaction` にあり、ウィンドウを閉じる経路（`onWindowCloseRequested`）・アプリの終了（`lib.rs` の `RunEvent::ExitRequested`）・切断（`disconnectAndReset`）のすべてがここを通る。
 
 **セッションとロック**（ADR 0017）: `V$SESSION` の一覧・ブロッキングの連鎖・他セッションの kill。入口はステータスバーの「接続中」のメニューで、`SessionsPanel` をオーバーレイで開く。取得はプールの `background_handle`（スキーマ取得と実行計画と同じ経路）で行い、**利用者の結果セットのカーソルには触れない**。連鎖の組み立ては `src-tauri/src/db/sessions.rs` の純粋な関数で、循環・一覧に居ない待たせ手・別インスタンスの 3 つを取りこぼさない。kill の関所は 3 つ（読み取り専用を弾く / 小槌自身の接続を弾く / 確認ダイアログ）。**前の 2 つは Rust 側に置く。** `ALTER SYSTEM` はデータを書かないため読み取り専用トランザクション（ADR 0004）では止まらず、ここだけはクライアント側で判定するしかない。権限が無いときは `DbErrorKind::Permission` で返し、**空の一覧を出さない。**
+
+**オブジェクトのソース検索**（ADR 0021）: `ALL_SOURCE` を横断して「この文字列を含む処理はどれか」を探す。入口はステータスバーの「接続中」のメニューと `⇧⌘F` で、`SourceSearchPanel` をオーバーレイで開く。取得はプールの `background_handle`（セッション一覧・スキーマ取得・実行計画と同じ経路）で行い、**利用者の結果セットのカーソルには触れない**。`ALL_SOURCE` は数十万〜数百万行あるため、重さを 3 つで抑える — 検索語は 2 文字以上、所有者と種別の絞り込みを `like` より先に効かせる、`rownum` で当たり行に上限（既定 500）を置く。**上限のために `order by` を付けない**（付けると全件を拾ってから並べることになる）。並べ直しと束ねは `src-tauri/src/db/source.rs` の純粋な関数で、問い合わせの組み立ては `src-tauri/src/db/oracle/source.rs` の `build_search_sql` にある。**検索語は必ずバインド変数で渡し、`like` の `%` / `_` / `\` は打ち消す。** 探すのは PL/SQL の 7 種別で、**`PACKAGE BODY` と `TYPE BODY` を含む**（ツリーは出さないが、ソース検索では本体こそが探し先である。種別の列挙は `ObjectKind` とは別の `SourceKind` を使う）。**ビューの本文は対象外**（`ALL_VIEWS.TEXT` は `LONG` で `like` に掛けられない。理由は ADR 0021）。既定で大文字と小文字を区別せず、畳むのは**両辺とも Oracle 側**である。当たった行の前後は**選んだときに**読む（`source_context`、前後 5 行）。権限が無いときは `DbErrorKind::Permission` で返し、**空の結果を出さない。** 打ち切ったときも**黙って切り詰めない。**
 
 **CSV の書き出し**: 行はフロントエンドに溜めない。カーソルから取り出したかたまりを `csv_append` で順に Rust へ渡し、書き終えたら `csv_finish` を呼ぶ（`src/csv/exportCsv.ts`）。中止と失敗では `csv_abort` で書きかけのファイルごと消す。数十万行を 1 度の IPC に載せないための形である。
 
