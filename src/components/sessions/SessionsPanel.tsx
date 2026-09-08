@@ -22,6 +22,7 @@ import {
   useSessionsStore,
 } from '../../stores/sessions'
 import type { BlockingNode, SessionRow } from '../../types/db'
+import { isComposingKey } from '../../input/ime'
 
 interface SessionsPanelProps {
   /** 接続の識別子。 */
@@ -71,7 +72,8 @@ export function SessionsPanel({ connectionId, readOnly, onClose }: SessionsPanel
   // 取り消したつもりで一覧まで失う。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') {
+      // 変換中の `esc` は変換の取り消しである（ADR 0025）。
+      if (event.key !== 'Escape' || isComposingKey(event)) {
         return
       }
       if (useSessionsStore.getState().killTarget) {

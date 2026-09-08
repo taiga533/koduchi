@@ -12,6 +12,7 @@ import { useState } from 'react'
 import { Check, Pencil, X } from 'lucide-react'
 import type { SavedQuery } from '../../types/db'
 import { useSavedQueryStore } from '../../stores/savedQuery'
+import { isComposingKey } from '../../input/ime'
 
 /** SQL の 1 行目だけを取り出して詰める。一覧では全文を出さない。 */
 function summarize(sql: string): string {
@@ -95,6 +96,10 @@ function SavedQueryRow({ entry, onUse, onRename, onRemove }: SavedQueryRowProps)
           aria-label="クエリの名前"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            // 変換中の `⏎` は変換の確定、`esc` は変換の取り消しである（ADR 0025）。
+            if (isComposingKey(event)) {
+              return
+            }
             if (event.key === 'Enter') {
               event.preventDefault()
               確定する()

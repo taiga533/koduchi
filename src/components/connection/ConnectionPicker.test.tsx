@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
@@ -327,5 +327,35 @@ describe('ConnectionPicker', () => {
 
     // Assert
     expect(onCreate).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ConnectionPicker の IME 対応（ADR 0025）', () => {
+  // パスワード欄では IME が働かないため変換は起きないが、この form へ後から
+  // 別の欄が増えたときに漏れないよう、他の form と同じ関所を置いてある。
+  it('変換中の ⏎ では暗黙の送信を止める', async () => {
+    // Arrange
+    描く({ savedConnections: [開発] })
+    await userEvent.click(await screen.findByText('開発'))
+    const 入力欄 = await screen.findByLabelText('パスワード')
+
+    // Act
+    const 通った = fireEvent.keyDown(入力欄, { key: 'Enter', isComposing: true })
+
+    // Assert
+    expect(通った).toBe(false)
+  })
+
+  it('変換していないときの ⏎ は送信を止めない', async () => {
+    // Arrange
+    描く({ savedConnections: [開発] })
+    await userEvent.click(await screen.findByText('開発'))
+    const 入力欄 = await screen.findByLabelText('パスワード')
+
+    // Act
+    const 通った = fireEvent.keyDown(入力欄, { key: 'Enter' })
+
+    // Assert
+    expect(通った).toBe(true)
   })
 })

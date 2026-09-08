@@ -15,6 +15,7 @@ import type { BindInput } from '../../stores/tab'
 import { applyBindText, emptyBindInput } from '../../stores/tab'
 import type { BindKind } from '../../types/db'
 import { bindKindLabels, bindKinds } from '../../types/db'
+import { blockComposingSubmit, isComposingKey } from '../../input/ime'
 
 interface BindValuesDialogProps {
   /** 尋ねる変数の名前。SQL に出てきた順。 */
@@ -52,6 +53,10 @@ export function BindValuesDialog({
     <div
       className="absolute inset-0 z-20 flex items-center justify-center bg-[rgba(24,28,38,.28)] p-24px"
       onKeyDown={(event) => {
+        // 変換中の `esc` は変換の取り消しである（ADR 0025）。
+        if (isComposingKey(event)) {
+          return
+        }
         if (event.key === 'Escape') {
           event.preventDefault()
           onClose()
@@ -60,6 +65,7 @@ export function BindValuesDialog({
     >
       <form
         className="w-420px bg-panel rounded-10px border border-line p-18px flex flex-col gap-15px"
+        onKeyDown={blockComposingSubmit}
         onSubmit={(event) => {
           event.preventDefault()
           onSubmit()

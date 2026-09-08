@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
@@ -247,5 +247,56 @@ describe('SourceSearchPanel', () => {
     // Assert
     expect(onClose).not.toHaveBeenCalled()
     expect(screen.queryByRole('region', { name: '前後の行' })).not.toBeInTheDocument()
+  })
+})
+
+describe('SourceSearchPanel の IME 対応（ADR 0025）', () => {
+  it('変換中の ⏎ では暗黙の送信を止める', async () => {
+    // Arrange
+    パネルを描く()
+    const 入力 = screen.getByLabelText('ソースに含まれる文字列')
+    await userEvent.type(入力, 'utl')
+
+    // Act
+    const 通った = fireEvent.keyDown(入力, { key: 'Enter', isComposing: true })
+
+    // Assert
+    expect(通った).toBe(false)
+    expect(calls.searchSource).toHaveLength(0)
+  })
+
+  it('変換していないときの ⏎ は送信を止めない', async () => {
+    // Arrange
+    パネルを描く()
+    const 入力 = screen.getByLabelText('ソースに含まれる文字列')
+    await userEvent.type(入力, 'utl')
+
+    // Act
+    const 通った = fireEvent.keyDown(入力, { key: 'Enter' })
+
+    // Assert
+    expect(通った).toBe(true)
+  })
+
+  it('変換中の esc ではパネルを閉じない', () => {
+    // Arrange
+    const { onClose } = パネルを描く()
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true })
+
+    // Assert
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('変換していないときの esc は今までどおりパネルを閉じる', () => {
+    // Arrange
+    const { onClose } = パネルを描く()
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    // Assert
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
