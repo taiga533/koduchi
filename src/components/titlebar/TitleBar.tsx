@@ -8,11 +8,20 @@
  * 検索ボックスはコマンドパレット（`⌘K`、ADR 0018）の入口である。押すとパレットが
  * 開く。接続していないときは押せない。Ask AI は器のみで、操作はできない
  * （ADR の機能スコープ）。
+ *
+ * 接続に色が付いていれば、ウィンドウ上端いっぱいに帯を敷く（ADR 0015）。作業中に
+ * 見ているのはエディタと結果であり、視線は画面の中ほどにある。上端の全幅の帯は、
+ * そこから目を上げなくても周辺視野に入る唯一の場所である。
+ *
+ * 帯の高さは信号機に掛からない範囲でなければならない。42px のタイトルバーでは
+ * ボタンの上端がウィンドウ上端から 14px の位置に来る（`trafficLightTop` の導出、
+ * ADR 0009）。値と見張りは `geometry.ts` にあり、**目分量で調整しない。**
  */
 
 import { Search, Sparkles } from 'lucide-react'
 import { useConnectionStore } from '../../stores/connection'
-import { TITLE_BAR_HEIGHT, titleBarContentLeft } from './geometry'
+import { connectionColorVar } from '../../theme/connectionColors'
+import { CONNECTION_COLOR_BAR_HEIGHT, TITLE_BAR_HEIGHT, titleBarContentLeft } from './geometry'
 
 interface TitleBarProps {
   /** コマンドパレットを開く（`⌘K`）。未接続の画面では渡さない。 */
@@ -24,14 +33,30 @@ export function TitleBar({ onOpenPalette }: TitleBarProps) {
   const status = useConnectionStore((state) => state.status)
   const 押せる = connection !== null && onOpenPalette !== undefined
 
+  const 接続の色 = connectionColorVar(connection?.color ?? 'none')
+
   return (
     <header
       data-tauri-drag-region
-      className="flex items-center gap-14px pr-14px bg-bg shrink-0"
+      className="relative flex items-center gap-14px pr-14px bg-bg shrink-0"
       style={{ height: TITLE_BAR_HEIGHT, paddingLeft: titleBarContentLeft() }}
     >
+      {接続の色 ? (
+        <div
+          data-testid="connection-color-bar"
+          data-connection-color={connection?.color}
+          aria-hidden="true"
+          className="absolute top-0 left-0 right-0 pointer-events-none"
+          style={{ height: CONNECTION_COLOR_BAR_HEIGHT, background: 接続の色 }}
+        />
+      ) : null}
+
       <div data-tauri-drag-region className="flex items-center gap-9px">
-        <div className="w-13px h-13px rounded-4px bg-ac" />
+        <div
+          data-testid="connection-color-chip"
+          className="w-13px h-13px rounded-4px bg-ac"
+          style={接続の色 ? { background: 接続の色 } : undefined}
+        />
         {connection ? (
           <div className="flex items-center gap-7px">
             <span
@@ -40,6 +65,9 @@ export function TitleBar({ onOpenPalette }: TitleBarProps) {
                 background: status === 'connected' ? 'oklch(0.58 0.12 152)' : 'var(--fg5)',
               }}
             />
+            {connection.group ? (
+              <span className="text-12.5px text-fg4">{connection.group} /</span>
+            ) : null}
             <span className="text-13px font-600 text-fg tracking--0.01em">{connection.name}</span>
             <span className="text-12.5px text-fg4">{connection.params.username}</span>
           </div>

@@ -43,12 +43,17 @@ import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
 import { ResultPane } from './components/results/ResultPane'
+import { SessionsPanel } from './components/sessions/SessionsPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
 import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
+import { inferBindKinds } from './sql/bindTypes'
+import type { BindOccurrence } from './sql/statements'
 import {
+  collectBindOccurrences,
+  collectBindOccurrencesAcross,
   collectBindVariables,
   collectBindVariablesAcross,
   isSelectStatement,
@@ -60,8 +65,10 @@ import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { nodeKey, useSchemaStore } from './stores/schema'
 import { useSavedQueryStore } from './stores/savedQuery'
+import { useSessionsStore } from './stores/sessions'
 import type { BindInput } from './stores/tab'
 import {
+  fillBindDefaults,
   selectActiveTab,
   selectBindValues,
   selectSession,
@@ -120,6 +127,19 @@ function bindVariablesOf(run: PendingRun): string[] {
     : collectBindVariables(run.sql)
 }
 
+/**
+ * 実行の対象からバインド変数の出てくる場所を集める。
+ *
+ * 既定の型を推し量るのに使う（ADR 0016）。
+ *
+ * @param run 値が揃うのを待っている実行
+ */
+function bindOccurrencesOf(run: PendingRun): BindOccurrence[] {
+  return run.kind === 'script'
+    ? collectBindOccurrencesAcross(run.statements)
+    : collectBindOccurrences(run.sql)
+}
+
 export function App() {
   const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
   const [connectionView, setConnectionView] = useState<ConnectionView>({ mode: 'picker' })
@@ -163,6 +183,9 @@ export function App() {
   const settingsOpen = useUiStore((state) => state.settingsOpen)
   const openSettings = useUiStore((state) => state.openSettings)
   const closeSettings = useUiStore((state) => state.closeSettings)
+  const sessionsOpen = useUiStore((state) => state.sessionsOpen)
+  const openSessions = useUiStore((state) => state.openSessions)
+  const closeSessions = useUiStore((state) => state.closeSessions)
   const loadSettings = useUiStore((state) => state.loadSettings)
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
@@ -175,6 +198,7 @@ export function App() {
   const restoreLayout = useUiStore((state) => state.restoreLayout)
 
   const saveQuery = useSavedQueryStore((state) => state.save)
+  const clearSessions = useSessionsStore((state) => state.clear)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
@@ -282,6 +306,16 @@ export function App() {
         void runPending(run, [])
         return
       }
+
+      // 初めて尋ねる変数には、比べている列から推し量った型を入れておく
+      // （ADR 0016）。覚えている変数はそのまま残す。
+      const tabId = useTabStore.getState().activeTabId
+      if (tabId) {
+        const kinds = inferBindKinds(bindOccurrencesOf(run), useSchemaStore.getState().columns)
+        const values = selectBindValues(useTabStore.getState(), tabId)
+        useTabStore.getState().setBindValues(tabId, fillBindDefaults(names, values, kinds))
+      }
+
       setBindPrompt({ names, run })
     },
     [runPending],
@@ -523,6 +557,9 @@ export function App() {
 
     clearExecutions()
     clearSchemas()
+    // セッションの一覧は接続に属する。切断したら捨てる（ADR 0017）。
+    clearSessions()
+    closeSessions()
 
     try {
       await disconnect()
@@ -531,7 +568,15 @@ export function App() {
     }
 
     setConnectionView({ mode: 'picker' })
-  }, [clearExecutions, clearSchemas, disconnect, releaseTab, resolvePendingTransaction])
+  }, [
+    clearExecutions,
+    clearSchemas,
+    clearSessions,
+    closeSessions,
+    disconnect,
+    releaseTab,
+    resolvePendingTransaction,
+  ])
 
   /**
    * 実行中のすべてのタブを中止する（`⌘.` と同じ）。
@@ -919,6 +964,13 @@ export function App() {
   const overlay = (
     <>
       {settings}
+      {sessionsOpen ? (
+        <SessionsPanel
+          connectionId={connection.id}
+          readOnly={connection.params.readOnly}
+          onClose={closeSessions}
+        />
+      ) : null}
       {bindPrompt ? (
         <BindPrompt
           names={bindPrompt.names}
@@ -971,6 +1023,7 @@ export function App() {
     <Shell
       onOpenSettings={openSettings}
       onDisconnect={() => void disconnectAndReset()}
+      onOpenSessions={openSessions}
       onCommit={commitTransaction}
       onRollback={rollbackTransaction}
       onOpenPalette={openPalette}
@@ -1113,6 +1166,7 @@ function Shell({
   children,
   onOpenSettings,
   onDisconnect,
+  onOpenSessions,
   onCommit,
   onRollback,
   onOpenPalette,
@@ -1121,6 +1175,8 @@ function Shell({
   children: React.ReactNode
   onOpenSettings: () => void
   onDisconnect: () => void
+  /** セッションとロックのパネルを開く（ADR 0017）。接続中の画面だけが渡す。 */
+  onOpenSessions?: () => void
   /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
@@ -1138,6 +1194,7 @@ function Shell({
         onOpenSettings={onOpenSettings}
         onDisconnect={onDisconnect}
         onSwitchConnection={onDisconnect}
+        onOpenSessions={onOpenSessions}
         onCommit={onCommit}
         onRollback={onRollback}
       />

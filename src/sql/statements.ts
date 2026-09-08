@@ -430,24 +430,57 @@ function readBindName(sql: string, index: number): { name: string | null; next: 
   return end === index ? { name: null, next: index } : { name: sql.slice(index, end), next: end }
 }
 
+/** 比較演算子。長いものから順に照合する。 */
+const COMPARISON_OPERATORS = ['<=', '>=', '<>', '!=', '=', '<', '>']
+
+/** 直前の語を列名の候補にしたまま読み飛ばす語。`col not like :p` のため。 */
+const TRANSPARENT_WORDS = new Set(['NOT'])
+
 /**
- * SQL に出てくるバインド変数の名前を、出てきた順に集める（ADR の「バインド変数」節）。
+ * 位置 `index` から始まる比較演算子を読み取る。
+ *
+ * @param sql 対象の文字列
+ * @param index 読み始める位置
+ *
+ * @returns 演算子の綴り。演算子でなければ `null`
+ */
+function readComparisonOperator(sql: string, index: number): string | null {
+  return COMPARISON_OPERATORS.find((operator) => sql.startsWith(operator, index)) ?? null
+}
+
+/** バインド変数が 1 度出てきた場所（ADR 0016）。 */
+export interface BindOccurrence {
+  /** 変数名。`:` は含まない。SQL に出てきた綴りのまま。 */
+  name: string
+  /** 直前で比べられている列の名前（大文字に揃える）。見当たらなければ `null`。 */
+  column: string | null
+}
+
+/**
+ * SQL に出てくるバインド変数を、出てきた場所ごとに集める。
  *
  * `splitStatements` と同じ走査を使い、文字列リテラル・コメント・Oracle の
  * `q'[...]'` 引用符リテラルの中にある `:` は拾わない。`::` のように `:` が続く形も
  * 記号であって変数ではないため読み飛ばす。
  *
- * Oracle のバインド名は大文字小文字を区別しないため、同じ名前は 1 つにまとめる。
- * 残すのは最初に出てきた綴りである。
+ * 併せて、その変数が比べられている列の名前を控える。型の既定値を推し量るのに
+ * 使う（ADR 0016）。拾うのは `列 = :名前` のように比較演算子・`LIKE`・`BETWEEN`
+ * の右に置かれた形だけである。関数を挟んだ形（`trunc(:d)`）や `IN` の並びは
+ * 拾わない。取り違えて誤った型を既定にするより、推し量らないほうがよい。
  *
  * @param sql 対象の SQL
  *
- * @returns 名前の一覧。`:` は含まない
+ * @returns 出てきた順の場所の一覧。同じ名前が何度出てくればその数だけ並ぶ
  */
-export function collectBindVariables(sql: string): string[] {
-  const names: string[] = []
-  const seen = new Set<string>()
+export function collectBindOccurrences(sql: string): BindOccurrence[] {
+  const occurrences: BindOccurrence[] = []
   let cursor = 0
+  /** 直前に読んだ語。列名の候補になる。 */
+  let lastWord: string | null = null
+  /** 次に出てくるバインド変数が比べられている列。 */
+  let comparedColumn: string | null = null
+  /** `BETWEEN` の左辺。`AND` の後ろの値にも同じ列を当てるために控える。 */
+  let betweenColumn: string | null = null
 
   while (cursor < sql.length) {
     const character = sql[cursor]
@@ -466,11 +499,15 @@ export function collectBindVariables(sql: string): string[] {
 
     if (isQuotedLiteralStart(sql, cursor)) {
       cursor = skipQuotedLiteral(sql, cursor)
+      lastWord = null
+      comparedColumn = null
       continue
     }
 
     if (character === "'" || character === '"') {
       cursor = skipQuoted(sql, cursor, character)
+      lastWord = null
+      comparedColumn = null
       continue
     }
 
@@ -487,16 +524,75 @@ export function collectBindVariables(sql: string): string[] {
         continue
       }
 
-      const key = name.toUpperCase()
-      if (!seen.has(key)) {
-        seen.add(key)
-        names.push(name)
-      }
+      occurrences.push({ name, column: comparedColumn })
+      comparedColumn = null
+      lastWord = null
       cursor = next
       continue
     }
 
+    if (/[A-Za-z_$#]/.test(character)) {
+      const { word, next } = readWord(sql, cursor)
+      cursor = next
+
+      if (TRANSPARENT_WORDS.has(word)) {
+        continue
+      }
+      if (word === 'LIKE' || word === 'BETWEEN') {
+        comparedColumn = lastWord
+        betweenColumn = word === 'BETWEEN' ? lastWord : null
+      } else if (word === 'AND' && betweenColumn !== null) {
+        comparedColumn = betweenColumn
+        betweenColumn = null
+      } else {
+        comparedColumn = null
+      }
+      lastWord = word
+      continue
+    }
+
+    // 空白と、修飾された名前（`t.col`）の `.` は列名の候補を保ったまま進む。
+    if (character === '.' || /\s/.test(character)) {
+      cursor += 1
+      continue
+    }
+
+    const operator = readComparisonOperator(sql, cursor)
+    if (operator !== null) {
+      comparedColumn = lastWord
+      lastWord = null
+      cursor += operator.length
+      continue
+    }
+
+    lastWord = null
+    comparedColumn = null
     cursor += 1
+  }
+
+  return occurrences
+}
+
+/**
+ * SQL に出てくるバインド変数の名前を、出てきた順に集める（ADR の「バインド変数」節）。
+ *
+ * Oracle のバインド名は大文字小文字を区別しないため、同じ名前は 1 つにまとめる。
+ * 残すのは最初に出てきた綴りである。
+ *
+ * @param sql 対象の SQL
+ *
+ * @returns 名前の一覧。`:` は含まない
+ */
+export function collectBindVariables(sql: string): string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+
+  for (const { name } of collectBindOccurrences(sql)) {
+    const key = name.toUpperCase()
+    if (!seen.has(key)) {
+      seen.add(key)
+      names.push(name)
+    }
   }
 
   return names
@@ -529,4 +625,17 @@ export function collectBindVariablesAcross(statements: string[]): string[] {
   }
 
   return names
+}
+
+/**
+ * 複数の文からバインド変数の場所を集める（`⌥⌘⏎`）。
+ *
+ * 型の既定値を推し量るのに使う（ADR 0016）。並びは文の順である。
+ *
+ * @param statements 実行する文の並び
+ *
+ * @returns 出てきた順の場所の一覧
+ */
+export function collectBindOccurrencesAcross(statements: string[]): BindOccurrence[] {
+  return statements.flatMap((statement) => collectBindOccurrences(statement))
 }

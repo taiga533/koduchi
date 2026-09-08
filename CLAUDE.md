@@ -52,7 +52,7 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 | ---------------------------- | -------------------------------------------------------------------- |
 | `src-tauri/src/commands/`    | Tauri コマンド。薄い層に留め、待ちは `run_blocking` へ逃がす         |
 | `src-tauri/src/db/`          | `Driver` trait とアクター・接続プール・Oracle 実装（ADR 0002・0003） |
-| `src-tauri/src/db/schema.rs` | スキーマツリーの型とフィルタ（ADR 0007）                             |
+| `src-tauri/src/db/schema.rs` | スキーマツリーの型とフィルタ（ADR 0007・0014）                       |
 | `src-tauri/src/tnsnames/`    | tnsnames.ora の自前パーサ（ADR 0006）                                |
 | `src-tauri/src/config/`      | `connections.toml` の読み書き（ADR 0004）                            |
 | `src-tauri/src/keychain/`    | `keyring` の包み。パスワードだけを置く（ADR 0004）                   |
@@ -73,6 +73,8 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 **補完**（ADR 0013）: 識別子の候補は `src/components/editor/sqlCompletion.ts` の自前の補完ソースが出す。`@codemirror/lang-sql` の `schemaCompletionSource` は**使わない**（階層の解決が大文字小文字を区別し、候補を必ず引用符付きで挿入するため）。名前は `catalog.ts` が大文字へ畳んだ鍵で引き、挿入する綴りは `identifiers.ts` が決める。**引用符は必要なときだけ付け、付けるときは綴りを変えない。** 方言は `dialect.ts` の `koduchiOracleDialect`（`PLSQL` から `doubleQuotedStrings` だけを落としたもの）で、補完ソースは**この方言の `language`** へ足す（`PLSQL.language` へ足しても繋がらない）。挿入する綴りは接続ごとの設定で `connections.toml` に持つ。
 
+**スキーマツリーの種別**（ADR 0014）: 種別は 12 個（`ObjectKind`）。列挙元は `ALL_OBJECTS` の 10 種別に加え、索引が `ALL_INDEXES`（`GENERATED = 'N'` のみ）、DB link が `ALL_DB_LINKS` である。**所有者が `PUBLIC` のものは列挙しない**（公開シノニムだけで数万件になる）。**制約はツリーに出さない**（理由は ADR 0014。テーブル定義ビューを作る波で扱う）。ツリーはスキーマとオブジェクトの間に**種別の束**を 1 段挟む。束の並びは `OBJECT_KIND_ORDER`、鍵は `kindGroupKey`（`KODUCHI.#table`）。絞り込み中だけ束は既定で開く。種別ごとの表示可否は `SchemaFilter.kinds` として `connections.toml` に持ち、**落とした種別は問い合わせにも行かない**。補完のカタログには索引・トリガー・DB link を流さない（`catalog.ts` の `isCompletable`）。
+
 **キーバインドの置き場所**: エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` と検索の `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` は CodeMirror の keymap に、それ以外（`⌘E` / `⇧⌘E` / `⌥⌘S` / `⌥⌘C` / `⌥⌘R` / `⌘S` / `⇧⌘S` / `⌘O` / `⌘T` / `⌘W` / `⌃⌘N` / `⌘K`）は `App.tsx` の `keydown` に置く。後者は `event.defaultPrevented` を見て、エディタが既に処理したものを二重に扱わない。修飾の重なる `⌘S` / `⇧⌘S` / `⌥⌘S` は、絞りの強い枝から先に見る。結果テーブルの中でしか意味を持たない `⌘C` / `⇧⌘C` / `⌘A` は `ResultTable` の `keydown` に置く。`⌘I`（Ask AI）は**割り当てない**（将来のための予約）。`⌘K` はコマンドパレット（ADR 0018）に割り当て済みである。
 
 **結果テーブルのコピー**: セル選択は `ResultTable` の中に閉じた状態で持つ（`ui` ストアへ置くと打鍵ごとにアプリ全体が描き直る）。タブを切り替えたときは `ResultPane` が `key={tabId}` で作り直し、選択を捨てる。範囲の判定とコピー文字列の組み立ては `src/components/results/selection.ts` の純粋な関数に寄せてある。クリップボードは `src/api/clipboard.ts` 越しに呼ぶ（テストで差し替えるため）。
@@ -82,6 +84,8 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 **保存済みクエリとコマンドパレット**（ADR 0018）: 保存済みクエリは `history.sqlite3` の `saved_query` 表に置く。履歴と同じく全接続で 1 つの表であり、接続名を添えてスコープを切り替える（**既定は「全接続」**。履歴と逆である）。**バインド変数の値は保存しない。** パレット（`⌘K`）が探すのはコマンド / スキーマ / 保存済みクエリ / 履歴の 4 種で、**見出しの並びは固定**、当たり判定と順序は `src/components/palette/paletteSearch.ts` の純粋な関数に寄せてある。拾い方は大小を区別しない**部分一致**であり、あいまい一致は使わない。列はパレットの候補にしない（補完の領分、ADR 0013）。
 
 **トランザクション**（ADR 0012）: 自動コミットは接続ごとの項目で、既定はオフ（手動コミット）。未コミットかどうかは実行のたびに `DBMS_TRANSACTION.LOCAL_TRANSACTION_ID` を読んで決める。**クライアント側で DML を数えない。** コミット / ロールバックはプールの全接続へ配る。未コミットのまま接続を手放させないための関所は `App.tsx` の `resolvePendingTransaction` にあり、ウィンドウを閉じる経路（`onWindowCloseRequested`）・アプリの終了（`lib.rs` の `RunEvent::ExitRequested`）・切断（`disconnectAndReset`）のすべてがここを通る。
+
+**セッションとロック**（ADR 0017）: `V$SESSION` の一覧・ブロッキングの連鎖・他セッションの kill。入口はステータスバーの「接続中」のメニューで、`SessionsPanel` をオーバーレイで開く。取得はプールの `background_handle`（スキーマ取得と実行計画と同じ経路）で行い、**利用者の結果セットのカーソルには触れない**。連鎖の組み立ては `src-tauri/src/db/sessions.rs` の純粋な関数で、循環・一覧に居ない待たせ手・別インスタンスの 3 つを取りこぼさない。kill の関所は 3 つ（読み取り専用を弾く / 小槌自身の接続を弾く / 確認ダイアログ）。**前の 2 つは Rust 側に置く。** `ALTER SYSTEM` はデータを書かないため読み取り専用トランザクション（ADR 0004）では止まらず、ここだけはクライアント側で判定するしかない。権限が無いときは `DbErrorKind::Permission` で返し、**空の一覧を出さない。**
 
 **CSV の書き出し**: 行はフロントエンドに溜めない。カーソルから取り出したかたまりを `csv_append` で順に Rust へ渡し、書き終えたら `csv_finish` を呼ぶ（`src/csv/exportCsv.ts`）。中止と失敗では `csv_abort` で書きかけのファイルごと消す。数十万行を 1 度の IPC に載せないための形である。
 

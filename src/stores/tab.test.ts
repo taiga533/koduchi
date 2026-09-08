@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import type { BindInput } from './tab'
 import {
+  applyBindText,
   baseName,
+  fillBindDefaults,
   resetUntitledCounter,
   selectActiveTab,
   selectBindValues,
@@ -270,11 +273,13 @@ describe('バインド変数の記憶', () => {
     const id = useTabStore.getState().tabs[0].id
 
     // Act
-    useTabStore.getState().setBindValues(id, { userId: { text: '42', isNull: false } })
+    useTabStore
+      .getState()
+      .setBindValues(id, { userId: { text: '42', kind: 'varchar2', isNull: false } })
 
     // Assert
     expect(selectBindValues(useTabStore.getState(), id)).toEqual({
-      userId: { text: '42', isNull: false },
+      userId: { text: '42', kind: 'varchar2', isNull: false },
     })
   })
 
@@ -285,8 +290,12 @@ describe('バインド変数の記憶', () => {
     const 二枚目 = useTabStore.getState().tabs[1].id
 
     // Act
-    useTabStore.getState().setBindValues(一枚目, { id: { text: '1', isNull: false } })
-    useTabStore.getState().setBindValues(二枚目, { id: { text: '2', isNull: false } })
+    useTabStore
+      .getState()
+      .setBindValues(一枚目, { id: { text: '1', kind: 'varchar2', isNull: false } })
+    useTabStore
+      .getState()
+      .setBindValues(二枚目, { id: { text: '2', kind: 'varchar2', isNull: false } })
 
     // Assert
     expect(selectBindValues(useTabStore.getState(), 一枚目).id.text).toBe('1')
@@ -297,7 +306,7 @@ describe('バインド変数の記憶', () => {
     // Arrange
     const id = useTabStore.getState().tabs[0].id
     useTabStore.getState().openNewTab()
-    useTabStore.getState().setBindValues(id, { id: { text: '1', isNull: false } })
+    useTabStore.getState().setBindValues(id, { id: { text: '1', kind: 'varchar2', isNull: false } })
 
     // Act
     useTabStore.getState().closeTab(id)
@@ -309,7 +318,9 @@ describe('バインド変数の記憶', () => {
   it('セッションの書き出しにはバインド変数の値を含めない', () => {
     // Arrange
     const id = useTabStore.getState().tabs[0].id
-    useTabStore.getState().setBindValues(id, { id: { text: '個人情報', isNull: false } })
+    useTabStore
+      .getState()
+      .setBindValues(id, { id: { text: '個人情報', kind: 'varchar2', isNull: false } })
 
     // Act
     const session = selectSession(useTabStore.getState(), {
@@ -325,7 +336,7 @@ describe('バインド変数の記憶', () => {
   it('セッションから復元すると前のタブの値は持ち越さない', () => {
     // Arrange
     const id = useTabStore.getState().tabs[0].id
-    useTabStore.getState().setBindValues(id, { id: { text: '1', isNull: false } })
+    useTabStore.getState().setBindValues(id, { id: { text: '1', kind: 'varchar2', isNull: false } })
 
     // Act
     useTabStore.getState().restore({
@@ -352,9 +363,9 @@ describe('バインド変数の記憶', () => {
 describe('toBinds', () => {
   it('尋ねた名前の順に名前と値の対へ変換する', () => {
     // Arrange
-    const values = {
-      id: { text: '42', isNull: false },
-      name: { text: '小槌', isNull: false },
+    const values: Record<string, BindInput> = {
+      id: { text: '42', kind: 'varchar2', isNull: false },
+      name: { text: '小槌', kind: 'varchar2', isNull: false },
     }
 
     // Act
@@ -362,20 +373,22 @@ describe('toBinds', () => {
 
     // Assert
     expect(binds).toEqual([
-      ['id', '42'],
-      ['name', '小槌'],
+      { name: 'id', kind: 'varchar2', value: '42' },
+      { name: 'name', kind: 'varchar2', value: '小槌' },
     ])
   })
 
   it('null のチェックが付いた変数の値は null になる', () => {
     // Arrange
-    const values = { memo: { text: '入力しただけの値', isNull: true } }
+    const values: Record<string, BindInput> = {
+      memo: { text: '入力しただけの値', kind: 'varchar2', isNull: true },
+    }
 
     // Act
     const binds = toBinds(['memo'], values)
 
     // Assert
-    expect(binds).toEqual([['memo', null]])
+    expect(binds).toEqual([{ name: 'memo', kind: 'varchar2', value: null }])
   })
 
   it('入力していない変数は空文字列として渡す', () => {
@@ -386,6 +399,104 @@ describe('toBinds', () => {
     const binds = toBinds(['id'], values)
 
     // Assert
-    expect(binds).toEqual([['id', '']])
+    expect(binds).toEqual([{ name: 'id', kind: 'varchar2', value: '' }])
+  })
+
+  it('選ばれた型を添えて渡す', () => {
+    // Arrange
+    const values: Record<string, BindInput> = {
+      day: { text: '2024-01-02', kind: 'date', isNull: false },
+    }
+
+    // Act
+    const binds = toBinds(['day'], values)
+
+    // Assert
+    expect(binds).toEqual([{ name: 'day', kind: 'date', value: '2024-01-02' }])
+  })
+})
+
+describe('fillBindDefaults', () => {
+  it('初めて尋ねる変数には推し量った型を入れる', () => {
+    // Arrange
+    const kinds = { USER_ID: 'number' as const }
+
+    // Act
+    const values = fillBindDefaults(['user_id'], {}, kinds)
+
+    // Assert
+    expect(values.user_id).toEqual({ text: '', kind: 'number', isNull: false })
+  })
+
+  it('推し量れない変数は文字列にする', () => {
+    // Arrange
+    const kinds = {}
+
+    // Act
+    const values = fillBindDefaults(['memo'], {}, kinds)
+
+    // Assert
+    expect(values.memo).toEqual({ text: '', kind: 'varchar2', isNull: false })
+  })
+
+  it('前回の値と型はそのまま残す', () => {
+    // Arrange: 利用者が選んだ型を推し量りで上書きしない
+    const remembered: Record<string, BindInput> = {
+      id: { text: '42', kind: 'varchar2', isNull: false },
+    }
+
+    // Act
+    const values = fillBindDefaults(['id'], remembered, { ID: 'number' })
+
+    // Assert
+    expect(values.id).toEqual({ text: '42', kind: 'varchar2', isNull: false })
+  })
+
+  it('今回尋ねない変数の入力も落とさない', () => {
+    // Arrange
+    const remembered: Record<string, BindInput> = {
+      別の変数: { text: '1', kind: 'number', isNull: false },
+    }
+
+    // Act
+    const values = fillBindDefaults(['id'], remembered, {})
+
+    // Assert
+    expect(values.別の変数).toEqual({ text: '1', kind: 'number', isNull: false })
+  })
+})
+
+describe('applyBindText', () => {
+  it('型を選び直していなければ値の見た目に型が追う', () => {
+    // Arrange
+    const input: BindInput = { text: '', kind: 'varchar2', isNull: false }
+
+    // Act
+    const next = applyBindText(input, '2024-01-02 03:04:05')
+
+    // Assert
+    expect(next).toEqual({ text: '2024-01-02 03:04:05', kind: 'timestamp', isNull: false })
+  })
+
+  it('値を消せば型も文字列へ戻る', () => {
+    // Arrange
+    const input: BindInput = { text: '42', kind: 'number', isNull: false }
+
+    // Act
+    const next = applyBindText(input, '')
+
+    // Assert
+    expect(next.kind).toBe('varchar2')
+  })
+
+  it('値の見た目と違う型が選ばれていれば型は変わらない', () => {
+    // Arrange
+    const input: BindInput = { text: '42', kind: 'varchar2', isNull: false }
+
+    // Act
+    const next = applyBindText(input, '43')
+
+    // Assert
+    expect(next).toEqual({ text: '43', kind: 'varchar2', isNull: false })
   })
 })

@@ -64,6 +64,8 @@ pub fn run() {
             commands::history::load_session,
             commands::schema::schema_overview,
             commands::schema::schema_columns,
+            commands::sessions::list_sessions,
+            commands::sessions::kill_session,
             commands::plan::explain_plan,
             commands::plan::actual_plan,
             commands::tns::read_tnsnames,

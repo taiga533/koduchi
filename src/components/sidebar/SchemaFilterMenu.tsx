@@ -1,15 +1,17 @@
 /**
- * スキーマの絞り込み条件（ADR 0007）。
+ * スキーマの絞り込み条件（ADR 0007・0014）。
  *
- * 検索入力の横のアイコンから開く。条件は 2 つだけで、どちらも既定で有効である。
- * 変更すると取得し直す。設定は接続ごとに保存される（ADR 0004）。
+ * 検索入力の横のアイコンから開く。スキーマを隠す条件が 2 つと、ツリーに載せる
+ * オブジェクト種別の可否が 12 個ある。どれも既定で有効である。変更すると
+ * 取得し直す。設定は接続ごとに保存される（ADR 0004）。
  */
 
 import { useState } from 'react'
 import { ListFilter } from 'lucide-react'
 import { getDbApi } from '../../api/db'
 import { useSchemaStore } from '../../stores/schema'
-import type { SchemaFilter } from '../../types/db'
+import type { ObjectKind, SchemaFilter } from '../../types/db'
+import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER } from '../../types/db'
 
 interface SchemaFilterMenuProps {
   /** 接続の識別子。未接続なら操作できない。 */
@@ -69,6 +71,16 @@ export function SchemaFilterMenu({
     void persist(savedConnectionId, next)
   }
 
+  /**
+   * 種別 1 つの表示可否を切り替える。
+   *
+   * @param kind 切り替える種別
+   * @param shown 表示するか
+   */
+  const changeKind = (kind: ObjectKind, shown: boolean) => {
+    change({ kinds: { ...filter.kinds, [kind]: shown } })
+  }
+
   return (
     <div className="relative">
       <button
@@ -83,7 +95,7 @@ export function SchemaFilterMenu({
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-28px z-10 w-232px p-10px rounded-9px bg-panel border border-line shadow-[0_8px_24px_rgba(24,28,38,.16)] flex flex-col gap-9px">
+        <div className="absolute right-0 top-28px z-10 w-256px p-10px rounded-9px bg-panel border border-line shadow-[0_8px_24px_rgba(24,28,38,.16)] flex flex-col gap-9px">
           <label className="flex items-start gap-8px text-11.5px text-fg cursor-pointer">
             <input
               type="checkbox"
@@ -100,6 +112,25 @@ export function SchemaFilterMenu({
             />
             <span className="leading-[1.5]">参照可能なオブジェクトが無いスキーマを隠す</span>
           </label>
+          <p className="m-0 mt-2px pt-8px border-t border-line2 border-l-none border-r-none border-b-none text-10.5px text-fg4">
+            ツリーに出す種別
+          </p>
+          <div className="grid grid-cols-2 gap-x-8px gap-y-6px">
+            {OBJECT_KIND_ORDER.map((kind) => (
+              <label
+                key={kind}
+                className="flex items-center gap-6px text-11px text-fg cursor-pointer min-w-0"
+              >
+                <input
+                  type="checkbox"
+                  checked={filter.kinds[kind]}
+                  onChange={(event) => changeKind(kind, event.target.checked)}
+                />
+                <span className="truncate">{OBJECT_KIND_LABELS[kind]}</span>
+              </label>
+            ))}
+          </div>
+
           <button
             type="button"
             onClick={() => {

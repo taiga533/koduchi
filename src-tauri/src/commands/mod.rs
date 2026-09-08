@@ -12,6 +12,7 @@ pub mod history;
 pub mod instant_client;
 pub mod plan;
 pub mod schema;
+pub mod sessions;
 pub mod tns;
 pub mod window;
 

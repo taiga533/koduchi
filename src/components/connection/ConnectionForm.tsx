@@ -12,20 +12,33 @@
  *
  * デザインにある「SSH トンネルを使う」と「設定ファイルから読み込む」は
  * 対象外のため置かない（ADR 0004、機能スコープ）。
+ *
+ * 色とグループ（ADR 0015）もここで決める。色は決め打ちのパレットから選ぶ形で
+ * あり、カラーピッカーは置かない。グループは自由入力だが、既に使われている名前を
+ * 入力候補として出し、同じ意味のグループが綴り違いで割れないようにしてある。
  */
 
 import { useCallback, useEffect, useState } from 'react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getDbApi } from '../../api/db'
 import { useConnectionStore } from '../../stores/connection'
+import { connectionColorVar, CONNECTION_COLOR_LABELS } from '../../theme/connectionColors'
 import type {
+  ConnectionColor,
   ConnectionParams,
   IdentifierCase,
   SavedConnection,
   SchemaFilter,
   TnsEntry,
 } from '../../types/db'
-import { defaultCompletionSettings, defaultSchemaFilter, toErrorMessage } from '../../types/db'
+import {
+  CONNECTION_COLORS,
+  defaultCompletionSettings,
+  defaultConnectionColor,
+  defaultSchemaFilter,
+  toErrorMessage,
+} from '../../types/db'
+import { collectGroupNames, normalizeGroup } from './grouping'
 
 /** Oracle の既定のリスナーポート。 */
 const DEFAULT_PORT = '1521'
@@ -77,6 +90,10 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
   const [username, setUsername] = useState(initial?.username ?? '')
   const [password, setPassword] = useState('')
   const [readOnly, setReadOnly] = useState(initial?.readOnly ?? false)
+  const [color, setColor] = useState<ConnectionColor>(initial?.color ?? defaultConnectionColor)
+  const [group, setGroup] = useState(initial?.group ?? '')
+  /** 既に使われているグループ名。入力候補に出す。 */
+  const [knownGroups, setKnownGroups] = useState<string[]>([])
   // 既定は手動コミット。Oracle クライアントの慣習に合わせ、誤爆したときに
   // 取り返せるほうを既定にしてある（ADR 0012）。
   const [autoCommit, setAutoCommit] = useState(initial?.autoCommit ?? false)
@@ -116,6 +133,14 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
         }),
     [],
   )
+
+  // グループの入力候補は、保存済みの接続に既に付いている名前から作る。
+  useEffect(() => {
+    void getDbApi()
+      .listSavedConnections()
+      .then((list) => setKnownGroups(collectGroupNames(list)))
+      .catch(() => {})
+  }, [])
 
   // 編集で開いたときは、保存してあるパスワードとエイリアスの一覧を取りにいく。
   useEffect(() => {
@@ -203,7 +228,14 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
       return
     }
 
-    await connect(name.trim(), buildParams(), remember ? id : null, { identifierCase })
+    const 整えたグループ = normalizeGroup(group)
+
+    await connect(name.trim(), buildParams(), {
+      savedId: remember ? id : null,
+      completion: { identifierCase },
+      color,
+      group: 整えたグループ,
+    })
 
     const connection = useConnectionStore.getState().connection
     if (!connection) {
@@ -219,6 +251,8 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
             username: username.trim(),
             readOnly,
             autoCommit,
+            color,
+            group: 整えたグループ,
             schemaFilter: filter,
             completion: { identifierCase },
             target:
@@ -249,13 +283,27 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
       </div>
 
       <div className="grid grid-cols-2 gap-x-14px gap-y-12px">
-        <Field label="名前" span={2}>
+        <Field label="名前">
           <input
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="prod-replica"
             className={inputClass}
           />
+        </Field>
+        <Field label="グループ">
+          <input
+            value={group}
+            onChange={(event) => setGroup(event.target.value)}
+            list="connection-groups"
+            placeholder="本番"
+            className={inputClass}
+          />
+          <datalist id="connection-groups">
+            {knownGroups.map((known) => (
+              <option key={known} value={known} />
+            ))}
+          </datalist>
         </Field>
 
         <div className="col-span-2 flex items-center gap-10px">
@@ -387,6 +435,20 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
           実行のたびに自動でコミットする
         </label>
         <div className="flex items-center gap-10px">
+          <span className="text-11.5px text-fg3">色</span>
+          <div className="flex gap-4px">
+            {CONNECTION_COLORS.map((choice) => (
+              <ColorButton
+                key={choice}
+                color={choice}
+                active={color === choice}
+                onClick={() => setColor(choice)}
+              />
+            ))}
+          </div>
+          <span className="text-11.5px text-fg4">{CONNECTION_COLOR_LABELS[color]}</span>
+        </div>
+        <div className="flex items-center gap-10px">
           <span className="text-11.5px text-fg3">補完の綴り</span>
           <div className="flex gap-2px p-2px rounded-8px bg-line2">
             {IDENTIFIER_CASES.map((choice) => (
@@ -486,6 +548,42 @@ function MethodButton({
     >
       {children}
     </button>
+  )
+}
+
+/**
+ * 色を選ぶ 1 つ分の見本（ADR 0015）。
+ *
+ * 決め打ちのパレットから選ばせるため、押せる先は色の数だけである。色なしは
+ * 塗らずに罫線だけの升で表す。選んでいるものはアクセントの縁で示す。色そのもので
+ * 選択を示すと、色の違いと選択の有無が同じ手掛かりで重なって読めなくなる。
+ *
+ * @param color 見本が表す色
+ * @param active 今選ばれているか
+ * @param onClick 押したときに呼ぶ
+ */
+function ColorButton({
+  color,
+  active,
+  onClick,
+}: {
+  color: ConnectionColor
+  active: boolean
+  onClick: () => void
+}) {
+  const value = connectionColorVar(color)
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={`色: ${CONNECTION_COLOR_LABELS[color]}`}
+      title={CONNECTION_COLOR_LABELS[color]}
+      className={`w-16px h-16px rounded-5px cursor-pointer p-0 ${
+        active ? 'border-2 border-solid border-ac' : 'border border-solid border-line'
+      }`}
+      style={{ background: value ?? 'var(--panel)' }}
+    />
   )
 }
 

@@ -11,13 +11,28 @@
  * 接続中の表示は押せるようにしてあり、そこから切断と接続の切り替えへ進む。
  * 1 接続 = 1 ウィンドウ（ADR 0009）であるため、接続を操作する場所はこの
  * 「今どこへ繋がっているか」を出している所が自然である。
+ *
+ * 接続に色が付いていれば「接続中」の手前に色の印を置く（ADR 0015）。ここは
+ * 補助であり、色そのものを届ける主役はタイトルバー上端の帯である。読み取り専用は
+ * 色ではなく鍵のアイコン（形）で示し続ける。色は「どの接続か」、形は「何ができるか」
+ * を表す別々の軸であり、混ぜると読み分けられなくなる。
  */
 
 import { useState } from 'react'
-import { ArrowLeftRight, Check, ChevronUp, Lock, Settings, Undo2, Unplug } from 'lucide-react'
+import {
+  Activity,
+  ArrowLeftRight,
+  Check,
+  ChevronUp,
+  Lock,
+  Settings,
+  Undo2,
+  Unplug,
+} from 'lucide-react'
 import { isManualCommit, useConnectionStore } from '../../stores/connection'
 import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
+import { connectionColorVar } from '../../theme/connectionColors'
 
 interface StatusBarProps {
   /** 設定画面を開く。 */
@@ -26,6 +41,13 @@ interface StatusBarProps {
   onDisconnect: () => void
   /** 接続を切り替える。切断して接続を選ぶ画面を出す。 */
   onSwitchConnection: () => void
+  /**
+   * セッションとロックのパネルを開く（ADR 0017）。
+   *
+   * 渡さないとメニューに項目が出ない。接続していない画面では意味を持たない
+   * ためである。
+   */
+  onOpenSessions?: () => void
   /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
@@ -47,6 +69,7 @@ export function StatusBar({
   onOpenSettings,
   onDisconnect,
   onSwitchConnection,
+  onOpenSessions,
   onCommit,
   onRollback,
 }: StatusBarProps) {
@@ -67,7 +90,11 @@ export function StatusBar({
       {connection ? <span>Oracle</span> : null}
       <span className="flex-1" />
       {status === 'connected' ? (
-        <ConnectionMenu onDisconnect={onDisconnect} onSwitchConnection={onSwitchConnection} />
+        <ConnectionMenu
+          onDisconnect={onDisconnect}
+          onSwitchConnection={onSwitchConnection}
+          onOpenSessions={onOpenSessions}
+        />
       ) : (
         <span>{STATUS_LABELS[status]}</span>
       )}
@@ -137,16 +164,23 @@ function TransactionButton({
  * 接続を選ぶ画面へ戻る。同じ動きに 2 つの入口を置いてあるのは、切り替えの
  * つもりの利用者に「切断」しか見えないと、その道が無いように見えるためである。
  *
+ * セッションとロック（ADR 0017）もここから開く。「今どこへ繋がっているか」を
+ * 出している所は、そのデータベースのセッションを覗く入口としても自然である。
+ *
  * ステータスバーは画面の最下段にあるため、メニューは上へ開く。
  */
 function ConnectionMenu({
   onDisconnect,
   onSwitchConnection,
+  onOpenSessions,
 }: {
   onDisconnect: () => void
   onSwitchConnection: () => void
+  onOpenSessions?: () => void
 }) {
   const [open, setOpen] = useState(false)
+  const color = useConnectionStore((state) => state.connection?.color ?? 'none')
+  const 接続の色 = connectionColorVar(color)
 
   /** 項目を選んだときの共通処理。メニューを閉じてから実行する。 */
   const select = (work: () => void) => {
@@ -164,6 +198,15 @@ function ConnectionMenu({
         className="flex items-center gap-4px px-5px py-1px rounded-5px text-11px bg-transparent border-none cursor-pointer font-inherit hover:bg-fill"
         style={{ color: CONNECTED_COLOR }}
       >
+        {接続の色 ? (
+          <span
+            data-testid="connection-color-mark"
+            data-connection-color={color}
+            aria-hidden="true"
+            className="w-7px h-7px rounded-2px"
+            style={{ background: 接続の色 }}
+          />
+        ) : null}
         {STATUS_LABELS.connected}
         <ChevronUp size={12} />
       </button>
@@ -183,6 +226,13 @@ function ConnectionMenu({
             label="別の接続へ切り替え…"
             onSelect={() => select(onSwitchConnection)}
           />
+          {onOpenSessions ? (
+            <MenuItem
+              icon={<Activity size={13} />}
+              label="セッションとロック…"
+              onSelect={() => select(onOpenSessions)}
+            />
+          ) : null}
         </div>
       ) : null}
     </div>
