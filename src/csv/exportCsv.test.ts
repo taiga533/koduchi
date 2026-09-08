@@ -51,7 +51,7 @@ describe('exportCsv', () => {
     const result = await exportCsv(request, 進捗を捨てる)
 
     // Assert
-    expect(result).toEqual({ status: 'completed', rows: 3 })
+    expect(result).toEqual({ status: 'completed', rows: 3, truncatedCells: 0 })
     expect(calls.fetchMore).toHaveLength(0)
     expect(calls.csvStart[0].columns).toEqual(列)
     expect(calls.csvFinish).toHaveLength(1)
@@ -83,7 +83,7 @@ describe('exportCsv', () => {
 
     // Assert
     expect(calls.fetchMore).toHaveLength(2)
-    expect(result).toEqual({ status: 'completed', rows: 6 })
+    expect(result).toEqual({ status: 'completed', rows: 6, truncatedCells: 0 })
   })
 
   it('書けた行数を書き出しのたびに知らせる', async () => {
@@ -131,7 +131,7 @@ describe('exportCsv', () => {
     )
 
     // Assert
-    expect(result).toEqual({ status: 'cancelled', rows: 3 })
+    expect(result).toEqual({ status: 'cancelled', rows: 3, truncatedCells: 0 })
     expect(calls.csvAbort).toHaveLength(1)
     expect(calls.csvFinish).toHaveLength(0)
   })
@@ -190,5 +190,72 @@ describe('exportCsv', () => {
 
     // Assert
     expect(calls.csvStart[0].options).toEqual(options)
+  })
+})
+
+describe('exportCsv の切り詰めの報告', () => {
+  it('切り詰められたセルを書き出した数を返す', async () => {
+    // Arrange: 読み込み済みの行にも続きのかたまりにも切れた CLOB が 1 つずつある
+    const 切れたセル: Cell = { text: '{"id":1', kind: 'text', truncated: true }
+    const 続き: Chunk[] = [{ rows: [[切れたセル], [セル('2')]], exhausted: true }]
+    const fake = createFakeDbApi({ onFetchMore: () => 続き.shift()! })
+    calls = fake.calls
+    setDbApi(fake.api)
+    const request = {
+      connectionId: 'c1',
+      tabId: 't1',
+      path: '/tmp/out.csv',
+      columns: 列,
+      initialRows: [[切れたセル]],
+      exhausted: false,
+      options: 書式,
+    }
+
+    // Act
+    const result = await exportCsv(request, 進捗を捨てる)
+
+    // Assert
+    expect(result.truncatedCells).toBe(2)
+  })
+
+  it('切り詰められた値も書き出しは止めずに最後まで書く', async () => {
+    // Arrange: 長い CLOB 1 つのために表全体の書き出しを断つのは害が大きい
+    const 切れたセル: Cell = { text: '{"id":1', kind: 'text', truncated: true }
+    const request = {
+      connectionId: 'c1',
+      tabId: 't1',
+      path: '/tmp/out.csv',
+      columns: 列,
+      initialRows: [[切れたセル], [セル('2')]],
+      exhausted: true,
+      options: 書式,
+    }
+
+    // Act
+    const result = await exportCsv(request, 進捗を捨てる)
+
+    // Assert
+    expect(result.status).toBe('completed')
+    expect(result.rows).toBe(2)
+    expect(calls.csvAppend[0].rows).toEqual([[切れたセル], [セル('2')]])
+  })
+
+  it('切り詰められたセルが無ければ数は 0 になる', async () => {
+    // Arrange
+    const request = {
+      connectionId: 'c1',
+      tabId: 't1',
+      path: '/tmp/out.csv',
+      columns: 列,
+      initialRows: 行(1, 2),
+      exhausted: true,
+      options: 書式,
+    }
+
+    // Act
+    const result = await exportCsv(request, 進捗を捨てる)
+
+    // Assert
+    expect(result.truncatedCells).toBe(0)
   })
 })

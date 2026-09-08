@@ -4,7 +4,8 @@
 //!
 //! 1. `NUMBER` は最大 38 桁の 10 進数であり、`f64` に入れると精度が壊れる。
 //!    そのため数値も**文字列のまま**取り出す。
-//! 2. `CLOB` は先頭 64KB までに切り詰める。
+//! 2. `CLOB` は先頭 64KB までに切り詰め、切り詰めたことをセルの `truncated` に
+//!    残す（ADR 0021 の「黙って切り詰めない」）。
 //! 3. `BLOB` / `RAW` は内容を送らず `[BLOB 1.2 KB]` のような要約だけを送る。
 
 use crate::db::error::{DbError, DbResult};
@@ -99,14 +100,34 @@ pub fn to_cell(value: &SqlValue) -> DbResult<Cell> {
         .get()
         .map_err(|error| DbError::execute(error.to_string()))?;
 
-    let text = if matches!(oracle_type, OracleType::CLOB | OracleType::NCLOB) {
-        let (truncated, _) = truncate_at_char_boundary(&text, CLOB_LIMIT_BYTES);
-        truncated.to_string()
-    } else {
-        text
-    };
+    Ok(text_cell(&oracle_type, kind, text))
+}
 
-    Ok(Cell::new(kind, text))
+/// 取り出した文字列から 1 セルを組み立てる。
+///
+/// `CLOB` / `NCLOB` だけは先頭 64KB までに切り詰め、**切り詰めた事実をセルに
+/// 残す**（ADR 0021 の「黙って切り詰めない」）。切れていることが届かないと、
+/// 詳細パネルは末尾の無い文字列を全文の顔で出してしまう。
+///
+/// Oracle への接続なしに「切り詰めの真偽値を捨てていないか」を見張れるよう、
+/// 純粋な関数として切り出してある。
+///
+/// # 引数
+///
+/// * `oracle_type` - 列の Oracle 上の型
+/// * `kind` - 表示に使う種類
+/// * `text` - 取り出した文字列
+pub fn text_cell(oracle_type: &OracleType, kind: CellKind, text: String) -> Cell {
+    if !matches!(oracle_type, OracleType::CLOB | OracleType::NCLOB) {
+        return Cell::new(kind, text);
+    }
+
+    let (head, was_truncated) = truncate_at_char_boundary(&text, CLOB_LIMIT_BYTES);
+    if was_truncated {
+        Cell::new_truncated(kind, head)
+    } else {
+        Cell::new(kind, text)
+    }
 }
 
 #[cfg(test)]
@@ -236,5 +257,104 @@ mod tests {
 
         // Assert
         assert_eq!(labels, vec!["BLOB", "RAW", "LONG RAW", "BFILE"]);
+    }
+    /// 上限を 1 バイト超える CLOB の本文を作る。
+    fn 上限を超える本文() -> String {
+        "a".repeat(CLOB_LIMIT_BYTES + 1)
+    }
+
+    #[test]
+    fn 上限を超えるclobは切り詰めたことをセルに残す() {
+        // Arrange
+        let text = 上限を超える本文();
+
+        // Act
+        let cell = text_cell(&OracleType::CLOB, CellKind::Text, text);
+
+        // Assert
+        assert!(cell.truncated);
+        assert_eq!(cell.text.len(), CLOB_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn 上限以下のclobには切り詰めの印を付けない() {
+        // Arrange
+        let text = String::from("{\"id\":1}");
+
+        // Act
+        let cell = text_cell(&OracleType::CLOB, CellKind::Text, text.clone());
+
+        // Assert
+        assert!(!cell.truncated);
+        assert_eq!(cell.text, text);
+    }
+
+    #[test]
+    fn nclobも同じように切り詰めの印が付く() {
+        // Arrange
+        let text = 上限を超える本文();
+
+        // Act
+        let cell = text_cell(&OracleType::NCLOB, CellKind::Text, text);
+
+        // Assert
+        assert!(cell.truncated);
+    }
+
+    #[test]
+    fn clob以外は上限を超えても切り詰めない() {
+        // Arrange: LONG は CLOB と違い上限を掛けていない
+        let text = 上限を超える本文();
+        let 長さ = text.len();
+
+        // Act
+        let cell = text_cell(&OracleType::Long, CellKind::Text, text);
+
+        // Assert
+        assert!(!cell.truncated);
+        assert_eq!(cell.text.len(), 長さ);
+    }
+
+    #[test]
+    fn clobのセルは切り詰めの印と本文の長さが食い違わない() {
+        // Arrange: 上限の前後をまたぐ長さを並べる。この不変条件が崩れていたのが
+        // 「切り詰めの真偽値を `_` で捨てていた」不具合の正体である。
+        let 長さの候補 = [
+            0,
+            1,
+            CLOB_LIMIT_BYTES - 1,
+            CLOB_LIMIT_BYTES,
+            CLOB_LIMIT_BYTES + 1,
+            CLOB_LIMIT_BYTES * 2,
+        ];
+
+        for 長さ in 長さの候補 {
+            let text = "a".repeat(長さ);
+
+            // Act
+            let cell = text_cell(&OracleType::CLOB, CellKind::Text, text.clone());
+
+            // Assert: 本文が短くなったときは必ず印が立ち、立っていないときは
+            // 本文がそのまま残っている
+            assert_eq!(
+                cell.truncated,
+                cell.text.len() < text.len(),
+                "長さ {長さ} のとき、切り詰めの印と本文の長さが食い違った"
+            );
+        }
+    }
+
+    #[test]
+    fn マルチバイトのclobは文字境界で切り詰めても印が立つ() {
+        // Arrange: 'あ' は 3 バイトで、上限は 3 の倍数ではない
+        let text = "あ".repeat(CLOB_LIMIT_BYTES);
+
+        // Act
+        let cell = text_cell(&OracleType::CLOB, CellKind::Text, text);
+
+        // Assert
+        assert!(cell.truncated);
+        assert!(cell.text.len() <= CLOB_LIMIT_BYTES);
+        assert!(cell.text.chars().all(|c| c == 'あ'));
     }
 }

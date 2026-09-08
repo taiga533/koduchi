@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { characterCount, detailBody, formatJson, isOpaque, looksLikeJson } from './cellDetail'
+import {
+  characterCount,
+  detailBody,
+  formatJson,
+  isOpaque,
+  isTruncated,
+  looksLikeJson,
+  sizeLabel,
+} from './cellDetail'
 
 describe('looksLikeJson', () => {
   it('中かっこで始まる値は JSON らしいと見なす', () => {
@@ -173,5 +181,92 @@ describe('isOpaque', () => {
 
     // Assert
     expect(opaque).toBe(false)
+  })
+})
+
+describe('isTruncated', () => {
+  it('切り詰められたセルは真と判定される', () => {
+    // Arrange
+    const cell = { text: 'あい', kind: 'text' as const, truncated: true }
+
+    // Act
+    const truncated = isTruncated(cell)
+
+    // Assert
+    expect(truncated).toBe(true)
+  })
+
+  it('印を持たないセルは切り詰められていないと判定される', () => {
+    // Arrange: Rust 側は切れていないセルで項目そのものを省く
+    const cell = { text: 'あい', kind: 'text' as const }
+
+    // Act
+    const truncated = isTruncated(cell)
+
+    // Assert
+    expect(truncated).toBe(false)
+  })
+})
+
+describe('sizeLabel', () => {
+  it('切り詰められていない値は文字数だけを出す', () => {
+    // Arrange
+    const cell = { text: 'abcde', kind: 'text' as const }
+
+    // Act
+    const label = sizeLabel(cell)
+
+    // Assert
+    expect(label).toBe('5 文字')
+  })
+
+  it('切り詰められた値には先頭までである旨を添える', () => {
+    // Arrange
+    const cell = { text: 'abcde', kind: 'text' as const, truncated: true }
+
+    // Act
+    const label = sizeLabel(cell)
+
+    // Assert
+    expect(label).toContain('5 文字')
+    expect(label).toContain('先頭 64 KB のみ')
+    expect(label).toContain('切り詰められています')
+  })
+
+  it('切り詰めの有無で文字数の表示が必ず変わる', () => {
+    // Arrange: 同じ本文でも、切れているなら「これで全部だ」と読ませてはならない
+    const 本文 = '{"id":1}'
+
+    // Act
+    const 切れていない = sizeLabel({ text: 本文, kind: 'text' })
+    const 切れている = sizeLabel({ text: 本文, kind: 'text', truncated: true })
+
+    // Assert
+    expect(切れている).not.toBe(切れていない)
+    expect(切れている.startsWith(切れていない)).toBe(true)
+  })
+
+  it('NULL は値なしと出す', () => {
+    // Arrange
+    const cell = { text: '', kind: 'null' as const }
+
+    // Act
+    const label = sizeLabel(cell)
+
+    // Assert
+    expect(label).toBe('値なし（NULL）')
+  })
+})
+
+describe('detailBody', () => {
+  it('切り詰められた値でも本文には印を混ぜない', () => {
+    // Arrange: パネルの本文は選んでコピーできるデータであり、注記を混ぜると汚れる
+    const cell = { text: '{"id":1', kind: 'text' as const, truncated: true }
+
+    // Act
+    const body = detailBody(cell, true)
+
+    // Assert
+    expect(body).toBe('{"id":1')
   })
 })

@@ -4,8 +4,16 @@
  * 結果テーブルの 1 行はセルの高さに収まる範囲しか見せられない。`CLOB` は先頭
  * 64KB まで持っているのに、テーブルの中では末尾が切れてしまう。詳細パネルは
  * その全文を落ち着いて読むための場所であり、ここではそこに出す文字列を作る。
+ *
+ * ただし `CLOB` は 64KB を超えると Rust 側で切り詰められている（ADR の「値の
+ * 受け渡し」節）。詳細パネルは「全文を出す」顔をしているため、切れている値を
+ * 黙って出すと、利用者は末尾の無い文字列を値そのものだと信じてしまう。**打ち
+ * 切ったときも黙って切り詰めない**（ADR 0021）ため、切れた事実は本文とは別の
+ * 文言として添える。**本文そのものには印を混ぜない。**パネルの本文は選んで
+ * コピーできるデータであり、注記が混ざるとデータが汚れる。
  */
 
+import { CLOB_LIMIT_BYTES } from '../../types/db'
 import type { Cell } from '../../types/db'
 import { displayText } from './cellText'
 
@@ -53,6 +61,39 @@ export function formatJson(text: string): string | null {
  */
 export function characterCount(text: string): number {
   return Array.from(text).length
+}
+
+/**
+ * 切り詰められた値かを判定する。
+ *
+ * Rust 側は切れていないセルで項目そのものを省くため、`undefined` は偽である。
+ *
+ * @param cell 判定するセル
+ */
+export function isTruncated(cell: Cell): boolean {
+  return cell.truncated === true
+}
+
+/**
+ * 値の大きさを表す一行を組み立てる。
+ *
+ * 切り詰められた値では文字数だけを出すと嘘になる。数えられるのは切り詰めた
+ * **後**の文字列だからである。上限までしか持っていない旨を必ず添える
+ * （ADR 0021 の「黙って切り詰めない」）。
+ *
+ * @param cell 表示するセル
+ */
+export function sizeLabel(cell: Cell): string {
+  if (cell.kind === 'null') {
+    return '値なし（NULL）'
+  }
+
+  const 文字数 = `${characterCount(cell.text).toLocaleString('ja-JP')} 文字`
+  if (!isTruncated(cell)) {
+    return 文字数
+  }
+
+  return `${文字数}（先頭 ${CLOB_LIMIT_BYTES / 1024} KB のみ · 末尾は切り詰められています）`
 }
 
 /**
