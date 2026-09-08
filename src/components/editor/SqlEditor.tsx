@@ -10,8 +10,13 @@
  * カーソル位置が飛ぶ。
  *
  * 実行（`⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎`）と中止（`⌘.`）、検索・置換（`⌘F` / `⌘G` /
- * `⇧⌘G` / `⌥⌘F`）はエディタの中でしか意味を持たないため、`App.tsx` の `keydown`
- * ではなく CodeMirror の keymap に置く。検索の中身は `search.tsx` にある。
+ * `⇧⌘G` / `⌥⌘F`）、整形（`⇧⌥F`）はエディタの中でしか意味を持たないため、
+ * `App.tsx` の `keydown` ではなく CodeMirror の keymap に置く。検索の中身は
+ * `search.tsx` にある。
+ *
+ * 整形（ADR 0024）だけは keymap へ**キーの名前で**登録できない。macOS では
+ * `⌥` を伴う打鍵が文字そのものを変えるためで、理由と判定は `formatting.ts` の
+ * `isFormatShortcut` にある。keymap の `any` から打鍵を直に見て拾う。
  *
  * 日本語入力（IME）の変換中はエディタの外へ何も伝えない。変換中に React の
  * 再描画を起こすと、CodeMirror が編集領域の DOM を組み直し、その拍子に
@@ -41,6 +46,7 @@ import { sql } from '@codemirror/lang-sql'
 import type { IdentifierCase } from '../../types/db'
 import type { Catalog } from './catalog'
 import { koduchiOracleDialect } from './dialect'
+import { formatEdit, isFormatShortcut } from './formatting'
 import { withLeadingSpace } from './insertion'
 import { sqlCompletionSource } from './sqlCompletion'
 import { koduchiEditorTheme } from './theme'
@@ -74,6 +80,16 @@ export interface SqlEditorHandle {
    * 飛ぶと、ツリーへ戻る手間が挿入の手間を上回る。
    */
   insertAtCursor: (text: string) => void
+  /**
+   * 本文を整形する（`⇧⌥F`、ADR 0024）。
+   *
+   * 選択範囲があればその範囲だけ、なければ本文全体を整形する。整形できな
+   * かったときは**本文に触れず**、`onFormatFailed` で理由を伝える。
+   *
+   * コマンドパレットからも同じ道を通す。定義タブでは `EditorPanel` が
+   * エディタそのものを描かないため、この口は繋がらず何も起きない（ADR 0022）。
+   */
+  formatDocument: () => void
 }
 
 /**
@@ -132,6 +148,13 @@ interface SqlEditorProps {
   onRunScript: () => void
   /** `⌘.`。実行を中止する。 */
   onCancel: () => void
+  /**
+   * `⇧⌥F`。整形できなかったときに理由を伝える（ADR 0024）。
+   *
+   * エディタの中に出さないのは、エラーの行き先をメッセージタブ 1 つに
+   * まとめてあるためである（ADR README「機能スコープ」）。
+   */
+  onFormatFailed: (message: string) => void
 }
 
 export function SqlEditor({
@@ -145,6 +168,7 @@ export function SqlEditor({
   onRunSelection,
   onRunScript,
   onCancel,
+  onFormatFailed,
 }: SqlEditorProps) {
   const container = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
@@ -167,6 +191,7 @@ export function SqlEditor({
     onRunSelection,
     onRunScript,
     onCancel,
+    onFormatFailed,
   })
   handlers.current = {
     onChange,
@@ -175,11 +200,47 @@ export function SqlEditor({
     onRunSelection,
     onRunScript,
     onCancel,
+    onFormatFailed,
   }
+
+  /**
+   * 整形を本文へ当てる（`⇧⌥F`、ADR 0024）。
+   *
+   * `⇧⌥F` の打鍵とコマンドパレットの両方がここを通る。**整形できなかったときは
+   * 本文へ何も当てない。**書き戻すと、壊れた SQL が取り消し履歴に 1 段積まれる。
+   */
+  const runFormat = useRef(() => {
+    const editor = view.current
+    if (!editor) {
+      return
+    }
+
+    const range = editor.state.selection.main
+    const outcome = formatEdit(editor.state.doc.toString(), range.from, range.to)
+
+    if (outcome.status === 'failed') {
+      handlers.current.onFormatFailed(outcome.message)
+      return
+    }
+    if (outcome.status === 'unchanged') {
+      return
+    }
+
+    const { from, to, insert, region } = outcome.edit
+    editor.dispatch({
+      changes: { from, to, insert },
+      // 選択して整形したときは同じ範囲を選び直す。続けて `⇧⌘⏎` で実行できる。
+      // 選択が無いときは指定しない。差分は変わった所だけなので、そこに居ない
+      // カーソルは CodeMirror がそのまま持ち越す。
+      ...(range.empty ? {} : { selection: { anchor: region.from, head: region.to } }),
+      scrollIntoView: true,
+    })
+  })
 
   useImperativeHandle(
     ref,
     () => ({
+      formatDocument: () => runFormat.current(),
       insertAtCursor: (text: string) => {
         const editor = view.current
         if (!editor) {
@@ -257,6 +318,17 @@ export function SqlEditor({
             preventDefault: true,
             run: () => {
               handlers.current.onCancel()
+              return true
+            },
+          },
+          {
+            // `⇧⌥F`（整形、ADR 0024）。キーの名前では登録できないため、打鍵を
+            // 直に見る。理由は `formatting.ts` の `isFormatShortcut` にある。
+            any: (_view, event) => {
+              if (!isFormatShortcut(event)) {
+                return false
+              }
+              runFormat.current()
               return true
             },
           },

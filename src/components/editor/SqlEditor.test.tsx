@@ -19,6 +19,7 @@ function 描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {})
     onRunSelection: () => {},
     onRunScript: () => {},
     onCancel: () => {},
+    onFormatFailed: () => {},
     ...overrides,
   }
   const { rerender } = render(<SqlEditor {...props} />)
@@ -276,7 +277,7 @@ describe('SqlEditor', () => {
 })
 
 /** 挿入の口を持たせてエディタを描く。 */
-function 口付きで描く() {
+function 口付きで描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {}) {
   const ref = createRef<SqlEditorHandle>()
   render(
     <SqlEditor
@@ -290,6 +291,8 @@ function 口付きで描く() {
       onRunSelection={() => {}}
       onRunScript={() => {}}
       onCancel={() => {}}
+      onFormatFailed={() => {}}
+      {...overrides}
     />,
   )
   return ref
@@ -345,5 +348,78 @@ describe('insertAtCursor', () => {
 
     // Assert
     expect(編集領域().textContent).toBe('select user_id, email')
+  })
+})
+
+/** 編集領域に描かれている行の数。CodeMirror は 1 行を 1 要素で描く。 */
+function 行数(): number {
+  return document.querySelectorAll('.cm-content .cm-line').length
+}
+
+describe('整形（⇧⌥F、ADR 0024）', () => {
+  /**
+   * `⇧⌥F` を打つ。
+   *
+   * macOS では `⌥` を伴う打鍵で `key` が `Ï` に変わる。実機と同じ形を作り、
+   * `code` で拾えていることを確かめる。
+   */
+  function 整形の打鍵(): boolean {
+    return 編集領域().dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Ï',
+        code: 'KeyF',
+        altKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+  }
+
+  it('⇧⌥F で本文が整形される', () => {
+    // Arrange
+    口付きで描く({ value: 'select a,b from t' })
+
+    // Act
+    整形の打鍵()
+
+    // Assert
+    expect(行数()).toBeGreaterThan(1)
+  })
+
+  it('⇧⌥F の打鍵は既定の動作を止め、文字を打ち込ませない', () => {
+    // Arrange
+    口付きで描く({ value: 'select a from t' })
+
+    // Act
+    const 既定のまま進んだか = 整形の打鍵()
+
+    // Assert
+    expect(既定のまま進んだか).toBe(false)
+  })
+
+  it('整形できない本文では、本文に触れず理由を伝える', () => {
+    // Arrange
+    const 理由: string[] = []
+    const 元の本文 = "select q'[一行目\n二行目]' from dual"
+    口付きで描く({ value: 元の本文, onFormatFailed: (message) => 理由.push(message) })
+
+    // Act
+    整形の打鍵()
+
+    // Assert
+    expect(編集領域().textContent).toBe(元の本文.replace('\n', ''))
+    expect(理由).toHaveLength(1)
+  })
+
+  it('口からも同じ整形が行える（コマンドパレット用）', () => {
+    // Arrange
+    const ref = 口付きで描く({ value: 'select a,b from t' })
+
+    // Act
+    ref.current?.formatDocument()
+
+    // Assert
+    expect(行数()).toBeGreaterThan(1)
   })
 })

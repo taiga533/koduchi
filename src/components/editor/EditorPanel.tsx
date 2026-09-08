@@ -38,6 +38,8 @@ interface EditorPanelProps {
   onRunScript: () => void
   /** `⌘.`。実行を中止する。 */
   onCancel: () => void
+  /** `⇧⌥F`。整形できなかったときに理由を伝える（ADR 0024）。 */
+  onFormatFailed: (message: string) => void
 }
 
 /**
@@ -52,6 +54,7 @@ export function EditorPanel({
   onRunSelection,
   onRunScript,
   onCancel,
+  onFormatFailed,
 }: EditorPanelProps) {
   // 定義タブを選んでいるときは何も描かない。定義タブにエディタは無い（ADR 0022）。
   const activeTab = useTabStore(selectActiveSqlTab)
@@ -107,6 +110,7 @@ export function EditorPanel({
       onRunSelection={onRunSelection}
       onRunScript={onRunScript}
       onCancel={onCancel}
+      onFormatFailed={onFormatFailed}
     />
   )
 }
