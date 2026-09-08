@@ -68,14 +68,80 @@ pub struct ConnectionParams {
     pub auto_commit: bool,
 }
 
-/// バインド変数 1 つ。名前と与える値の対（ADR の「バインド変数」節）。
+/// バインド変数へ与える型（ADR 0016）。
 ///
-/// 値は型を選ばせずすべて文字列として受け取り、Oracle 側では `VARCHAR2` として
-/// バインドする。`None` は NULL を意味する。
+/// 値そのものは常に文字列で受け取り、この区分に従って Oracle の型へ変換して
+/// バインドする。変換に失敗したら実行せずにエラーを返す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BindKind {
+    /// 文字列。既定であり、型を選ばなかったときはこれになる。
+    #[default]
+    Varchar2,
+    /// 数値。桁を落とさないよう、文字列のまま `NUMBER` として渡す。
+    Number,
+    /// 日付。秒までを持つ。
+    Date,
+    /// タイムスタンプ。小数秒まで持てる。
+    Timestamp,
+}
+
+impl BindKind {
+    /// エラーメッセージに出す Oracle 側の型名を返す。
+    pub fn type_name(self) -> &'static str {
+        match self {
+            BindKind::Varchar2 => "VARCHAR2",
+            BindKind::Number => "NUMBER",
+            BindKind::Date => "DATE",
+            BindKind::Timestamp => "TIMESTAMP",
+        }
+    }
+}
+
+/// バインド変数 1 つ。名前・型・値の 3 つ組（ADR 0016）。
 ///
-/// 名前に前置きの `:` は含めない。`serde` では 2 要素の配列として表され、
-/// フロントエンドからは `["id", "42"]` / `["id", null]` の形で届く。
-pub type Bind = (String, Option<String>);
+/// 値は常に文字列として受け取り、`kind` に従って Oracle の型へ変換する。
+/// `value` が `None` なら型に関わらず NULL としてバインドする。
+///
+/// 名前に前置きの `:` は含めない。`serde` では
+/// `{"name":"id","kind":"number","value":"42"}` の形で届く。`kind` を省いた
+/// 古い形は `varchar2` として読む。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bind {
+    pub name: String,
+    #[serde(default)]
+    pub kind: BindKind,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+impl Bind {
+    /// 名前・型・値を指定してバインド変数を作る。
+    ///
+    /// # 引数
+    ///
+    /// * `name` - 変数名（`:` は含めない）
+    /// * `kind` - 与える型
+    /// * `value` - 値。`None` は NULL
+    pub fn new(name: impl Into<String>, kind: BindKind, value: Option<String>) -> Self {
+        Bind {
+            name: name.into(),
+            kind,
+            value,
+        }
+    }
+
+    /// 文字列として渡すバインド変数を作る。
+    ///
+    /// # 引数
+    ///
+    /// * `name` - 変数名（`:` は含めない）
+    /// * `value` - 値。`None` は NULL
+    pub fn text(name: impl Into<String>, value: Option<&str>) -> Self {
+        Self::new(name, BindKind::Varchar2, value.map(String::from))
+    }
+}
 
 /// 結果セットの列。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,16 +404,50 @@ mod tests {
     }
 
     #[test]
-    fn バインド変数は名前と値の配列として届く() {
+    fn バインド変数は名前と型と値の組として届く() {
         // Arrange
-        let json = r#"[["id", "42"], ["memo", null]]"#;
+        let json = r#"[
+            { "name": "id", "kind": "number", "value": "42" },
+            { "name": "memo", "kind": "varchar2", "value": null }
+        ]"#;
 
         // Act
         let binds: Vec<Bind> = serde_json::from_str(json).unwrap();
 
         // Assert
-        assert_eq!(binds[0], (String::from("id"), Some(String::from("42"))));
-        assert_eq!(binds[1], (String::from("memo"), None));
+        assert_eq!(
+            binds[0],
+            Bind::new("id", BindKind::Number, Some("42".into()))
+        );
+        assert_eq!(binds[1], Bind::text("memo", None));
+    }
+
+    #[test]
+    fn 型を省いたバインド変数は文字列として読まれる() {
+        // Arrange: 型の欄を持たない古い呼び出しでも読めるようにしてある
+        let json = r#"[{ "name": "id", "value": "42" }]"#;
+
+        // Act
+        let binds: Vec<Bind> = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert_eq!(binds[0].kind, BindKind::Varchar2);
+    }
+
+    #[test]
+    fn 日付とタイムスタンプの型はキャメルケースの名前で届く() {
+        // Arrange
+        let json = r#"[
+            { "name": "from", "kind": "date", "value": "2024-01-02" },
+            { "name": "to", "kind": "timestamp", "value": "2024-01-02 03:04:05" }
+        ]"#;
+
+        // Act
+        let binds: Vec<Bind> = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert_eq!(binds[0].kind, BindKind::Date);
+        assert_eq!(binds[1].kind, BindKind::Timestamp);
     }
 
     #[test]

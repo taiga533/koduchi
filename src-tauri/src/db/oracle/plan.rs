@@ -180,7 +180,7 @@ pub fn explain(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<S
         .build()
         .map_err(|error| DbError::execute(format!("実行計画を作れませんでした: {error}")))?;
 
-    let bound = bind::bound_values(&statement, binds);
+    let bound = bind::bound_values(&statement, binds)?;
 
     statement
         .execute_named(&bind::params(&bound))
@@ -210,7 +210,7 @@ pub fn actual(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<St
         .build()
         .map_err(|error| DbError::execute(error.to_string()))?;
 
-    let bound = bind::bound_values(&statement, binds);
+    let bound = bind::bound_values(&statement, binds)?;
 
     if statement.is_query() {
         // 実測は最後まで実行しないと揃わない。行そのものは使わないので捨てる。

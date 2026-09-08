@@ -13,11 +13,13 @@
 //! `oracle::InitParams::init()` がプロセス 1 回きりであるため、テストは
 //! `serial_test` で直列に走らせる。
 
-use koduchi_lib::db::driver::{Chunk, ConnectTarget, ConnectionParams, ExecuteOutcome};
+use koduchi_lib::db::driver::{
+    Bind, BindKind, Chunk, ConnectTarget, ConnectionParams, ExecuteOutcome,
+};
 use koduchi_lib::db::error::DbErrorKind;
 use koduchi_lib::db::oracle::instant_client::{self, ClientStatus};
 use koduchi_lib::db::pool::{ConnectionPool, DEFAULT_CHUNK_SIZE};
-use koduchi_lib::db::schema::{ObjectKind, SchemaFilter};
+use koduchi_lib::db::schema::{ObjectKind, ObjectKindFilter, SchemaFilter};
 use koduchi_lib::db::value::{Cell, CellKind};
 use serial_test::serial;
 
@@ -526,6 +528,7 @@ fn フィルタを外すとシステムスキーマも並ぶ() {
     let filter = SchemaFilter {
         exclude_system: false,
         hide_empty: false,
+        ..SchemaFilter::default()
     };
 
     // Act
@@ -559,6 +562,185 @@ fn スキーマはオブジェクトの名前と数を持つ() {
         .objects
         .iter()
         .any(|object| object.name == "SESSION_ROLLUP" && object.kind == ObjectKind::View));
+}
+
+/// スキーマ 1 つぶんのオブジェクトから、種別の合う名前を取り出す。
+///
+/// # 引数
+///
+/// * `schemas` - 段階 1 の結果
+/// * `owner` - 見たいスキーマ名
+/// * `kind` - 見たい種別
+fn 種別の名前(
+    schemas: &[koduchi_lib::db::schema::SchemaNode],
+    owner: &str,
+    kind: ObjectKind,
+) -> Vec<String> {
+    schemas
+        .iter()
+        .find(|schema| schema.name == owner)
+        .map(|schema| {
+            schema
+                .objects
+                .iter()
+                .filter(|object| object.kind == kind)
+                .map(|object| object.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+#[serial]
+fn 索引とトリガーとシノニムと型がツリーに並ぶ() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Index)
+        .contains(&String::from("IX_EVENTS_CREATED")));
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Trigger)
+        .contains(&String::from("TRG_USER_TRAITS_TOUCH")));
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Synonym).contains(&String::from("DAILY_GMV"))
+    );
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Type).contains(&String::from("ORDER_SUMMARY"))
+    );
+}
+
+#[test]
+#[serial]
+fn all_objectsから取る種別がひととおり並ぶ() {
+    // Arrange: 種別を足したとき列挙元の割り当てを忘れないための歯止め
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Table).contains(&String::from("EVENTS")));
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::View).contains(&String::from("SESSION_ROLLUP"))
+    );
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Function)
+        .contains(&String::from("ORDER_TOTAL")));
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Procedure).contains(&String::from("SAY_HELLO"))
+    );
+    assert!(
+        種別の名前(&schemas, "KODUCHI", ObjectKind::Package).contains(&String::from("ORDER_STATS"))
+    );
+
+    // 仕様と本体で 2 行にならない（`PACKAGE BODY` は種別として扱わない）
+    let 同名 = schemas
+        .iter()
+        .find(|schema| schema.name == "KODUCHI")
+        .expect("KODUCHI スキーマがあるはず")
+        .objects
+        .iter()
+        .filter(|object| object.name == "ORDER_STATS")
+        .count();
+    assert_eq!(同名, 1);
+}
+
+#[test]
+#[serial]
+fn 自動生成された索引は並ばない() {
+    // Arrange: 主キーの索引は SYS_C0012345 のような名前で作られる
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    let 索引 = 種別の名前(&schemas, "KODUCHI", ObjectKind::Index);
+    assert!(!索引.is_empty());
+    assert!(!索引.iter().any(|name| name.starts_with("SYS_")));
+}
+
+#[test]
+#[serial]
+fn 種別を落とすとその種別が並ばなくなる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let filter = SchemaFilter {
+        kinds: ObjectKindFilter {
+            index: false,
+            trigger: false,
+            ..ObjectKindFilter::default()
+        },
+        ..SchemaFilter::default()
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&filter).unwrap();
+
+    // Assert
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Index).is_empty());
+    assert!(種別の名前(&schemas, "KODUCHI", ObjectKind::Trigger).is_empty());
+    assert!(!種別の名前(&schemas, "KODUCHI", ObjectKind::Table).is_empty());
+}
+
+#[test]
+#[serial]
+fn 公開シノニムはツリーに並ばない() {
+    // Arrange: PUBLIC は ALL_USERS に載らない擬似的な所有者である
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let filter = SchemaFilter {
+        exclude_system: false,
+        hide_empty: false,
+        ..SchemaFilter::default()
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&filter).unwrap();
+
+    // Assert
+    let names: Vec<&str> = schemas.iter().map(|schema| schema.name.as_str()).collect();
+    assert!(!names.contains(&"PUBLIC"));
+}
+
+#[test]
+#[serial]
+fn db_linkは所有者のスキーマに並ぶ() {
+    // Arrange: DB link は接続中のユーザーのスキーマにしか作れない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let _ = pool.execute(TAB, "drop database link koduchi_selflink", &[]);
+    pool.execute(
+        TAB,
+        "create database link koduchi_selflink
+         connect to koduchi identified by koduchi_dev
+         using 'localhost:1521/FREEPDB1'",
+        &[],
+    )
+    .unwrap();
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    let links = 種別の名前(&schemas, "KODUCHI", ObjectKind::DatabaseLink);
+    pool.execute(TAB, "drop database link koduchi_selflink", &[])
+        .unwrap();
+    assert!(links
+        .iter()
+        .any(|name| name.starts_with("KODUCHI_SELFLINK")));
 }
 
 #[test]
@@ -595,7 +777,7 @@ fn バインド変数へ与えた値で絞り込める() {
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("keyword"), Some(String::from("dual")))];
+    let binds = vec![Bind::text("keyword", Some("dual"))];
 
     // Act
     let outcome = pool
@@ -617,7 +799,7 @@ fn nullを与えたバインド変数はnullとして届く() {
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("memo"), None)];
+    let binds = vec![Bind::text("memo", None)];
 
     // Act
     let outcome = pool
@@ -644,8 +826,8 @@ fn 文に無いバインド変数を渡しても実行できる() {
         return;
     };
     let binds = vec![
-        (String::from("id"), Some(String::from("1"))),
-        (String::from("使わない"), Some(String::from("x"))),
+        Bind::text("id", Some("1")),
+        Bind::text("使わない", Some("x")),
     ];
 
     // Act
@@ -663,12 +845,117 @@ fn 文に無いバインド変数を渡しても実行できる() {
 
 #[test]
 #[serial]
+fn 選んだ型のままoracleへ届く() {
+    // Arrange: `DUMP` の `Typ` はデータ型の番号で、1 が VARCHAR2、2 が NUMBER、
+    // 12 が DATE、180 が TIMESTAMP である（ADR 0016）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![
+        Bind::text("t", Some("42")),
+        Bind::new("n", BindKind::Number, Some(String::from("42"))),
+        Bind::new("d", BindKind::Date, Some(String::from("2024-03-04"))),
+        Bind::new(
+            "s",
+            BindKind::Timestamp,
+            Some(String::from("2024-03-04 05:06:07.123456")),
+        ),
+    ];
+
+    // Act
+    let outcome = pool
+        .execute(
+            TAB,
+            "select dump(:t), dump(:n), dump(:d), dump(:s) from dual",
+            &binds,
+        )
+        .unwrap()
+        .outcome;
+
+    // Assert
+    match outcome {
+        ExecuteOutcome::Query { chunk, .. } => {
+            let 型番号: Vec<&str> = chunk.rows[0]
+                .iter()
+                .map(|cell| cell.text.split(['=', ' ']).nth(1).unwrap_or(""))
+                .collect();
+            assert_eq!(型番号, vec!["1", "2", "12", "180"]);
+        }
+        other => panic!("問い合わせの結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn 日付として渡した値は時刻まで保たれる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![Bind::new(
+        "day",
+        BindKind::Date,
+        Some(String::from("2024-03-04 05:06:07")),
+    )];
+
+    // Act
+    let outcome = pool
+        .execute(
+            TAB,
+            "select to_char(:day, 'YYYY-MM-DD HH24:MI:SS') from dual",
+            &binds,
+        )
+        .unwrap()
+        .outcome;
+
+    // Assert
+    match outcome {
+        ExecuteOutcome::Query { chunk, .. } => {
+            assert_eq!(chunk.rows[0][0].text, "2024-03-04 05:06:07")
+        }
+        other => panic!("問い合わせの結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn 型として読めない値は実行する前にエラーになる() {
+    // Arrange: `ORA-` の文言ではなく、どの変数のどの値かが分かる形で返す
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let binds = vec![Bind::new(
+        "day",
+        BindKind::Date,
+        Some(String::from("きのう")),
+    )];
+
+    // Act
+    let error = pool
+        .execute(TAB, "select :day from dual", &binds)
+        .unwrap_err();
+
+    // Assert
+    assert_eq!(error.kind, DbErrorKind::Execute);
+    assert!(
+        error.message.contains(":day") && error.message.contains("きのう"),
+        "メッセージ: {}",
+        error.message
+    );
+}
+
+#[test]
+#[serial]
 fn バインド変数を含む文でも見積りの実行計画を取れる() {
     // Arrange
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("user_id"), Some(String::from("1")))];
+    let binds = vec![Bind::new(
+        "user_id",
+        BindKind::Number,
+        Some(String::from("1")),
+    )];
 
     // Act
     let plan = pool
@@ -686,7 +973,11 @@ fn バインド変数を含む文でも実測付きの実行計画を取れる()
     let Some(pool) = 接続を開く() else {
         return;
     };
-    let binds = vec![(String::from("user_id"), Some(String::from("1")))];
+    let binds = vec![Bind::new(
+        "user_id",
+        BindKind::Number,
+        Some(String::from("1")),
+    )];
 
     // Act
     let plan = pool

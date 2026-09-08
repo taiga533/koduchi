@@ -7,8 +7,8 @@
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
-import type { CompletionSettings, ConnectionParams } from '../types/db'
-import { defaultCompletionSettings, toErrorMessage } from '../types/db'
+import type { CompletionSettings, ConnectionColor, ConnectionParams } from '../types/db'
+import { defaultCompletionSettings, defaultConnectionColor, toErrorMessage } from '../types/db'
 
 /** 接続の段階。ステータスバーの表示に使う。 */
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'failed'
@@ -34,6 +34,28 @@ export interface ActiveConnection {
    * 違って繋いだ後に変わらないため、設定を変える口はこのストアに持たない。
    */
   completion: CompletionSettings
+  /**
+   * 接続に付けた色（ADR 0015）。保存していない接続では既定の `none`。
+   *
+   * タイトルバーとステータスバーが「今どこへ繋がっているか」を出すのに使う。
+   */
+  color: ConnectionColor
+  /** 接続が属するグループ名（ADR 0015）。未指定なら `null`。 */
+  group: string | null
+}
+
+/**
+ * 保存済みの接続から引き継ぐ、Rust へ渡さない値（ADR 0013・0015）。
+ *
+ * `ConnectionParams` と分けてあるのは、どれもデータベースへの繋ぎ方ではなく
+ * 画面の見せ方と補完の決まりだからである。
+ */
+export interface ConnectionProfile {
+  /** `connections.toml` に保存されている接続の ID。保存していなければ `null`。 */
+  savedId?: string | null
+  completion?: CompletionSettings
+  color?: ConnectionColor
+  group?: string | null
 }
 
 interface ConnectionState {
@@ -43,12 +65,7 @@ interface ConnectionState {
   error: string | null
 
   /** 接続する。既に接続していれば先に切断する。 */
-  connect: (
-    name: string,
-    params: ConnectionParams,
-    savedId?: string | null,
-    completion?: CompletionSettings,
-  ) => Promise<void>
+  connect: (name: string, params: ConnectionParams, profile?: ConnectionProfile) => Promise<void>
   /** 切断する。接続していなければ何もしない。 */
   disconnect: () => Promise<void>
 }
@@ -79,7 +96,13 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   connection: null,
   error: null,
 
-  connect: async (name, params, savedId = null, completion = defaultCompletionSettings) => {
+  connect: async (name, params, profile = {}) => {
+    const {
+      savedId = null,
+      completion = defaultCompletionSettings,
+      color = defaultConnectionColor,
+      group = null,
+    } = profile
     const previous = get().connection
     if (previous) {
       await getDbApi().disconnect(previous.id)
@@ -92,7 +115,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       await getDbApi().connect(id, params)
       set({
         status: 'connected',
-        connection: { id, savedId, name, params, completion },
+        connection: { id, savedId, name, params, completion, color, group },
         error: null,
       })
     } catch (error) {

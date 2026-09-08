@@ -14,7 +14,7 @@
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
-import type { SchemaFilter, SchemaNode, TableColumn } from '../types/db'
+import type { ObjectKind, SchemaFilter, SchemaNode, TableColumn } from '../types/db'
 import { defaultSchemaFilter, toErrorMessage } from '../types/db'
 
 /** 段階 1 の状態。 */
@@ -45,8 +45,13 @@ interface SchemaState {
   /** フィルタを変えて取得し直す。 */
   setFilter: (connectionId: string, filter: SchemaFilter) => Promise<void>
   setSearch: (search: string) => void
-  /** スキーマやオブジェクトの開閉を切り替える。 */
-  toggle: (key: string) => void
+  /**
+   * スキーマ・種別の束・オブジェクトの開閉を切り替える。
+   *
+   * `open` を省いたときは今覚えている状態を反転する。束は検索中だけ既定で
+   * 開くため、見えているとおりに閉じられるよう呼び出し側が値を渡す。
+   */
+  toggle: (key: string, open?: boolean) => void
   /** 接続を切ったときに捨てる。 */
   clear: () => void
 }
@@ -62,6 +67,19 @@ let generation = 0
 /** ツリーの節点を一意に指す鍵を作る。 */
 export function nodeKey(schema: string, object?: string): string {
   return object === undefined ? schema : `${schema}.${object}`
+}
+
+/**
+ * 種別の束を一意に指す鍵を作る（ADR 0014）。
+ *
+ * オブジェクトの鍵と衝突しないよう `#` で継ぐ。Oracle の無引用の識別子は
+ * `#` で始まれないため、`KODUCHI.#table` の形なら実在の名前と重ならない。
+ *
+ * @param schema スキーマ名
+ * @param kind オブジェクトの種類
+ */
+export function kindGroupKey(schema: string, kind: ObjectKind): string {
+  return `${schema}.#${kind}`
 }
 
 export const useSchemaStore = create<SchemaState>((set, get) => {
@@ -163,8 +181,10 @@ export const useSchemaStore = create<SchemaState>((set, get) => {
 
     setSearch: (search) => set({ search }),
 
-    toggle: (key) =>
-      set((state) => ({ expanded: { ...state.expanded, [key]: !state.expanded[key] } })),
+    toggle: (key, open) =>
+      set((state) => ({
+        expanded: { ...state.expanded, [key]: open ?? !state.expanded[key] },
+      })),
 
     clear: () => {
       generation += 1

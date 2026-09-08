@@ -13,6 +13,37 @@
 
 import type { ObjectKind, SchemaNode, TableColumn } from '../../types/db'
 
+/**
+ * 補完の候補に出す種別（ADR 0014）。
+ *
+ * SQL の中で名前を書く種別だけを入れる。索引とトリガーは SQL 本文に名前が
+ * 現れない（`DROP INDEX` などの DDL でしか使わない）ため出さない。DB link は
+ * `表@リンク名` の形でしか使えず、この補完ソースは `@` を解さないので、
+ * 裸の名前を並べても誤った綴りを勧めるだけになる。
+ *
+ * シノニムと型は入れる。シノニムは表と同じ位置に書け、型は PL/SQL の宣言で使う。
+ */
+const COMPLETABLE_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+  'table',
+  'view',
+  'materializedView',
+  'sequence',
+  'synonym',
+  'type',
+  'function',
+  'procedure',
+  'package',
+])
+
+/**
+ * 補完の候補に出す種別か。
+ *
+ * @param kind オブジェクトの種類
+ */
+export function isCompletable(kind: ObjectKind): boolean {
+  return COMPLETABLE_KINDS.has(kind)
+}
+
 /** 表やビューの列 1 つ。 */
 export interface CatalogColumn {
   /** カタログが持っている綴りの名前。 */
@@ -71,6 +102,9 @@ export function foldName(name: string): string {
 /**
  * 取得済みのスキーマからカタログを組み立てる。
  *
+ * 補完に出さない種別（索引・トリガー・DB link）はここで落とす。カタログは
+ * 補完のためだけの表であり、引けない名前を抱えても嵩むだけである（ADR 0014）。
+ *
  * @param schemas 段階 1 で取れたスキーマ（ADR 0007）
  * @param columns スキーマ名ごとの列情報。段階 2 が終わるまでは欠けている
  * @param defaultSchemaName 非修飾で表を出すスキーマ名。接続したユーザー名
@@ -92,6 +126,9 @@ export function buildCatalog(
 
     const objects = new Map<string, CatalogObject>()
     for (const object of schema.objects) {
+      if (!isCompletable(object.kind)) {
+        continue
+      }
       objects.set(foldName(object.name), {
         name: object.name,
         kind: object.kind,

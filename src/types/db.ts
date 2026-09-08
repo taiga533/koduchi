@@ -80,12 +80,35 @@ export type ExecuteResponse = ExecuteOutcome & {
 }
 
 /**
- * バインド変数 1 つ。名前と与える値の対（ADR の「バインド変数」節）。
+ * バインド変数へ与える型（ADR 0016）。
  *
- * 値は型を選ばせずすべて文字列として渡し、Oracle 側では `VARCHAR2` として
- * バインドする。`null` は NULL を意味する。名前に前置きの `:` は含めない。
+ * 値そのものは常に文字列で渡し、Rust 側がこの区分に従って Oracle の型へ
+ * 変換する。読み取れない値は実行を始める前にエラーになる。
  */
-export type Bind = [name: string, value: string | null]
+export type BindKind = 'varchar2' | 'number' | 'date' | 'timestamp'
+
+/** 型を選ぶ欄に並べる順。既定の `varchar2` を先頭に置く。 */
+export const bindKinds: BindKind[] = ['varchar2', 'number', 'date', 'timestamp']
+
+/** 型を選ぶ欄に出す表示名。Oracle の型名をそのまま使う。 */
+export const bindKindLabels: Record<BindKind, string> = {
+  varchar2: 'VARCHAR2',
+  number: 'NUMBER',
+  date: 'DATE',
+  timestamp: 'TIMESTAMP',
+}
+
+/**
+ * バインド変数 1 つ。名前・型・値の 3 つ組（ADR 0016）。
+ *
+ * 値は常に文字列として渡し、`kind` の型へ Rust 側で変換する。`value` が `null`
+ * なら型に関わらず NULL としてバインドする。名前に前置きの `:` は含めない。
+ */
+export interface Bind {
+  name: string
+  kind: BindKind
+  value: string | null
+}
 
 /** 接続先の指定方法（ADR 0006）。 */
 export type ConnectTarget =
@@ -166,23 +189,102 @@ export function toErrorMessage(value: unknown): string {
   return String(value)
 }
 
-/** スキーマツリーの絞り込み条件（ADR 0007）。接続ごとに保存される。 */
+/** スキーマツリーの絞り込み条件（ADR 0007・0014）。接続ごとに保存される。 */
 export interface SchemaFilter {
   /** システムスキーマを除外する。既定は真。 */
   excludeSystem: boolean
   /** 参照可能なオブジェクトが無いスキーマを隠す。既定は真。 */
   hideEmpty: boolean
+  /** ツリーに載せるオブジェクトの種別。既定はすべて真（ADR 0014）。 */
+  kinds: ObjectKindFilter
+}
+
+/**
+ * スキーマ内のオブジェクトの種類（ADR 0014）。
+ *
+ * 制約は含まない。`ALL_OBJECTS` に出てこないうえ、名前の大半が
+ * `SYS_C0012345` の自動生成であるためである（ADR 0014）。
+ */
+export type ObjectKind =
+  | 'table'
+  | 'view'
+  | 'materializedView'
+  | 'index'
+  | 'trigger'
+  | 'sequence'
+  | 'synonym'
+  | 'type'
+  | 'function'
+  | 'procedure'
+  | 'package'
+  | 'databaseLink'
+
+/**
+ * ツリーに束を出す順。
+ *
+ * Rust 側の `ObjectKind` の宣言順と同じである。よく見るものを先に置く。
+ */
+export const OBJECT_KIND_ORDER: ObjectKind[] = [
+  'table',
+  'view',
+  'materializedView',
+  'index',
+  'trigger',
+  'sequence',
+  'synonym',
+  'type',
+  'function',
+  'procedure',
+  'package',
+  'databaseLink',
+]
+
+/** 種別の表示名。ツリーの束の見出しと絞り込みメニューに出す。 */
+export const OBJECT_KIND_LABELS: Record<ObjectKind, string> = {
+  table: 'テーブル',
+  view: 'ビュー',
+  materializedView: 'マテリアライズドビュー',
+  index: '索引',
+  trigger: 'トリガー',
+  sequence: 'シーケンス',
+  synonym: 'シノニム',
+  type: '型',
+  function: 'ファンクション',
+  procedure: 'プロシージャ',
+  package: 'パッケージ',
+  databaseLink: 'DB link',
+}
+
+/**
+ * 種別ごとの表示可否（ADR 0014）。
+ *
+ * 鍵は `ObjectKind` そのものであり、Rust 側の `ObjectKindFilter` の項目名と
+ * 一致する。`filter.kinds[kind]` で直に引ける。
+ */
+export type ObjectKindFilter = Record<ObjectKind, boolean>
+
+/** 種別の絞り込みの既定値。すべて表示する。 */
+export const defaultObjectKindFilter: ObjectKindFilter = {
+  table: true,
+  view: true,
+  materializedView: true,
+  index: true,
+  trigger: true,
+  sequence: true,
+  synonym: true,
+  type: true,
+  function: true,
+  procedure: true,
+  package: true,
+  databaseLink: true,
 }
 
 /** スキーマフィルタの既定値。 */
 export const defaultSchemaFilter: SchemaFilter = {
   excludeSystem: true,
   hideEmpty: true,
+  kinds: defaultObjectKindFilter,
 }
-
-/** スキーマ内のオブジェクトの種類。 */
-export type ObjectKind =
-  'table' | 'view' | 'materializedView' | 'function' | 'procedure' | 'package' | 'sequence'
 
 /** スキーマ内のオブジェクト 1 件。 */
 export interface SchemaObject {
@@ -228,6 +330,30 @@ export const defaultCompletionSettings: CompletionSettings = {
   identifierCase: 'preserve',
 }
 
+/**
+ * 接続に付けられる色（ADR 0015）。
+ *
+ * 決め打ちのパレットであり、任意の色は入れられない。カラーピッカーを置くと
+ * テーマとの整合が取れなくなるためである。値は `src/theme/tokens.css` の
+ * `--cn-*` トークンと 1 対 1 で対応する。Rust 側の `ConnectionColor` と同じ。
+ */
+export const CONNECTION_COLORS = [
+  'none',
+  'red',
+  'orange',
+  'yellow',
+  'green',
+  'blue',
+  'purple',
+  'gray',
+] as const
+
+/** 接続に付けられる色。 */
+export type ConnectionColor = (typeof CONNECTION_COLORS)[number]
+
+/** 色の既定値。付けなければ色は出ない。 */
+export const defaultConnectionColor: ConnectionColor = 'none'
+
 /** 保存する接続先の指定方法（ADR 0004・0006）。 */
 export type SavedTarget =
   | { method: 'ezConnect'; host: string; port: number; serviceName: string }
@@ -242,6 +368,10 @@ export interface SavedConnection {
   readOnly: boolean
   /** 実行のたびに自動でコミットするか（ADR 0012）。既定は偽。 */
   autoCommit: boolean
+  /** 接続に付けた色（ADR 0015）。省略された古い設定ファイルでは `none` になる。 */
+  color: ConnectionColor
+  /** 接続を束ねるグループ名（ADR 0015）。未指定なら `null`。入れ子は作らない。 */
+  group: string | null
   schemaFilter: SchemaFilter
   /** 補完の設定（ADR 0013）。省略された古い設定ファイルでは既定値になる。 */
   completion: CompletionSettings

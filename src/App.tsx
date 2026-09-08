@@ -45,7 +45,11 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
 import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
+import { inferBindKinds } from './sql/bindTypes'
+import type { BindOccurrence } from './sql/statements'
 import {
+  collectBindOccurrences,
+  collectBindOccurrencesAcross,
   collectBindVariables,
   collectBindVariablesAcross,
   isSelectStatement,
@@ -59,6 +63,7 @@ import { useSchemaStore } from './stores/schema'
 import { useSessionsStore } from './stores/sessions'
 import type { BindInput } from './stores/tab'
 import {
+  fillBindDefaults,
   selectActiveTab,
   selectBindValues,
   selectSession,
@@ -115,6 +120,19 @@ function bindVariablesOf(run: PendingRun): string[] {
   return run.kind === 'script'
     ? collectBindVariablesAcross(run.statements)
     : collectBindVariables(run.sql)
+}
+
+/**
+ * 実行の対象からバインド変数の出てくる場所を集める。
+ *
+ * 既定の型を推し量るのに使う（ADR 0016）。
+ *
+ * @param run 値が揃うのを待っている実行
+ */
+function bindOccurrencesOf(run: PendingRun): BindOccurrence[] {
+  return run.kind === 'script'
+    ? collectBindOccurrencesAcross(run.statements)
+    : collectBindOccurrences(run.sql)
 }
 
 export function App() {
@@ -280,6 +298,16 @@ export function App() {
         void runPending(run, [])
         return
       }
+
+      // 初めて尋ねる変数には、比べている列から推し量った型を入れておく
+      // （ADR 0016）。覚えている変数はそのまま残す。
+      const tabId = useTabStore.getState().activeTabId
+      if (tabId) {
+        const kinds = inferBindKinds(bindOccurrencesOf(run), useSchemaStore.getState().columns)
+        const values = selectBindValues(useTabStore.getState(), tabId)
+        useTabStore.getState().setBindValues(tabId, fillBindDefaults(names, values, kinds))
+      }
+
       setBindPrompt({ names, run })
     },
     [runPending],

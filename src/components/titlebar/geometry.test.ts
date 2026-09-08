@@ -2,12 +2,14 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  CONNECTION_COLOR_BAR_HEIGHT,
   TITLE_BAR_HEIGHT,
   TRAFFIC_LIGHT_DIAMETER,
   TRAFFIC_LIGHT_LEFT,
   TRAFFIC_LIGHT_SPACING,
   titleBarContentLeft,
   trafficLightRight,
+  trafficLightTop,
   trafficLightY,
 } from './geometry'
 
@@ -40,6 +42,56 @@ describe('trafficLightY', () => {
 
     // Assert
     expect(values).toEqual([16, 23, 30])
+  })
+})
+
+describe('trafficLightTop', () => {
+  it('42px のタイトルバーではボタンの上端が 14px の位置に来る', () => {
+    // Arrange: y = 23 → 中心 21 → 上端 21 − 7
+    const height = 42
+
+    // Act
+    const top = trafficLightTop(height)
+
+    // Assert
+    expect(top).toBe(14)
+  })
+
+  it('ボタン中心から半径ぶん上が上端になる', () => {
+    // Arrange
+    const heights = [28, 42, 56]
+
+    // Act
+    const 上端 = heights.map(trafficLightTop)
+
+    // Assert: 中心 = trafficLightY(h) − 2、上端 = 中心 − 直径/2
+    expect(上端).toEqual(
+      heights.map((height) => trafficLightY(height) - 2 - TRAFFIC_LIGHT_DIAMETER / 2),
+    )
+  })
+})
+
+describe('接続の色の帯（ADR 0015）', () => {
+  it('帯は信号機のボタンに掛からない薄さである', () => {
+    // Arrange
+    const 上端 = trafficLightTop(TITLE_BAR_HEIGHT)
+
+    // Act
+    const 帯 = CONNECTION_COLOR_BAR_HEIGHT
+
+    // Assert
+    expect(帯).toBeLessThan(上端)
+  })
+
+  it('タイトルバーを縮めても帯がボタンに掛からない', () => {
+    // Arrange: 高さを変えるとボタンの上端も動くため、いちばん狭い場合で見る
+    const heights = [28, 42, 56]
+
+    // Act
+    const 余裕 = heights.map((height) => trafficLightTop(height) - CONNECTION_COLOR_BAR_HEIGHT)
+
+    // Assert
+    expect(余裕.every((値) => 値 > 0)).toBe(true)
   })
 })
 

@@ -12,14 +12,21 @@
  * 削除はキーチェーンのエントリごと消える取り消せない操作であるため、行の中で
  * 1 度確認を取る。ダイアログを開かないのは、画面の外へ意識を飛ばさないためと、
  * テストから素直に辿れるようにするためである。
+ *
+ * 接続はグループごとに見出しを付けて並べる（ADR 0015）。並びの決まりごとは
+ * `grouping.ts` に寄せてある。行の左端には接続の色の縦帯を敷き、読み取り専用は
+ * 鍵のアイコンで示す。色と形で別々のことを表しているため、両方が同じ行に出ても
+ * 読み分けられる。
  */
 
 import { useEffect, useState } from 'react'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { Lock, Pencil, Plus, Trash2 } from 'lucide-react'
 import { getDbApi } from '../../api/db'
 import { useConnectionStore } from '../../stores/connection'
+import { connectionColorVar } from '../../theme/connectionColors'
 import type { ConnectTarget, SavedConnection, SavedTarget, SchemaFilter } from '../../types/db'
 import { toErrorMessage } from '../../types/db'
+import { groupConnections } from './grouping'
 
 interface ConnectionPickerProps {
   /** 「新しい接続」を押したときに呼ぶ。 */
@@ -68,8 +75,12 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
           readOnly: connection.readOnly,
           autoCommit: connection.autoCommit,
         },
-        connection.id,
-        connection.completion,
+        {
+          savedId: connection.id,
+          completion: connection.completion,
+          color: connection.color,
+          group: connection.group,
+        },
       )
 
       const active = useConnectionStore.getState().connection
@@ -116,6 +127,109 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
 
   const message = error ?? storeError
 
+  /**
+   * 保存済みの接続 1 件を行として描く。
+   *
+   * 左端の縦帯は色が無くても場所だけ空ける。色の有無で行の頭が揃わなくなると、
+   * 名前を目で追いにくくなるためである。
+   *
+   * @param connection 描く接続
+   */
+  const 接続の行 = (connection: SavedConnection) => (
+    <li key={connection.id} className="flex flex-col gap-4px">
+      <div className="flex items-center gap-8px">
+        <span
+          data-testid={`connection-color-band-${connection.id}`}
+          data-connection-color={connection.color}
+          aria-hidden="true"
+          className="self-stretch w-3px rounded-2px shrink-0"
+          style={{ background: connectionColorVar(connection.color) ?? 'transparent' }}
+        />
+        <button
+          type="button"
+          onClick={() => void start(connection)}
+          disabled={busy !== null}
+          className="flex-1 min-w-0 flex items-baseline gap-9px px-10px py-7px rounded-7px bg-fill border-none cursor-pointer font-inherit text-left disabled:cursor-default"
+        >
+          <span className="text-12px text-fg shrink-0">{connection.name}</span>
+          <span className="text-11px text-fg4 truncate">{describeTarget(connection)}</span>
+          <span className="flex-1" />
+          {connection.readOnly ? (
+            <span
+              title="読み取り専用"
+              aria-label="読み取り専用"
+              className="flex items-center text-fg5 shrink-0 self-center"
+            >
+              <Lock size={11} />
+            </span>
+          ) : null}
+          <span className="text-11px text-fg5 shrink-0">
+            {busy === connection.id ? '接続中…' : connection.username}
+          </span>
+        </button>
+        <IconButton label={`${connection.name} を編集`} onClick={() => onEdit(connection)}>
+          <Pencil size={13} />
+        </IconButton>
+        <IconButton
+          label={`${connection.name} を削除`}
+          onClick={() => setConfirming(connection.id)}
+        >
+          <Trash2 size={13} />
+        </IconButton>
+      </div>
+
+      {confirming === connection.id ? (
+        <div className="flex items-center gap-8px pl-10px">
+          <span className="text-11.5px text-fg3">
+            保存したパスワードごと消えます。削除しますか？
+          </span>
+          <button
+            type="button"
+            onClick={() => void remove(connection.id)}
+            className="px-10px py-3px rounded-6px bg-fill text-err text-11.5px font-600 border-none cursor-pointer font-inherit"
+          >
+            削除
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(null)}
+            className="px-10px py-3px rounded-6px bg-fill text-fg text-11.5px border-none cursor-pointer font-inherit"
+          >
+            やめる
+          </button>
+        </div>
+      ) : null}
+
+      {asking?.id === connection.id ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            void run(connection, password)
+          }}
+          className="flex items-center gap-6px pl-10px"
+        >
+          <label className="flex-1 flex items-center gap-8px">
+            <span className="text-11.5px text-fg3">パスワード</span>
+            <input
+              type="password"
+              autoFocus
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              className="flex-1 px-10px py-5px rounded-7px border border-line bg-panel text-12px text-fg font-inherit outline-none focus:border-ac"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={busy !== null}
+            className="px-12px py-5px rounded-7px bg-ac text-acfg text-11.5px font-600 border-none cursor-pointer font-inherit disabled:opacity-50 disabled:cursor-default"
+          >
+            接続
+          </button>
+        </form>
+      ) : null}
+    </li>
+  )
+
   return (
     <div className="w-520px flex flex-col gap-18px">
       <div className="flex flex-col gap-5px">
@@ -126,86 +240,18 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
       {!loaded ? null : saved.length === 0 ? (
         <p className="text-12.5px text-fg4 m-0">保存された接続はまだありません</p>
       ) : (
-        <ul className="list-none m-0 p-0 flex flex-col gap-4px">
-          {saved.map((connection) => (
-            <li key={connection.id} className="flex flex-col gap-4px">
-              <div className="flex items-center gap-8px">
-                <button
-                  type="button"
-                  onClick={() => void start(connection)}
-                  disabled={busy !== null}
-                  className="flex-1 min-w-0 flex items-baseline gap-9px px-10px py-7px rounded-7px bg-fill border-none cursor-pointer font-inherit text-left disabled:cursor-default"
-                >
-                  <span className="text-12px text-fg shrink-0">{connection.name}</span>
-                  <span className="text-11px text-fg4 truncate">{describeTarget(connection)}</span>
-                  <span className="flex-1" />
-                  <span className="text-11px text-fg5 shrink-0">
-                    {busy === connection.id ? '接続中…' : connection.username}
-                  </span>
-                </button>
-                <IconButton label={`${connection.name} を編集`} onClick={() => onEdit(connection)}>
-                  <Pencil size={13} />
-                </IconButton>
-                <IconButton
-                  label={`${connection.name} を削除`}
-                  onClick={() => setConfirming(connection.id)}
-                >
-                  <Trash2 size={13} />
-                </IconButton>
-              </div>
-
-              {confirming === connection.id ? (
-                <div className="flex items-center gap-8px pl-10px">
-                  <span className="text-11.5px text-fg3">
-                    保存したパスワードごと消えます。削除しますか？
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void remove(connection.id)}
-                    className="px-10px py-3px rounded-6px bg-fill text-err text-11.5px font-600 border-none cursor-pointer font-inherit"
-                  >
-                    削除
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirming(null)}
-                    className="px-10px py-3px rounded-6px bg-fill text-fg text-11.5px border-none cursor-pointer font-inherit"
-                  >
-                    やめる
-                  </button>
-                </div>
+        <div className="flex flex-col gap-14px">
+          {groupConnections(saved).map((group) => (
+            <section key={group.name ?? ''} className="flex flex-col gap-5px">
+              {group.name ? (
+                <h2 className="text-11px font-600 text-fg3 m-0 px-2px">{group.name}</h2>
               ) : null}
-
-              {asking?.id === connection.id ? (
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault()
-                    void run(connection, password)
-                  }}
-                  className="flex items-center gap-6px pl-10px"
-                >
-                  <label className="flex-1 flex items-center gap-8px">
-                    <span className="text-11.5px text-fg3">パスワード</span>
-                    <input
-                      type="password"
-                      autoFocus
-                      value={password}
-                      onChange={(event) => setPassword(event.target.value)}
-                      className="flex-1 px-10px py-5px rounded-7px border border-line bg-panel text-12px text-fg font-inherit outline-none focus:border-ac"
-                    />
-                  </label>
-                  <button
-                    type="submit"
-                    disabled={busy !== null}
-                    className="px-12px py-5px rounded-7px bg-ac text-acfg text-11.5px font-600 border-none cursor-pointer font-inherit disabled:opacity-50 disabled:cursor-default"
-                  >
-                    接続
-                  </button>
-                </form>
-              ) : null}
-            </li>
+              <ul className="list-none m-0 p-0 flex flex-col gap-4px">
+                {group.connections.map(接続の行)}
+              </ul>
+            </section>
           ))}
-        </ul>
+        </div>
       )}
 
       {message ? (

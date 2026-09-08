@@ -430,7 +430,7 @@ fn run_actor<D, F>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::driver::Column;
+    use crate::db::driver::{BindKind, Column};
     use crate::db::value::{Cell, CellKind};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -758,8 +758,8 @@ mod tests {
         let 受け取ったバインド = Arc::clone(&driver.受け取ったバインド);
         let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
         let binds = vec![
-            (String::from("id"), Some(String::from("42"))),
-            (String::from("memo"), None),
+            Bind::new("id", BindKind::Number, Some(String::from("42"))),
+            Bind::text("memo", None),
         ];
 
         // Act

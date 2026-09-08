@@ -11,6 +11,11 @@
  * 接続中の表示は押せるようにしてあり、そこから切断と接続の切り替えへ進む。
  * 1 接続 = 1 ウィンドウ（ADR 0009）であるため、接続を操作する場所はこの
  * 「今どこへ繋がっているか」を出している所が自然である。
+ *
+ * 接続に色が付いていれば「接続中」の手前に色の印を置く（ADR 0015）。ここは
+ * 補助であり、色そのものを届ける主役はタイトルバー上端の帯である。読み取り専用は
+ * 色ではなく鍵のアイコン（形）で示し続ける。色は「どの接続か」、形は「何ができるか」
+ * を表す別々の軸であり、混ぜると読み分けられなくなる。
  */
 
 import { useState } from 'react'
@@ -27,6 +32,7 @@ import {
 import { isManualCommit, useConnectionStore } from '../../stores/connection'
 import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
+import { connectionColorVar } from '../../theme/connectionColors'
 
 interface StatusBarProps {
   /** 設定画面を開く。 */
@@ -173,6 +179,8 @@ function ConnectionMenu({
   onOpenSessions?: () => void
 }) {
   const [open, setOpen] = useState(false)
+  const color = useConnectionStore((state) => state.connection?.color ?? 'none')
+  const 接続の色 = connectionColorVar(color)
 
   /** 項目を選んだときの共通処理。メニューを閉じてから実行する。 */
   const select = (work: () => void) => {
@@ -190,6 +198,15 @@ function ConnectionMenu({
         className="flex items-center gap-4px px-5px py-1px rounded-5px text-11px bg-transparent border-none cursor-pointer font-inherit hover:bg-fill"
         style={{ color: CONNECTED_COLOR }}
       >
+        {接続の色 ? (
+          <span
+            data-testid="connection-color-mark"
+            data-connection-color={color}
+            aria-hidden="true"
+            className="w-7px h-7px rounded-2px"
+            style={{ background: 接続の色 }}
+          />
+        ) : null}
         {STATUS_LABELS.connected}
         <ChevronUp size={12} />
       </button>
