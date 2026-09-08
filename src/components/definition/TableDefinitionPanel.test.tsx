@@ -2,12 +2,14 @@
  * テーブル定義ビューのテスト（ADR 0019・0022）。
  *
  * 列・制約・索引の描画、内訳の切替、列の絞り込み、DDL の遅延取得、権限不足の
- * 見せ方を見る。データベースからは `src/api/` 層の差し替えで切り離す（ADR 0010）。
+ * 見せ方、そして 4 つの内訳のコピーを見る。データベースとクリップボードからは
+ * `src/api/` 層の差し替えで切り離す（ADR 0010）。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
 import { useDefinitionStore } from '../../stores/definition'
@@ -107,6 +109,9 @@ const 定義: ObjectDefinition = {
 
 let calls: FakeCalls
 
+/** クリップボードへ書かれた文字列。新しいものが末尾に来る。 */
+let 書いた文字列: string[]
+
 /**
  * 定義ビューを開いた状態で描く。
  *
@@ -128,11 +133,19 @@ async function パネルを開く(options: FakeDbApiOptions = { definition: 定�
 
 beforeEach(() => {
   useDefinitionStore.getState().clear()
+  書いた文字列 = []
+  setClipboardApi({
+    writeText: (text) => {
+      書いた文字列.push(text)
+      return Promise.resolve()
+    },
+  })
 })
 
 afterEach(() => {
   useDefinitionStore.getState().clear()
   resetDbApi()
+  resetClipboardApi()
 })
 
 describe('TableDefinitionPanel', () => {
@@ -347,6 +360,181 @@ describe('TableDefinitionPanel', () => {
     // Assert
     expect(useDefinitionStore.getState().byTab['別のタブ'].search).toBe('')
     expect(screen.getByLabelText('定義を絞り込む')).toHaveValue('tracking')
+  })
+
+  it('列のタブのコピーは見出し付きでタブ区切りの全列を渡す', async () => {
+    // Arrange
+    const user = await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '3 件の列をコピー' }))
+
+    // Assert
+    expect(書いた文字列).toHaveLength(1)
+    expect(書いた文字列[0].split('\n')).toEqual([
+      '#\t列\t型\tNULL',
+      '1\tSHIPMENT_ID\tNUMBER(12)\tNOT NULL',
+      '2\tORDER_ID\tNUMBER(12)\tNOT NULL',
+      '3\tTRACKING_NO\tVARCHAR2(64)\t可',
+    ])
+  })
+
+  it('コピーすると押したことが分かる一言を出す', async () => {
+    // Arrange: コピーは何も起きないように見える操作である
+    const user = await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '3 件の列をコピー' }))
+
+    // Assert
+    expect(screen.getByRole('status')).toHaveTextContent('3 件をコピーしました')
+  })
+
+  it('コピーの一言はしばらくすると自分で消える', async () => {
+    // Arrange: 定義タブは開いたまま使う画面であり、古い報せが残り続けると
+    // 今写したものと見分けが付かなくなる
+    await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+    vi.useFakeTimers()
+
+    try {
+      // Act
+      fireEvent.click(screen.getByRole('button', { name: '3 件の列をコピー' }))
+      expect(screen.getByRole('status')).toHaveTextContent('3 件をコピーしました')
+      act(() => {
+        vi.advanceTimersByTime(3000)
+      })
+
+      // Assert
+      expect(screen.getByRole('status')).toHaveTextContent('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('絞り込んでいるときは絞り込んだぶんだけを渡す', async () => {
+    // Arrange: 見えていないものが混ざって貼られてはいけない
+    const user = await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.type(screen.getByLabelText('定義を絞り込む'), 'tracking')
+    await user.click(screen.getByRole('button', { name: '絞り込んだ 1 件の列をコピー' }))
+
+    // Assert
+    expect(書いた文字列[0]).toBe('#\t列\t型\tNULL\n3\tTRACKING_NO\tVARCHAR2(64)\t可')
+  })
+
+  it('絞り込み中のコピーは押す前と押した後の両方でそう伝える', async () => {
+    // Arrange: 気づかないまま欠けたものを貼らせない
+    const user = await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.type(screen.getByLabelText('定義を絞り込む'), 'tracking')
+
+    // Assert
+    const ボタン = screen.getByRole('button', { name: '絞り込んだ 1 件の列をコピー' })
+    expect(ボタン).toHaveTextContent('絞り込んだぶんをコピー')
+
+    await user.click(ボタン)
+    expect(screen.getByRole('status')).toHaveTextContent('絞り込んだ 1 件をコピーしました')
+  })
+
+  it('当てはまる行が無いときはコピーを押せない', async () => {
+    // Arrange: 見出しだけの文字列を貼らせない
+    const user = await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.type(screen.getByLabelText('定義を絞り込む'), 'zzz')
+
+    // Assert
+    expect(screen.getByRole('button', { name: 'コピーできるものがありません' })).toBeDisabled()
+  })
+
+  it('索引のタブのコピーは索引の表を渡す', async () => {
+    // Arrange
+    const user = await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.click(screen.getByRole('tab', { name: /索引/ }))
+    await user.click(screen.getByRole('button', { name: '2 件の索引をコピー' }))
+
+    // Assert
+    expect(書いた文字列[0].split('\n')[0]).toBe('名前\t列\t一意\t種類')
+    expect(書いた文字列[0]).toContain('SYS_C0012345 (自動生成)')
+  })
+
+  it('DDL のコピーは見出しを足さずに本文だけを渡す', async () => {
+    // Arrange: 貼り先は別の環境の SQL である
+    const user = await パネルを開く({
+      definition: 定義,
+      ddl: {
+        owner: 'KODUCHI',
+        name: 'ORDER_STATS',
+        kind: 'package',
+        parts: [
+          { label: 'パッケージ仕様', sql: 'CREATE OR REPLACE PACKAGE P AS END;' },
+          { label: 'パッケージ本体', sql: 'CREATE OR REPLACE PACKAGE BODY P AS END;' },
+        ],
+      },
+    })
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.click(screen.getByRole('tab', { name: 'DDL' }))
+    await screen.findByText('パッケージ仕様')
+    await user.click(screen.getByRole('button', { name: 'DDL をコピー' }))
+
+    // Assert
+    expect(書いた文字列[0]).toBe(
+      'CREATE OR REPLACE PACKAGE P AS END;\n\nCREATE OR REPLACE PACKAGE BODY P AS END;',
+    )
+  })
+
+  it('仕様と本体は断片ごとにも渡せる', async () => {
+    // Arrange: 本体だけを別の環境へ流したいことがある
+    const user = await パネルを開く({
+      definition: 定義,
+      ddl: {
+        owner: 'KODUCHI',
+        name: 'ORDER_STATS',
+        kind: 'package',
+        parts: [
+          { label: 'パッケージ仕様', sql: 'CREATE OR REPLACE PACKAGE P AS END;' },
+          { label: 'パッケージ本体', sql: 'CREATE OR REPLACE PACKAGE BODY P AS END;' },
+        ],
+      },
+    })
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.click(screen.getByRole('tab', { name: 'DDL' }))
+    await screen.findByText('パッケージ仕様')
+    await user.click(screen.getByRole('button', { name: 'パッケージ本体をコピー' }))
+
+    // Assert
+    expect(書いた文字列[0]).toBe('CREATE OR REPLACE PACKAGE BODY P AS END;')
+  })
+
+  it('DDL を取れていないうちはコピーを押せない', async () => {
+    // Arrange: GET_DDL の権限が無いだけで空文字列を渡さない（ADR 0019）
+    const user = await パネルを開く({
+      definition: 定義,
+      ddlError: { kind: 'permission', message: 'ORA-31603' },
+    })
+    await screen.findByText('TRACKING_NO')
+
+    // Act
+    await user.click(screen.getByRole('tab', { name: 'DDL' }))
+    await screen.findByText('この接続では DDL を取得できません')
+
+    // Assert
+    expect(screen.getByRole('button', { name: 'コピーできるものがありません' })).toBeDisabled()
   })
 
   it('タブを閉じると何も描かない', async () => {
