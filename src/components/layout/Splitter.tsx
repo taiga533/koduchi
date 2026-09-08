@@ -5,9 +5,15 @@
  * は左右を分ける縦線（幅を変える）、`horizontal` は上下を分ける横線（高さを
  * 変える）を指す。`role="separator"` の `aria-orientation` と同じ意味である。
  *
- * 当たり判定は 6px、見た目の線は 1px。親は `gap-6px` で 6px の間隔を空けている
- * ため、負の余白でその間隔の中へ重ねて置く。こうすると区切りを足しても隣の
- * ペインの間隔は変わらない。
+ * 当たり判定は 6px。親は `gap-6px` で 6px の間隔を空けているため、負の余白で
+ * その間隔の中へ重ねて置く。こうすると区切りを足しても隣のペインの間隔は
+ * 変わらない。
+ *
+ * 見た目は端から端までの線ではなく、中央に置いたつまみ（点）である。隣り合う
+ * ペインはどちらも `border border-line` を持っており、境目そのものはペインの
+ * 縁が示している。区切りが担うのは「ここは掴んで動かせる」ことを見せる役目
+ * だけなので、線を引き直さず点だけを置く。点は常に出す（掴めることが触る前に
+ * 分からなければ意味がない）。ホバーと焦点では `--ac` へ変わる。
  *
  * ドラッグは `pointerdown` /
  * `pointermove` / `pointerup` と `setPointerCapture` で行う。`mousemove` を
@@ -16,6 +22,7 @@
  * 値そのものは持たない。呼び出し側が状態を持ち、`onChange` で受け取る。
  */
 
+import { GripHorizontal, GripVertical } from 'lucide-react'
 import { useRef } from 'react'
 import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { clamp } from './paneSizes'
@@ -24,6 +31,16 @@ import { clamp } from './paneSizes'
 export const KEY_STEP = 8
 /** `⇧` を押しながらの矢印キー 1 回で動く量（px）。 */
 export const KEY_STEP_LARGE = 32
+
+/**
+ * つまみの大きさ（px）。
+ *
+ * lucide の `Grip*` は 24 単位の升目に半径 1 の丸を 2 列 × 3 行で置いたもので、
+ * 線幅 2 と合わせて短い辺の絵柄は 10 単位ぶんになる。当たり判定の 6px に収める
+ * には 24 単位が 14.4px を超えてはならないため 14 を選んだ。12 まで落とすと
+ * 点が 2px を切り、罫線と見分けが付かなくなる。
+ */
+export const GRIP_SIZE = 14
 
 /** 区切りの向き。 */
 export type SplitterOrientation = 'vertical' | 'horizontal'
@@ -95,6 +112,8 @@ export function Splitter({
 }: SplitterProps) {
   const drag = useRef<DragState | null>(null)
   const 縦線 = orientation === 'vertical'
+  // 縦の区切りには点を縦に並べたつまみ、横の区切りには横に並べたつまみを置く。
+  const Grip = 縦線 ? GripVertical : GripHorizontal
 
   /** ドラッグを始める。掴んだ位置と寸法を覚え、以後の移動を差分で見る。 */
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -164,11 +183,13 @@ export function Splitter({
         縦線 ? 'w-6px -mx-6px cursor-col-resize' : 'h-6px -my-6px cursor-row-resize'
       }`}
     >
-      <span
-        aria-hidden="true"
-        className={`bg-line group-hover:bg-ac group-focus:bg-ac ${
-          縦線 ? 'w-1px h-full' : 'h-1px w-full'
-        }`}
+      <Grip
+        data-splitter-grip={orientation}
+        size={GRIP_SIZE}
+        /* 絵柄は 6px に収まるが、SVG の枠は 14px あって左右へはみ出す。
+           `pointer-events-none` を当てないと、はみ出した枠が押し下げを拾って
+           当たり判定が 6px より広がってしまう。 */
+        className="pointer-events-none shrink-0 text-fg6 group-hover:text-ac group-focus:text-ac"
       />
     </div>
   )
