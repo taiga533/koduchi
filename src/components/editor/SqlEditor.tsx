@@ -19,7 +19,8 @@
  * まとめて 1 度だけ伝えれば足りる。
  */
 
-import { useEffect, useRef } from 'react'
+import type { Ref } from 'react'
+import { useEffect, useImperativeHandle, useRef } from 'react'
 import { Compartment, EditorState } from '@codemirror/state'
 import {
   EditorView,
@@ -40,6 +41,7 @@ import { sql } from '@codemirror/lang-sql'
 import type { IdentifierCase } from '../../types/db'
 import type { Catalog } from './catalog'
 import { koduchiOracleDialect } from './dialect'
+import { withLeadingSpace } from './insertion'
 import { sqlCompletionSource } from './sqlCompletion'
 import { koduchiEditorTheme } from './theme'
 import { koduchiSearch, koduchiSearchKeymap } from './search'
@@ -54,6 +56,24 @@ export interface EditorPosition {
   offset: number
   /** 選択されている文字列。選択が無ければ `null`。 */
   selectedText: string | null
+}
+
+/**
+ * 外から呼べるエディタの操作（ADR 0020）。
+ *
+ * スキーマツリーからの挿入のために開けてある口である。内容をタブストア越しに
+ * 差し替える手もあるが、それでは文書を丸ごと置き換えることになり、カーソルが
+ * 末尾へ飛ぶうえ取り消し履歴が 1 段で潰れる。CodeMirror へ差分として渡す。
+ */
+export interface SqlEditorHandle {
+  /**
+   * カーソル位置へ文字列を挿入する。選択があればその範囲を置き換える。
+   *
+   * 直前の文字を見て、要るときだけ空白を足す（`insertion.ts`）。**焦点は
+   * 移さない。**続けて別の名前を入れる操作が多く、そのたびに焦点がエディタへ
+   * 飛ぶと、ツリーへ戻る手間が挿入の手間を上回る。
+   */
+  insertAtCursor: (text: string) => void
 }
 
 /**
@@ -88,6 +108,8 @@ function languageFor(catalog: Catalog, identifierCase: IdentifierCase) {
 }
 
 interface SqlEditorProps {
+  /** 外から挿入するための口（ADR 0020）。 */
+  ref?: Ref<SqlEditorHandle>
   /** エディタの内容。 */
   value: string
   /**
@@ -113,6 +135,7 @@ interface SqlEditorProps {
 }
 
 export function SqlEditor({
+  ref,
   value,
   catalog,
   identifierCase,
@@ -153,6 +176,30 @@ export function SqlEditor({
     onRunScript,
     onCancel,
   }
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      insertAtCursor: (text: string) => {
+        const editor = view.current
+        if (!editor) {
+          return
+        }
+
+        const range = editor.state.selection.main
+        const insert = withLeadingSpace(
+          text,
+          range.from === 0 ? '' : editor.state.sliceDoc(range.from - 1, range.from),
+        )
+        editor.dispatch({
+          changes: { from: range.from, to: range.to, insert },
+          selection: { anchor: range.from + insert.length },
+          scrollIntoView: true,
+        })
+      },
+    }),
+    [],
+  )
 
   useEffect(() => {
     if (!container.current) {

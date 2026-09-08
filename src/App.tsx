@@ -40,7 +40,7 @@ import {
 import type { PaletteCommand } from './components/palette/CommandPalette'
 import { CommandPalette } from './components/palette/CommandPalette'
 import { RunButton } from './components/editor/RunButton'
-import type { EditorPosition } from './components/editor/SqlEditor'
+import type { EditorPosition, SqlEditorHandle } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
 import { ResultPane } from './components/results/ResultPane'
 import { SessionsPanel } from './components/sessions/SessionsPanel'
@@ -152,6 +152,8 @@ export function App() {
   const csvCancelled = useRef(false)
   // 実行に要る位置は描画に関わらないため、状態ではなく ref で持つ。
   const positionRef = useRef<EditorPosition>(INITIAL_POSITION)
+  // スキーマツリーからエディタへ差し込むための口（ADR 0020）。
+  const editorRef = useRef<SqlEditorHandle>(null)
 
   const connection = useConnectionStore((state) => state.connection)
   const disconnect = useConnectionStore((state) => state.disconnect)
@@ -639,6 +641,34 @@ export function App() {
   )
 
   /**
+   * ツリーで拾った名前をエディタのカーソル位置へ入れる（ADR 0020）。
+   *
+   * タブストア越しに内容を差し替えず、CodeMirror へ差分として渡す。文書を
+   * 丸ごと置き換えるとカーソルが末尾へ飛び、取り消しも 1 段で潰れる。
+   */
+  const insertIntoEditor = useCallback((text: string) => {
+    editorRef.current?.insertAtCursor(text)
+  }, [])
+
+  /**
+   * ツリーの `SELECT` を新しいタブに開く（ADR 0020）。
+   *
+   * **実行はしない。**結果セットのカーソルは接続 1 本につき高々 1 つであり
+   * （ADR 0003）、ここで実行すると別のタブが見ている結果が閉じられる。
+   * 実行するかどうかは利用者が `⌘⏎` で決める。
+   */
+  const openSqlInNewTab = useCallback(
+    (sql: string) => {
+      openNewTab()
+      const tabId = useTabStore.getState().activeTabId
+      if (tabId) {
+        updateContent(tabId, sql)
+      }
+    },
+    [openNewTab, updateContent],
+  )
+
+  /**
    * `⌘K`。コマンドパレットを開く（ADR 0018）。
    *
    * 探せるのは現ウィンドウの接続の中だけであるため、繋がっていないときは開かない。
@@ -1035,6 +1065,8 @@ export function App() {
         connectionName={connection.name}
         onOpenNewConnection={openNewConnectionWindow}
         onUseHistory={useHistorySql}
+        onInsertIdentifier={insertIntoEditor}
+        onOpenSelect={openSqlInNewTab}
         width={sidebarWidth}
       />
       <Splitter
@@ -1053,6 +1085,7 @@ export function App() {
           className="relative shrink-0 bg-panel rounded-10px border border-line overflow-hidden"
         >
           <EditorPanel
+            ref={editorRef}
             onCursorChange={onCursorChange}
             onRunStatement={runStatement}
             onRunSelection={runSelection}

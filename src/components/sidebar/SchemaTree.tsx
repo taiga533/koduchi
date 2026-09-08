@@ -1,5 +1,5 @@
 /**
- * スキーマツリー（ADR 0007・0014）。
+ * スキーマツリー（ADR 0007・0014・0020）。
  *
  * スキーマ行の右にオブジェクト数を出し、展開すると**種別ごとの束**が並ぶ。
  * 束を開くとその種別のオブジェクトが並び、テーブルとビューはさらに展開できて
@@ -15,9 +15,27 @@
  * オブジェクトが数千に達することがあり、列の読み込みが進むたびに全体を組み直すと
  * 絞り込みの入力が目に見えて詰まる。そこで一度平らな行の並びに直し、見えている
  * 分だけを描く（結果テーブルと同じ TanStack Virtual）。
+ *
+ * ここからエディタへ手を伸ばせる（ADR 0020）。マウスの操作は場所と回数で
+ * 割り振ってあり、互いに食い合わない。
+ *
+ * | 操作                       | 起きること                                   |
+ * | -------------------------- | -------------------------------------------- |
+ * | 行を単クリック             | 開閉する（開けない行では何も起きない）       |
+ * | 行をダブルクリック         | 名前をエディタのカーソル位置へ挿入する       |
+ * | 行を右クリック             | 名前のコピー・挿入・`SELECT` を開くのメニュー |
+ * | 「定義」を単クリック       | テーブル定義ビュー（ADR 0019 の持ち物）      |
+ *
+ * ダブルクリックは 1 回目と 2 回目の押し下げでそれぞれ `onClick` が起き、開閉が
+ * 2 度切り替わって元の状態へ戻る。**打ち消す細工はしない。**結果テーブルの
+ * 「ダブルクリックは 1 回目の押し下げで選択も起こる」と同じ扱いである。
+ *
+ * 挿入する綴りと引用符は `identifiers.ts` が決める（ADR 0013）。文字列の
+ * 組み立ては `editor/insertion.ts` の純粋な関数に寄せてある。
  */
 
-import { useMemo, useRef } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   Boxes,
@@ -36,9 +54,13 @@ import {
   Zap,
   type LucideIcon,
 } from 'lucide-react'
+import { getClipboardApi } from '../../api/clipboard'
 import type { ObjectKind, SchemaNode, TableColumn } from '../../types/db'
-import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER } from '../../types/db'
+import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER, defaultCompletionSettings } from '../../types/db'
+import { useConnectionStore } from '../../stores/connection'
 import { filterSchemas, kindGroupKey, nodeKey, useSchemaStore } from '../../stores/schema'
+import { qualifiedIdentifier, selectAllStatement } from '../editor/insertion'
+import { SchemaTreeContextMenu } from './SchemaTreeContextMenu'
 
 /** オブジェクトの種類ごとの目印。 */
 const KIND_ICONS: Record<ObjectKind, LucideIcon> = {
@@ -62,16 +84,31 @@ const EXPANDABLE: ObjectKind[] = ['table', 'view', 'materializedView']
 /** 平らにした 1 行。仮想スクロールに載せる単位である。 */
 export type TreeRow =
   | { kind: 'schema'; key: string; name: string; objectCount: number; open: boolean }
-  | { kind: 'kindGroup'; key: string; objectKind: ObjectKind; count: number; open: boolean }
+  | {
+      kind: 'kindGroup'
+      key: string
+      schemaName: string
+      objectKind: ObjectKind
+      count: number
+      open: boolean
+    }
   | {
       kind: 'object'
       key: string
+      schemaName: string
       name: string
       objectKind: ObjectKind
       expandable: boolean
       open: boolean
     }
-  | { kind: 'column'; key: string; name: string; typeName: string }
+  | {
+      kind: 'column'
+      key: string
+      schemaName: string
+      objectName: string
+      name: string
+      typeName: string
+    }
   | { kind: 'columnsLoading'; key: string }
 
 /**
@@ -85,6 +122,54 @@ const ESTIMATED_HEIGHTS: Record<TreeRow['kind'], number> = {
   object: 24,
   column: 20,
   columnsLoading: 20,
+}
+
+/**
+ * 行が指す名前を、外側から並べて返す（ADR 0020）。
+ *
+ * オブジェクトはスキーマで修飾する。ツリーから入れた名前が、その場では
+ * 通っても既定スキーマの違う接続で通らない、という取り違えを防ぐためである。
+ * **列は修飾しない。**`SELECT` の並びや `WHERE` へ貼るのが主な使い道であり、
+ * そこでは表の別名で修飾するか、修飾しないかのどちらかになる。
+ *
+ * 種別の束と読み込み中の行は名前を持たないため `null` を返す。
+ *
+ * @param row 平らにした 1 行
+ */
+export function rowIdentifierPath(row: TreeRow): string[] | null {
+  switch (row.kind) {
+    case 'schema':
+      return [row.name]
+    case 'object':
+      return [row.schemaName, row.name]
+    case 'column':
+      return [row.name]
+    default:
+      return null
+  }
+}
+
+/**
+ * `SELECT` を開ける行か。
+ *
+ * 列を持つ種別（表・ビュー・マテビュー）だけである。索引や手続に
+ * `select * from` を当てても動く SQL にならない。
+ *
+ * @param row 平らにした 1 行
+ */
+export function canOpenSelect(row: TreeRow): boolean {
+  return row.kind === 'object' && EXPANDABLE.includes(row.objectKind)
+}
+
+/**
+ * 開閉できる行か。矢印キーの左右で開け閉めする対象である。
+ *
+ * @param row 平らにした 1 行
+ */
+function isOpenable(row: TreeRow): row is Extract<TreeRow, { open: boolean }> {
+  return (
+    row.kind === 'schema' || row.kind === 'kindGroup' || (row.kind === 'object' && row.expandable)
+  )
 }
 
 /**
@@ -138,6 +223,10 @@ function groupByKind(objects: SchemaNode['objects']): [ObjectKind, SchemaNode['o
  * 畳んだ枝の中身は行にしない。閉じたものを描く手間はここで消える。
  * スキーマとオブジェクトの間には種別の束が 1 段挟まる（ADR 0014）。
  *
+ * 行にはスキーマ名と所属オブジェクト名を持たせる。ツリーからの操作が
+ * スキーマ修飾した名前を組み立てるためであり、鍵の文字列を割って取り出すのは
+ * 名前に `.` を含む識別子で壊れる（ADR 0020）。
+ *
  * @param schemas 絞り込み済みのスキーマ
  * @param columns スキーマ名ごとの列
  * @param expanded 展開している節の表
@@ -174,6 +263,7 @@ export function flattenSchemas(
       rows.push({
         kind: 'kindGroup',
         key: groupKey,
+        schemaName: schema.name,
         objectKind,
         count: objects.length,
         open: groupOpen,
@@ -190,6 +280,7 @@ export function flattenSchemas(
         rows.push({
           kind: 'object',
           key: objectKey,
+          schemaName: schema.name,
           name: object.name,
           objectKind: object.kind,
           expandable,
@@ -209,6 +300,8 @@ export function flattenSchemas(
           rows.push({
             kind: 'column',
             key: `${objectKey} ${column.name}`,
+            schemaName: schema.name,
+            objectName: object.name,
             name: column.name,
             typeName: column.typeName,
           })
@@ -220,7 +313,19 @@ export function flattenSchemas(
   return rows
 }
 
-export function SchemaTree() {
+interface SchemaTreeProps {
+  /**
+   * 名前をエディタのカーソル位置へ入れる（ADR 0020）。
+   *
+   * 受け取るのは組み立て済みの文字列である。綴りをどう決めたかはツリーの
+   * 関心であり、差し込む位置と空白の要否はエディタの関心である。
+   */
+  onInsert: (text: string) => void
+  /** `select * from …` を新しいタブに開く。実行はしない。 */
+  onOpenSelect: (sql: string) => void
+}
+
+export function SchemaTree({ onInsert, onOpenSelect }: SchemaTreeProps) {
   const allSchemas = useSchemaStore((state) => state.schemas)
   const columns = useSchemaStore((state) => state.columns)
   const search = useSchemaStore((state) => state.search)
@@ -229,7 +334,18 @@ export function SchemaTree() {
   const status = useSchemaStore((state) => state.status)
   const error = useSchemaStore((state) => state.error)
 
+  // 挿入する綴りは接続ごとの設定である（ADR 0013）。補完と同じ値を引く。
+  const identifierCase = useConnectionStore(
+    (state) =>
+      state.connection?.completion.identifierCase ?? defaultCompletionSettings.identifierCase,
+  )
+
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; row: TreeRow } | null>(null)
+  // 焦点のある行。仮想スクロールでは描かれていない行に焦点を当てられないため、
+  // 位置だけを覚えておき、描かれた時点で DOM の焦点を合わせる。
+  const [focusedIndex, setFocusedIndex] = useState(0)
+  const focusPending = useRef(false)
 
   // 絞り込みは毎回新しい配列を作るため、ここで記憶しておく。
   const schemas = useMemo(
@@ -250,6 +366,108 @@ export function SchemaTree() {
     overscan: 12,
   })
 
+  // 絞り込みや開閉で行が減ると、覚えている位置が並びの外へ出る。
+  const focused = Math.min(focusedIndex, Math.max(0, rows.length - 1))
+
+  // 焦点を当てる行が描かれるまで待つ。描かれていなければ次の描画で試し直す。
+  useEffect(() => {
+    if (!focusPending.current) {
+      return
+    }
+    const target = scrollRef.current?.querySelector<HTMLElement>('[data-tree-focused="true"]')
+    if (target) {
+      focusPending.current = false
+      target.focus()
+    }
+  })
+
+  /** 名前をエディタへ入れる。名前を持たない行では何もしない。 */
+  const insertRow = (row: TreeRow) => {
+    const path = rowIdentifierPath(row)
+    if (path) {
+      onInsert(qualifiedIdentifier(path, identifierCase))
+    }
+  }
+
+  /** 名前をクリップボードへ書く。挿入するのと同じ綴りで書く。 */
+  const copyRow = (row: TreeRow) => {
+    const path = rowIdentifierPath(row)
+    if (path) {
+      void getClipboardApi().writeText(qualifiedIdentifier(path, identifierCase))
+    }
+  }
+
+  /** `select * from …` を新しいタブに開く。 */
+  const openSelectFor = (row: TreeRow) => {
+    if (row.kind === 'object' && canOpenSelect(row)) {
+      onOpenSelect(selectAllStatement([row.schemaName, row.name], identifierCase))
+    }
+  }
+
+  /** 焦点を別の行へ移す。並びの外へは出さない。 */
+  const moveFocus = (next: number) => {
+    const clamped = Math.max(0, Math.min(rows.length - 1, next))
+    virtualizer.scrollToIndex(clamped)
+    focusPending.current = true
+    setFocusedIndex(clamped)
+  }
+
+  /**
+   * ツリーの中でだけ効くキー（ADR 0020）。
+   *
+   * `⏎` と `Space` は行そのものの押し下げ（開閉）であり、ここでは扱わない。
+   */
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (rows.length === 0) {
+      return
+    }
+    const row = rows[focused]
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      moveFocus(focused + 1)
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      moveFocus(focused - 1)
+      return
+    }
+    if (event.key === 'ArrowRight') {
+      if (isOpenable(row) && !row.open) {
+        event.preventDefault()
+        toggle(row.key, true)
+      }
+      return
+    }
+    if (event.key === 'ArrowLeft') {
+      if (isOpenable(row) && row.open) {
+        event.preventDefault()
+        toggle(row.key, false)
+      }
+      return
+    }
+    if (event.key === 'Enter' && event.altKey) {
+      // `⏎` 単独は開閉である。挿入は修飾を足して分ける。
+      event.preventDefault()
+      insertRow(row)
+      return
+    }
+    if (event.key.toLowerCase() === 'c' && event.metaKey) {
+      event.preventDefault()
+      copyRow(row)
+    }
+  }
+
+  /** 右クリック。名前を持たない行ではメニューを出さない。 */
+  const openMenu = (event: ReactMouseEvent, row: TreeRow) => {
+    if (rowIdentifierPath(row) === null) {
+      return
+    }
+    event.preventDefault()
+    setMenu({ x: event.clientX, y: event.clientY, row })
+  }
+
   if (status === 'loading' && schemas.length === 0) {
     return <Notice>スキーマを読み込んでいます…</Notice>
   }
@@ -263,7 +481,12 @@ export function SchemaTree() {
   }
 
   return (
-    <div ref={scrollRef} className="h-full overflow-auto">
+    <div
+      ref={scrollRef}
+      data-testid="schema-tree"
+      className="h-full overflow-auto"
+      onKeyDown={onKeyDown}
+    >
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
         {virtualizer.getVirtualItems().map((item) => (
           <div
@@ -277,21 +500,62 @@ export function SchemaTree() {
               width: '100%',
               transform: `translateY(${item.start}px)`,
             }}
+            onDoubleClick={() => insertRow(rows[item.index])}
+            onContextMenu={(event) => openMenu(event, rows[item.index])}
           >
-            <Row row={rows[item.index]} onToggle={toggle} />
+            <Row
+              row={rows[item.index]}
+              focused={item.index === focused}
+              onToggle={toggle}
+              onFocus={() => setFocusedIndex(item.index)}
+            />
           </div>
         ))}
       </div>
+      {menu ? (
+        <SchemaTreeContextMenu
+          x={menu.x}
+          y={menu.y}
+          target={qualifiedIdentifier(rowIdentifierPath(menu.row) ?? [], identifierCase)}
+          canSelect={canOpenSelect(menu.row)}
+          onCopy={() => {
+            copyRow(menu.row)
+            setMenu(null)
+          }}
+          onInsert={() => {
+            insertRow(menu.row)
+            setMenu(null)
+          }}
+          onOpenSelect={() => {
+            openSelectFor(menu.row)
+            setMenu(null)
+          }}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   )
 }
 
+interface RowProps {
+  row: TreeRow
+  /** 焦点を当てる行か。行き来する焦点は 1 つだけである（roving tabindex）。 */
+  focused: boolean
+  onToggle: (key: string, open: boolean) => void
+  onFocus: () => void
+}
+
 /** 平らにした 1 行を、種類に応じて描き分ける。 */
-function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string, open: boolean) => void }) {
+function Row({ row, focused, onToggle, onFocus }: RowProps) {
+  // 焦点を持てるのは 1 行だけにする。仮想スクロールで描かれている行がすべて
+  // タブ順に並ぶと、ツリーを抜けるのに数十回打鍵することになる。
+  const focus = { tabIndex: focused ? 0 : -1, 'data-tree-focused': focused, onFocus }
+
   if (row.kind === 'schema') {
     return (
       <button
         type="button"
+        {...focus}
         onClick={() => onToggle(row.key, !row.open)}
         aria-expanded={row.open}
         className="w-full flex items-center gap-7px px-10px py-5px bg-transparent border-none cursor-pointer font-inherit text-left text-12px text-fg hover:bg-fill"
@@ -312,6 +576,7 @@ function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string, open: bo
     return (
       <button
         type="button"
+        {...focus}
         onClick={() => onToggle(row.key, !row.open)}
         aria-expanded={row.open}
         className="w-full flex items-center gap-6px pl-22px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
@@ -333,6 +598,7 @@ function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string, open: bo
     return (
       <button
         type="button"
+        {...focus}
         onClick={() => (row.expandable ? onToggle(row.key, !row.open) : undefined)}
         aria-expanded={row.expandable ? row.open : undefined}
         className="w-full flex items-center gap-6px pl-38px pr-10px py-4px bg-transparent border-none cursor-pointer font-inherit text-left text-11.5px text-fg2 hover:bg-fill"
@@ -363,11 +629,15 @@ function Row({ row, onToggle }: { row: TreeRow; onToggle: (key: string, open: bo
   }
 
   if (row.kind === 'columnsLoading') {
-    return <p className="m-0 pl-64px pr-10px py-3px text-11px text-fg5">列情報を読み込み中…</p>
+    return (
+      <p {...focus} className="m-0 pl-64px pr-10px py-3px text-11px text-fg5">
+        列情報を読み込み中…
+      </p>
+    )
   }
 
   return (
-    <div className="flex items-center gap-8px pl-64px pr-10px py-3px text-11px">
+    <div {...focus} className="flex items-center gap-8px pl-64px pr-10px py-3px text-11px">
       <span className="flex-1 truncate text-fg3">{row.name}</span>
       <span className="text-10.5px text-fg5 shrink-0">{row.typeName}</span>
     </div>
