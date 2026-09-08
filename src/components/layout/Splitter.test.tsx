@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
-import { Splitter } from './Splitter'
+import { GRIP_SIZE, Splitter } from './Splitter'
 import type { SplitterOrientation } from './Splitter'
 
 /**
@@ -34,6 +34,11 @@ function 寸法を持つ区切り({
       onChange={setValue}
     />
   )
+}
+
+/** 区切りの中に描かれたつまみ（点）を取り出す。 */
+function つまみ(区切り: HTMLElement): SVGSVGElement | null {
+  return 区切り.querySelector<SVGSVGElement>('svg[data-splitter-grip]')
 }
 
 /** 区切りを掴んで動かし、離す。 */
@@ -219,6 +224,82 @@ describe('Splitter', () => {
 
     // Assert
     expect(区切り).toHaveAttribute('aria-valuenow', '240')
+  })
+
+  it('縦の区切りは点を縦に並べたつまみを描く', () => {
+    // Arrange
+    render(<寸法を持つ区切り orientation="vertical" initial={240} />)
+
+    // Act
+    const 描かれたつまみ = つまみ(screen.getByRole('separator'))
+
+    // Assert
+    expect(描かれたつまみ).not.toBeNull()
+    expect(描かれたつまみ).toHaveAttribute('data-splitter-grip', 'vertical')
+    expect(描かれたつまみ?.classList.contains('lucide-grip-vertical')).toBe(true)
+  })
+
+  it('横の区切りは点を横に並べたつまみを描く', () => {
+    // Arrange
+    render(<寸法を持つ区切り orientation="horizontal" initial={268} min={120} max={600} />)
+
+    // Act
+    const 描かれたつまみ = つまみ(screen.getByRole('separator'))
+
+    // Assert
+    expect(描かれたつまみ).toHaveAttribute('data-splitter-grip', 'horizontal')
+    expect(描かれたつまみ?.classList.contains('lucide-grip-horizontal')).toBe(true)
+  })
+
+  it('つまみは点だけを描き、端から端までの線は引かない', () => {
+    // Arrange
+    render(<寸法を持つ区切り orientation="vertical" initial={240} />)
+    const 区切り = screen.getByRole('separator')
+
+    // Act
+    const 描かれたつまみ = つまみ(区切り)
+
+    // Assert: 中身は丸だけであり、線の要素も 1px の帯も無い
+    expect([...(描かれたつまみ?.children ?? [])].map((要素) => 要素.tagName)).toEqual(
+      Array.from({ length: 6 }, () => 'circle'),
+    )
+    expect(区切り.querySelector('span')).toBeNull()
+  })
+
+  it('つまみは当たり判定の 6px に収まる大きさで描かれる', () => {
+    // Arrange
+    render(<寸法を持つ区切り orientation="vertical" initial={240} />)
+
+    // Act
+    const 描かれたつまみ = つまみ(screen.getByRole('separator'))
+
+    // Assert: lucide の 24 単位の升目のうち絵柄は短い辺で 10 単位ぶんを占める
+    expect(描かれたつまみ).toHaveAttribute('width', String(GRIP_SIZE))
+    expect((GRIP_SIZE * 10) / 24).toBeLessThanOrEqual(6)
+  })
+
+  it('つまみは常に出ており、ホバーと焦点でアクセント色へ変わる', () => {
+    // Arrange
+    render(<寸法を持つ区切り orientation="vertical" initial={240} />)
+
+    // Act
+    const つまみのクラス = つまみ(screen.getByRole('separator'))?.getAttribute('class') ?? ''
+
+    // Assert: 既定の色を持ったまま、ホバーと焦点でだけアクセントへ切り替わる
+    expect(つまみのクラス).toContain('text-fg6')
+    expect(つまみのクラス).toContain('group-hover:text-ac')
+    expect(つまみのクラス).toContain('group-focus:text-ac')
+  })
+
+  it('つまみは押し下げを拾わず、当たり判定を広げない', () => {
+    // Arrange
+    render(<寸法を持つ区切り orientation="vertical" initial={240} />)
+
+    // Act
+    const つまみのクラス = つまみ(screen.getByRole('separator'))?.getAttribute('class') ?? ''
+
+    // Assert: SVG の枠は 6px より広いため、はみ出した枠が掴めてはならない
+    expect(つまみのクラス).toContain('pointer-events-none')
   })
 
   it('左ボタン以外ではドラッグを始めない', () => {
