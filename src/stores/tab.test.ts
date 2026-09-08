@@ -94,6 +94,131 @@ describe('useTabStore', () => {
   })
 })
 
+/** タブを 3 枚にし、名前で並びを見分けられるようにする。 */
+function 三枚開く(): void {
+  useTabStore.getState().openNewTab()
+  useTabStore.getState().openNewTab()
+}
+
+/** 今の並びのタブ名を返す。 */
+function 並び(): string[] {
+  return useTabStore.getState().tabs.map((tab) => tab.name)
+}
+
+describe('useTabStore.moveTab', () => {
+  it('タブを後ろへ動かすと並びが変わる', () => {
+    // Arrange
+    三枚開く()
+    const 一枚目 = useTabStore.getState().tabs[0]
+
+    // Act
+    useTabStore.getState().moveTab(一枚目.id, 2)
+
+    // Assert
+    expect(並び()).toEqual(['無題-2.sql', '無題-3.sql', '無題-1.sql'])
+  })
+
+  it('タブを前へ動かすと並びが変わる', () => {
+    // Arrange
+    三枚開く()
+    const 三枚目 = useTabStore.getState().tabs[2]
+
+    // Act
+    useTabStore.getState().moveTab(三枚目.id, 0)
+
+    // Assert
+    expect(並び()).toEqual(['無題-3.sql', '無題-1.sql', '無題-2.sql'])
+  })
+
+  it('並べ替えても選択は動かない', () => {
+    // Arrange
+    三枚開く()
+    const 三枚目 = useTabStore.getState().tabs[2]
+    useTabStore.getState().selectTab(三枚目.id)
+
+    // Act
+    useTabStore.getState().moveTab(三枚目.id, 0)
+
+    // Assert
+    expect(useTabStore.getState().activeTabId).toBe(三枚目.id)
+  })
+
+  it('並べ替えてもタブの内容は持ち回る', () => {
+    // Arrange
+    三枚開く()
+    const 一枚目 = useTabStore.getState().tabs[0]
+    useTabStore.getState().updateContent(一枚目.id, 'select 1 from dual')
+
+    // Act
+    useTabStore.getState().moveTab(一枚目.id, 2)
+
+    // Assert
+    const 動いた先 = useTabStore.getState().tabs[2]
+    expect(動いた先.id).toBe(一枚目.id)
+    expect(動いた先.content).toBe('select 1 from dual')
+    expect(動いた先.dirty).toBe(true)
+  })
+
+  it('知らない ID を指しても並びは変わらない', () => {
+    // Arrange
+    三枚開く()
+
+    // Act
+    useTabStore.getState().moveTab('無い', 0)
+
+    // Assert
+    expect(並び()).toEqual(['無題-1.sql', '無題-2.sql', '無題-3.sql'])
+  })
+
+  it('範囲の外へは動かせない', () => {
+    // Arrange
+    三枚開く()
+    const 一枚目 = useTabStore.getState().tabs[0]
+
+    // Act
+    useTabStore.getState().moveTab(一枚目.id, 3)
+
+    // Assert
+    expect(並び()).toEqual(['無題-1.sql', '無題-2.sql', '無題-3.sql'])
+  })
+
+  it('並べ替えた順序はセッションへそのまま書き出される', () => {
+    // Arrange
+    三枚開く()
+    const 一枚目 = useTabStore.getState().tabs[0]
+    useTabStore.getState().moveTab(一枚目.id, 2)
+
+    // Act
+    const session = selectSession(useTabStore.getState(), {
+      sidebarSegment: 'schema',
+      sidebarWidth: 240,
+      editorHeight: 268,
+    })
+
+    // Assert
+    expect(session.tabs.map((tab) => tab.name)).toEqual(['無題-2.sql', '無題-3.sql', '無題-1.sql'])
+  })
+
+  it('保存した順序はそのまま復元される', () => {
+    // Arrange
+    三枚開く()
+    const 一枚目 = useTabStore.getState().tabs[0]
+    useTabStore.getState().moveTab(一枚目.id, 2)
+    const session = selectSession(useTabStore.getState(), {
+      sidebarSegment: 'schema',
+      sidebarWidth: 240,
+      editorHeight: 268,
+    })
+
+    // Act
+    useTabStore.setState({ tabs: [], activeTabId: null })
+    useTabStore.getState().restore(session)
+
+    // Assert
+    expect(並び()).toEqual(['無題-2.sql', '無題-3.sql', '無題-1.sql'])
+  })
+})
+
 describe('selectActiveTab', () => {
   it('選択中のタブを返す', () => {
     // Arrange
