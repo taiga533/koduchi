@@ -81,6 +81,8 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 **トランザクション**（ADR 0012）: 自動コミットは接続ごとの項目で、既定はオフ（手動コミット）。未コミットかどうかは実行のたびに `DBMS_TRANSACTION.LOCAL_TRANSACTION_ID` を読んで決める。**クライアント側で DML を数えない。** コミット / ロールバックはプールの全接続へ配る。未コミットのまま接続を手放させないための関所は `App.tsx` の `resolvePendingTransaction` にあり、ウィンドウを閉じる経路（`onWindowCloseRequested`）・アプリの終了（`lib.rs` の `RunEvent::ExitRequested`）・切断（`disconnectAndReset`）のすべてがここを通る。
 
+**セッションとロック**（ADR 0017）: `V$SESSION` の一覧・ブロッキングの連鎖・他セッションの kill。入口はステータスバーの「接続中」のメニューで、`SessionsPanel` をオーバーレイで開く。取得はプールの `background_handle`（スキーマ取得と実行計画と同じ経路）で行い、**利用者の結果セットのカーソルには触れない**。連鎖の組み立ては `src-tauri/src/db/sessions.rs` の純粋な関数で、循環・一覧に居ない待たせ手・別インスタンスの 3 つを取りこぼさない。kill の関所は 3 つ（読み取り専用を弾く / 小槌自身の接続を弾く / 確認ダイアログ）。**前の 2 つは Rust 側に置く。** `ALTER SYSTEM` はデータを書かないため読み取り専用トランザクション（ADR 0004）では止まらず、ここだけはクライアント側で判定するしかない。権限が無いときは `DbErrorKind::Permission` で返し、**空の一覧を出さない。**
+
 **CSV の書き出し**: 行はフロントエンドに溜めない。カーソルから取り出したかたまりを `csv_append` で順に Rust へ渡し、書き終えたら `csv_finish` を呼ぶ（`src/csv/exportCsv.ts`）。中止と失敗では `csv_abort` で書きかけのファイルごと消す。数十万行を 1 度の IPC に載せないための形である。
 
 **書体**: PlemolJP v3.1.0（等幅版、SIL OFL 1.1）を `src/assets/fonts/` に同梱し、`src/theme/fonts.css` で登録している。半角と全角の幅比が 1:2 なので、日本語を含むデータでも結果テーブルの桁が揃う。データベースの内容は任意の文字を含みうるため**サブセット化はしない**。収録ウェイトは 400 / 500 / 600 / 700 の 4 つ。

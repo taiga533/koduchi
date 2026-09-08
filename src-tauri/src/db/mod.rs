@@ -10,6 +10,7 @@ pub mod error;
 pub mod oracle;
 pub mod pool;
 pub mod schema;
+pub mod sessions;
 pub mod value;
 
 use crate::db::driver::ConnectionParams;

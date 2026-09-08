@@ -982,3 +982,100 @@ fn 読み取り専用の接続はコミットしても読み取り専用のま�
         error.message
     );
 }
+
+#[test]
+#[serial]
+fn セッションの一覧は自分自身を含む() {
+    // Arrange: 一覧は結果セットを保持していない接続で読む（ADR 0017）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let overview = pool.list_sessions().unwrap();
+
+    // Assert
+    let 自分 = overview
+        .find(overview.current_sid)
+        .expect("自分自身のセッションが一覧に居るはず");
+    assert!(自分.own, "自分自身には小槌の接続として印が付くはず");
+    assert!(overview.instance >= 1);
+}
+
+#[test]
+#[serial]
+fn 同じプールの接続はすべて小槌のものとして印が付く() {
+    // Arrange: プールの 4 本は同じクライアントプロセスから張られる
+    let Some(pool) = プールを開く(false, 4, DEFAULT_CHUNK_SIZE) else {
+        return;
+    };
+
+    // Act
+    let overview = pool.list_sessions().unwrap();
+
+    // Assert
+    let 小槌の接続 = overview.sessions.iter().filter(|s| s.own).count();
+    assert!(
+        小槌の接続 >= 4,
+        "プールの 4 本すべてに印が付くはず: {小槌の接続}"
+    );
+}
+
+#[test]
+#[serial]
+fn セッションの一覧を読んでも結果セットは壊れない() {
+    // Arrange: 開いたままのカーソルを持たせてから一覧を読む（ADR 0003・0017）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    pool.execute(TAB, "select event_id from koduchi.events", &[])
+        .unwrap();
+
+    // Act
+    pool.list_sessions().unwrap();
+
+    // Assert
+    let chunk = pool.fetch_more(TAB).unwrap();
+    assert_eq!(chunk.rows.len(), DEFAULT_CHUNK_SIZE);
+}
+
+#[test]
+#[serial]
+fn 自分自身のセッションはkillできない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let overview = pool.list_sessions().unwrap();
+    let 自分 = overview.find(overview.current_sid).unwrap().clone();
+
+    // Act
+    let error = pool
+        .kill_session(自分.sid, 自分.serial)
+        .expect_err("自分自身は落とせないはず");
+
+    // Assert
+    assert!(
+        error.message.contains("自分自身") || error.message.contains("小槌自身"),
+        "想定と違うエラー: {}",
+        error.message
+    );
+}
+
+#[test]
+#[serial]
+fn 読み取り専用の接続ではkillできない() {
+    // Arrange: `ALTER SYSTEM` は読み取り専用トランザクションでは止まらないため、
+    // クライアント側で弾く（ADR 0017）
+    let Some(pool) = プールを開く(true, 1, DEFAULT_CHUNK_SIZE) else {
+        return;
+    };
+
+    // Act
+    let error = pool
+        .kill_session(1, 1)
+        .expect_err("読み取り専用なので落とせないはず");
+
+    // Assert
+    assert_eq!(error.kind, DbErrorKind::Permission);
+}

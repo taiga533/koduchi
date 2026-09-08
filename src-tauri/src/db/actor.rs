@@ -11,6 +11,7 @@
 use crate::db::driver::{Bind, Canceller, Chunk, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::sessions::SessionOverview;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -56,6 +57,16 @@ enum Command {
     Commit { respond: Sender<DbResult<()>> },
     /// トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。
     Rollback { respond: Sender<DbResult<()>> },
+    /// セッションの一覧を取る（ADR 0017）。
+    ListSessions {
+        respond: Sender<DbResult<SessionOverview>>,
+    },
+    /// セッションを 1 つ終了する（ADR 0017）。
+    KillSession {
+        sid: u32,
+        serial: u32,
+        respond: Sender<DbResult<()>>,
+    },
     /// スレッドを終了する。
     Close,
 }
@@ -275,6 +286,40 @@ impl ConnectionHandle {
         response.recv().map_err(|_| DbError::closed())?
     }
 
+    /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
+    ///
+    /// 結果セットのカーソルは開かないため、この接続が保持している結果は
+    /// 壊れない。
+    pub fn list_sessions(&self) -> DbResult<SessionOverview> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::ListSessions { respond })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
+    /// セッションを 1 つ終了する（ADR 0017）。
+    ///
+    /// # 引数
+    ///
+    /// * `sid` - 対象の `SID`
+    /// * `serial` - 対象の `SERIAL#`
+    pub fn kill_session(&self, sid: u32, serial: u32) -> DbResult<()> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::KillSession {
+                sid,
+                serial,
+                respond,
+            })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
     /// 実行中の文を中止する。
     ///
     /// アクタースレッドが実行で塞がっている最中でも効く。
@@ -367,6 +412,16 @@ fn run_actor<D, F>(
             Command::Rollback { respond } => {
                 let _ = respond.send(driver.rollback());
             }
+            Command::ListSessions { respond } => {
+                let _ = respond.send(driver.list_sessions());
+            }
+            Command::KillSession {
+                sid,
+                serial,
+                respond,
+            } => {
+                let _ = respond.send(driver.kill_session(sid, serial));
+            }
             Command::Close => break,
         }
     }
@@ -403,6 +458,8 @@ mod tests {
         コミットした回数: Arc<AtomicUsize>,
         /// 直前の実行で受け取ったバインド変数。素通しの確認に使う。
         受け取ったバインド: Arc<Mutex<Vec<Bind>>>,
+        /// kill を頼まれたセッション（ADR 0017）。
+        killした相手: Arc<Mutex<Vec<(u32, u32)>>>,
     }
 
     struct テスト用の中止経路 {
@@ -535,6 +592,15 @@ mod tests {
             *self.受け取ったバインド.lock().unwrap() = binds.to_vec();
             Ok(format!("実測: {sql}"))
         }
+
+        fn list_sessions(&mut self) -> DbResult<crate::db::sessions::SessionOverview> {
+            Ok(crate::db::sessions::SessionOverview::new(1, 10, Vec::new()))
+        }
+
+        fn kill_session(&mut self, sid: u32, serial: u32) -> DbResult<()> {
+            self.killした相手.lock().unwrap().push((sid, serial));
+            Ok(())
+        }
     }
 
     /// 連番の行を `件数` ぶん作る。
@@ -557,6 +623,7 @@ mod tests {
             未コミット: Arc::new(AtomicBool::new(false)),
             コミットした回数: Arc::new(AtomicUsize::new(0)),
             受け取ったバインド: Arc::new(Mutex::new(Vec::new())),
+            killした相手: Arc::new(Mutex::new(Vec::new())),
         };
         (driver, 実行した回数, 中止された)
     }
@@ -747,6 +814,7 @@ mod tests {
             未コミット: Arc::new(AtomicBool::new(false)),
             コミットした回数: Arc::new(AtomicUsize::new(0)),
             受け取ったバインド: Arc::new(Mutex::new(Vec::new())),
+            killした相手: Arc::new(Mutex::new(Vec::new())),
         };
         let handle = Arc::new(ConnectionHandle::open(move || Ok(driver)).unwrap());
 
@@ -807,6 +875,33 @@ mod tests {
             ExecuteOutcome::Query { in_transaction, .. } => assert!(in_transaction),
             _ => panic!("問い合わせの結果になるはず"),
         }
+    }
+
+    #[test]
+    fn セッションの一覧はアクタースレッドから返る() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+
+        // Act
+        let overview = handle.list_sessions().unwrap();
+
+        // Assert
+        assert_eq!(overview.current_sid, 10);
+    }
+
+    #[test]
+    fn killの指定はsidとserialのままドライバへ届く() {
+        // Arrange
+        let (driver, _, _) = ドライバを作る();
+        let killした相手 = Arc::clone(&driver.killした相手);
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+
+        // Act
+        handle.kill_session(123, 45678).unwrap();
+
+        // Assert
+        assert_eq!(*killした相手.lock().unwrap(), vec![(123, 45678)]);
     }
 
     #[test]

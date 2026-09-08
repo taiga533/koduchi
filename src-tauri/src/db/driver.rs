@@ -10,6 +10,7 @@
 
 use crate::db::error::DbResult;
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::sessions::SessionOverview;
 use crate::db::value::{Cell, CellKind};
 use serde::{Deserialize, Serialize};
 
@@ -230,6 +231,25 @@ pub trait Driver: 'static {
     /// * `sql` - 計画を見たい SQL
     /// * `binds` - SQL 中のバインド変数へ与える値
     fn actual_plan(&mut self, sql: &str, binds: &[Bind]) -> DbResult<String>;
+
+    /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
+    ///
+    /// 結果セットのカーソルは開かない。利用者が見ている結果は壊れない。
+    /// 参照権限が無い場合は `DbErrorKind::Permission` のエラーを返す。空の
+    /// 一覧を返してはならない。「見えない」と「居ない」は別物である。
+    fn list_sessions(&mut self) -> DbResult<SessionOverview>;
+
+    /// セッションを 1 つ終了する（ADR 0017）。
+    ///
+    /// 読み取り専用の接続と、小槌自身が張っている接続は実装側が弾く。
+    /// `ALTER SYSTEM KILL SESSION` はデータを書かないため、読み取り専用
+    /// トランザクション（ADR 0004）では止まらないからである。
+    ///
+    /// # 引数
+    ///
+    /// * `sid` - 対象の `SID`
+    /// * `serial` - 対象の `SERIAL#`。`SID` は使い回されるため両方が要る
+    fn kill_session(&mut self, sid: u32, serial: u32) -> DbResult<()>;
 }
 
 #[cfg(test)]
