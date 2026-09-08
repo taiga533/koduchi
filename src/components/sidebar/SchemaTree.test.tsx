@@ -1,10 +1,12 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { SchemaNode, TableColumn } from '../../types/db'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
+import type { IdentifierCase, SchemaNode, TableColumn } from '../../types/db'
+import { useConnectionStore } from '../../stores/connection'
 import { useSchemaStore } from '../../stores/schema'
 import { useDefinitionStore } from '../../stores/definition'
-import { flattenSchemas, SchemaTree } from './SchemaTree'
+import { canOpenSelect, flattenSchemas, rowIdentifierPath, SchemaTree } from './SchemaTree'
 
 /**
  * jsdom は要素の寸法を持たない。仮想スクロールは `offsetHeight` で表示領域を
@@ -65,7 +67,57 @@ const 列一覧: Record<string, TableColumn[]> = {
   ],
 }
 
+/** ツリーが受け取る操作の口。既定は何もしない関数である。 */
+const 何もしない = () => {}
+
+interface ツリーの口 {
+  connectionId?: string | null
+  onInsert?: (text: string) => void
+  onOpenSelect?: (sql: string) => void
+}
+
+/**
+ * ツリーを描く。接続・挿入・`SELECT` の口は呼び出し側で差し替えられる。
+ *
+ * @param actions 差し替える口
+ */
+function renderTree(actions: ツリーの口 = {}) {
+  return render(
+    <SchemaTree
+      connectionId={actions.connectionId === undefined ? 'c1' : actions.connectionId}
+      onInsert={actions.onInsert ?? 何もしない}
+      onOpenSelect={actions.onOpenSelect ?? 何もしない}
+    />,
+  )
+}
+
+/**
+ * 挿入する綴りを決める接続を仕立てる（ADR 0013）。
+ *
+ * @param identifierCase 挿入したい綴り
+ */
+function 接続を置く(identifierCase: IdentifierCase): void {
+  useConnectionStore.setState({
+    connection: {
+      id: 'c1',
+      savedId: null,
+      name: '開発',
+      params: {
+        username: 'KODUCHI',
+        password: '',
+        target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'XEPDB1' },
+        readOnly: false,
+        autoCommit: false,
+      },
+      completion: { identifierCase },
+      color: 'none',
+      group: null,
+    },
+  })
+}
+
 beforeEach(() => {
+  useConnectionStore.setState({ connection: null })
   useSchemaStore.getState().clear()
   useDefinitionStore.getState().clear()
   useSchemaStore.setState({
@@ -79,7 +131,7 @@ beforeEach(() => {
 describe('SchemaTree', () => {
   it('スキーマ名とオブジェクト数が並ぶ', () => {
     // Arrange
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
 
     // Act
     const row = screen.getByRole('button', { name: /KODUCHI/ })
@@ -91,7 +143,7 @@ describe('SchemaTree', () => {
 
   it('スキーマを展開すると種別の束が並ぶ', async () => {
     // Arrange
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
@@ -104,7 +156,7 @@ describe('SchemaTree', () => {
 
   it('種別の束を展開するとその種別のオブジェクトだけが並ぶ', async () => {
     // Arrange
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
 
     // Act
@@ -118,7 +170,7 @@ describe('SchemaTree', () => {
   it('追加した種別もそれぞれの束として並ぶ', async () => {
     // Arrange
     useSchemaStore.setState({ schemas: 種別の多いスキーマ, columns: {} })
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
@@ -133,7 +185,7 @@ describe('SchemaTree', () => {
 
   it('テーブルを展開すると列名と型が並ぶ', async () => {
     // Arrange
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
@@ -147,7 +199,7 @@ describe('SchemaTree', () => {
 
   it('関数は展開できない', async () => {
     // Arrange
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
 
@@ -161,7 +213,7 @@ describe('SchemaTree', () => {
   it('絞り込み中は束を開かなくても当たったオブジェクトが見える', async () => {
     // Arrange
     useSchemaStore.setState({ search: 'order' })
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
@@ -177,7 +229,7 @@ describe('SchemaTree', () => {
     useSchemaStore.setState({ status: 'failed', error: 'ORA-00942', schemas: [] })
 
     // Act
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
 
     // Assert
     expect(screen.getByText('ORA-00942')).toBeInTheDocument()
@@ -317,7 +369,7 @@ describe('flattenSchemas', () => {
 describe('テーブル定義ビュー', () => {
   it('オブジェクトの行から定義ビューを開ける', async () => {
     // Arrange: 入口は 1 つだけ。行のクリックの意味は変えない（ADR 0019）
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
@@ -334,7 +386,7 @@ describe('テーブル定義ビュー', () => {
 
   it('列を持たない種別からも定義ビューを開ける', async () => {
     // Arrange: ファンクションやパッケージは DDL を見る道がここにしかない
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
 
@@ -347,7 +399,7 @@ describe('テーブル定義ビュー', () => {
 
   it('繋がっていなければ定義の入口を出さない', async () => {
     // Arrange
-    render(<SchemaTree connectionId={null} />)
+    renderTree({ connectionId: null })
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
@@ -357,7 +409,7 @@ describe('テーブル定義ビュー', () => {
 
   it('行のクリックはこれまでどおり展開に使う', async () => {
     // Arrange: ツリーのマウス操作の割り振りは変えていない（ADR 0019・0020）
-    render(<SchemaTree connectionId="c1" />)
+    renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
@@ -367,5 +419,415 @@ describe('テーブル定義ビュー', () => {
     // Assert
     expect(screen.getByText('USER_ID')).toBeInTheDocument()
     expect(useDefinitionStore.getState().target).toBeNull()
+  })
+})
+
+describe('rowIdentifierPath', () => {
+  it('スキーマ行はスキーマ名だけを指す', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, {})
+
+    // Act
+    const path = rowIdentifierPath(rows[0])
+
+    // Assert
+    expect(path).toEqual(['KODUCHI'])
+  })
+
+  it('オブジェクト行は所有者のスキーマで修飾する', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true, 'KODUCHI.#table': true })
+
+    // Act
+    const path = rowIdentifierPath(rows[2])
+
+    // Assert
+    expect(path).toEqual(['KODUCHI', 'USERS'])
+  })
+
+  it('列行は修飾せず列名だけを指す', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, {
+      KODUCHI: true,
+      'KODUCHI.#table': true,
+      'KODUCHI.USERS': true,
+    })
+
+    // Act
+    const path = rowIdentifierPath(rows[3])
+
+    // Assert
+    expect(path).toEqual(['USER_ID'])
+  })
+
+  it('種別の束は名前を持たない', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true })
+
+    // Act
+    const path = rowIdentifierPath(rows[1])
+
+    // Assert
+    expect(path).toBeNull()
+  })
+
+  it('列の読み込み中の行も名前を持たない', () => {
+    // Arrange
+    const rows = flattenSchemas(
+      スキーマ一覧,
+      {},
+      {
+        KODUCHI: true,
+        'KODUCHI.#table': true,
+        'KODUCHI.USERS': true,
+      },
+    )
+
+    // Act
+    const path = rowIdentifierPath(rows[3])
+
+    // Assert
+    expect(path).toBeNull()
+  })
+})
+
+describe('canOpenSelect', () => {
+  it('テーブルは SELECT を開ける', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true, 'KODUCHI.#table': true })
+
+    // Act
+    const 開ける = canOpenSelect(rows[2])
+
+    // Assert
+    expect(開ける).toBe(true)
+  })
+
+  it('関数は SELECT を開けない', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true, 'KODUCHI.#function': true })
+
+    // Act
+    const 開ける = canOpenSelect(rows[3])
+
+    // Assert
+    expect(開ける).toBe(false)
+  })
+})
+
+describe('ツリーからの挿入', () => {
+  it('テーブルをダブルクリックするとスキーマ修飾した名前が挿入される', async () => {
+    // Arrange
+    接続を置く('lower')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: 'USERS' }))
+
+    // Assert
+    expect(挿入).toHaveBeenCalledWith('koduchi.users')
+  })
+
+  it('綴りの設定が大文字なら大文字で挿入される', async () => {
+    // Arrange
+    接続を置く('upper')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: 'USERS' }))
+
+    // Assert
+    expect(挿入).toHaveBeenCalledWith('KODUCHI.USERS')
+  })
+
+  it('列をダブルクリックすると列名だけが挿入される', async () => {
+    // Arrange
+    接続を置く('lower')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'USERS' }))
+
+    // Act
+    await userEvent.dblClick(screen.getByText('USER_ID'))
+
+    // Assert
+    expect(挿入).toHaveBeenCalledWith('user_id')
+  })
+
+  it('列を持たない種別もダブルクリックで名前が挿入される', async () => {
+    // Arrange
+    接続を置く('lower')
+    useSchemaStore.setState({ schemas: 種別の多いスキーマ, columns: {} })
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /索引/ }))
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: 'IX_EVENTS_USER' }))
+
+    // Assert
+    expect(挿入).toHaveBeenCalledWith('koduchi.ix_events_user')
+  })
+
+  it('種別の束をダブルクリックしても何も挿入されない', async () => {
+    // Arrange
+    接続を置く('lower')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Assert
+    expect(挿入).not.toHaveBeenCalled()
+  })
+
+  it('ダブルクリックは開閉を 2 度切り替えるため開き具合は変わらない', async () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+    const スキーマ行 = screen.getByRole('button', { name: /KODUCHI/ })
+
+    // Act
+    await userEvent.dblClick(スキーマ行)
+
+    // Assert
+    expect(screen.getByRole('button', { name: /KODUCHI/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+  })
+
+  it('定義ボタンのダブルクリックでは挿入しない', async () => {
+    // Arrange: 定義は行とは別の押しどころである（ADR 0019・0020）
+    接続を置く('lower')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: 'USERS の定義を開く' }))
+
+    // Assert
+    expect(挿入).not.toHaveBeenCalled()
+    expect(useDefinitionStore.getState().target?.name).toBe('USERS')
+  })
+})
+
+describe('ツリーの右クリックメニュー', () => {
+  const クリップボード = { writeText: vi.fn(async () => {}) }
+
+  beforeEach(() => {
+    クリップボード.writeText.mockClear()
+    setClipboardApi(クリップボード)
+  })
+
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('テーブルを右クリックすると 3 項目のメニューが出る', async () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS' }))
+
+    // Assert
+    expect(screen.getByRole('menuitem', { name: '名前をコピー' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'エディタへ挿入' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'SELECT を開く' })).toBeInTheDocument()
+  })
+
+  it('定義ボタンを右クリックしても行と同じメニューが出る', async () => {
+    // Arrange: 定義はその行の一部であり、右クリックの意味は行と同じでよい
+    接続を置く('lower')
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS の定義を開く' }))
+
+    // Assert
+    expect(screen.getByTestId('schema-tree-context-menu')).toHaveTextContent('koduchi.users')
+    expect(useDefinitionStore.getState().target).toBeNull()
+  })
+
+  it('名前をコピーすると挿入と同じ綴りがクリップボードへ入る', async () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS' }))
+
+    // Act
+    await userEvent.click(screen.getByRole('menuitem', { name: '名前をコピー' }))
+
+    // Assert
+    expect(クリップボード.writeText).toHaveBeenCalledWith('koduchi.users')
+  })
+
+  it('SELECT を開くと問い合わせが渡り、実行はされない', async () => {
+    // Arrange
+    接続を置く('lower')
+    const 開く = vi.fn()
+    renderTree({ onOpenSelect: 開く })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS' }))
+
+    // Act
+    await userEvent.click(screen.getByRole('menuitem', { name: 'SELECT を開く' }))
+
+    // Assert
+    expect(開く).toHaveBeenCalledWith('select * from koduchi.users')
+  })
+
+  it('列を持たない種別には SELECT を開く項目が出ない', async () => {
+    // Arrange
+    接続を置く('lower')
+    useSchemaStore.setState({ schemas: 種別の多いスキーマ, columns: {} })
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /索引/ }))
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'IX_EVENTS_USER' }))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: 'SELECT を開く' })).not.toBeInTheDocument()
+  })
+
+  it('種別の束を右クリックしてもメニューは出ない', async () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Assert
+    expect(screen.queryByTestId('schema-tree-context-menu')).not.toBeInTheDocument()
+  })
+
+  it('メニューの外を押すと閉じる', () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+    fireEvent.contextMenu(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    fireEvent.mouseDown(screen.getByTestId('schema-tree-context-menu-backdrop'))
+
+    // Assert
+    expect(screen.queryByTestId('schema-tree-context-menu')).not.toBeInTheDocument()
+  })
+})
+
+describe('ツリーのキーボード操作', () => {
+  const クリップボード = { writeText: vi.fn(async () => {}) }
+
+  beforeEach(() => {
+    クリップボード.writeText.mockClear()
+    setClipboardApi(クリップボード)
+  })
+
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('焦点を当てる行は 1 つだけである', async () => {
+    // Arrange: 定義ボタンは行と同じ焦点の枠に入り、`Tab` で降りる
+    接続を置く('lower')
+    renderTree()
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Assert
+    expect(document.querySelectorAll('[data-tree-focused="true"]')).toHaveLength(1)
+  })
+
+  it('→ で閉じている行が開く', () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'ArrowRight' })
+
+    // Assert
+    expect(screen.getByRole('button', { name: /KODUCHI/ })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('← で開いている行が閉じる', () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'ArrowRight' })
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'ArrowLeft' })
+
+    // Assert
+    expect(screen.getByRole('button', { name: /KODUCHI/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+  })
+
+  it('↓ で焦点が次の行へ移る', () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'ArrowRight' })
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'ArrowDown' })
+
+    // Assert
+    expect(screen.getByRole('button', { name: /テーブル/ })).toHaveAttribute('tabindex', '0')
+  })
+
+  it('⌥⏎ で焦点のある行の名前が挿入される', () => {
+    // Arrange
+    接続を置く('lower')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'Enter', altKey: true })
+
+    // Assert
+    expect(挿入).toHaveBeenCalledWith('koduchi')
+  })
+
+  it('⌘C で焦点のある行の名前がコピーされる', () => {
+    // Arrange
+    接続を置く('lower')
+    renderTree()
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('schema-tree'), { key: 'c', metaKey: true })
+
+    // Assert
+    expect(クリップボード.writeText).toHaveBeenCalledWith('koduchi')
   })
 })

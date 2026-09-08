@@ -43,6 +43,10 @@ interface SidebarProps {
   onOpenNewConnection: () => void
   /** 履歴と保存済みクエリの SQL をエディタへ入れる。 */
   onUseHistory: (sql: string) => void
+  /** スキーマツリーの名前をエディタのカーソル位置へ入れる（ADR 0020）。 */
+  onInsertIdentifier: (text: string) => void
+  /** スキーマツリーから `select * from …` を新しいタブに開く（ADR 0020）。 */
+  onOpenSelect: (sql: string) => void
   /** サイドバーの幅（px）。境界のドラッグで変わる。 */
   width: number
 }
@@ -53,6 +57,8 @@ export function Sidebar({
   connectionName,
   onOpenNewConnection,
   onUseHistory,
+  onInsertIdentifier,
+  onOpenSelect,
   width,
 }: SidebarProps) {
   const segment = useUiStore((state) => state.sidebarSegment)
@@ -151,7 +157,13 @@ export function Sidebar({
       <div
         className={`flex-1 min-h-0 ${segment === 'schema' ? 'overflow-hidden' : 'overflow-auto'}`}
       >
-        {segment === 'schema' ? <SchemaTree connectionId={connectionId} /> : null}
+        {segment === 'schema' ? (
+          <SchemaTree
+            connectionId={connectionId}
+            onInsert={onInsertIdentifier}
+            onOpenSelect={onOpenSelect}
+          />
+        ) : null}
         {segment === 'history' ? <HistoryList onUse={onUseHistory} /> : null}
         {segment === 'saved' ? <SavedQueryList onUse={onUseHistory} /> : null}
       </div>

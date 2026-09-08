@@ -1,9 +1,10 @@
+import { createRef } from 'react'
 import { describe, expect, it } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { SchemaNode, TableColumn } from '../../types/db'
 import { buildCatalog, EMPTY_CATALOG } from './catalog'
-import { SqlEditor, type EditorPosition } from './SqlEditor'
+import { SqlEditor, type EditorPosition, type SqlEditorHandle } from './SqlEditor'
 
 /** 既定の props でエディタを描き、通知された内容を集めて返す。 */
 function 描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {}) {
@@ -271,5 +272,78 @@ describe('SqlEditor', () => {
     // Assert
     expect(通知.content).toHaveLength(通知の数)
     expect(編集領域().textContent).toContain('select')
+  })
+})
+
+/** 挿入の口を持たせてエディタを描く。 */
+function 口付きで描く() {
+  const ref = createRef<SqlEditorHandle>()
+  render(
+    <SqlEditor
+      ref={ref}
+      value=""
+      catalog={EMPTY_CATALOG}
+      identifierCase="preserve"
+      onChange={() => {}}
+      onCursorChange={() => {}}
+      onRunStatement={() => {}}
+      onRunSelection={() => {}}
+      onRunScript={() => {}}
+      onCancel={() => {}}
+    />,
+  )
+  return ref
+}
+
+describe('insertAtCursor', () => {
+  it('空の文書では前に空白を入れずに挿入する', () => {
+    // Arrange
+    const ref = 口付きで描く()
+
+    // Act
+    ref.current?.insertAtCursor('koduchi.users')
+
+    // Assert
+    expect(編集領域().textContent).toBe('koduchi.users')
+  })
+
+  it('語の直後へ挿入すると空白で区切られる', async () => {
+    // Arrange
+    const ref = 口付きで描く()
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('select * from')
+
+    // Act
+    ref.current?.insertAtCursor('koduchi.users')
+
+    // Assert
+    expect(編集領域().textContent).toBe('select * from koduchi.users')
+  })
+
+  it('空白の直後へ挿入しても空白は増えない', async () => {
+    // Arrange
+    const ref = 口付きで描く()
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('select * from ')
+
+    // Act
+    ref.current?.insertAtCursor('koduchi.users')
+
+    // Assert
+    expect(編集領域().textContent).toBe('select * from koduchi.users')
+  })
+
+  it('挿入するとカーソルが挿入した文字列の後ろへ移る', async () => {
+    // Arrange
+    const ref = 口付きで描く()
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('select ')
+
+    // Act
+    ref.current?.insertAtCursor('user_id')
+    await userEvent.keyboard(', email')
+
+    // Assert
+    expect(編集領域().textContent).toBe('select user_id, email')
   })
 })

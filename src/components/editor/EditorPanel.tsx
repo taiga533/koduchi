@@ -7,6 +7,7 @@
  * 移動が目に見えて遅れる。
  */
 
+import type { Ref } from 'react'
 import { useCallback, useMemo } from 'react'
 import { useConnectionStore } from '../../stores/connection'
 import { useSchemaStore } from '../../stores/schema'
@@ -14,12 +15,19 @@ import { selectActiveTab, useTabStore } from '../../stores/tab'
 import type { TableColumn } from '../../types/db'
 import { defaultCompletionSettings } from '../../types/db'
 import { buildCatalog } from './catalog'
-import { SqlEditor, type EditorPosition } from './SqlEditor'
+import { SqlEditor, type EditorPosition, type SqlEditorHandle } from './SqlEditor'
 
 /** 列がまだ読み込まれていないときに渡す表。参照を固定して再計算を避ける。 */
 const NO_COLUMNS: Record<string, TableColumn[]> = {}
 
 interface EditorPanelProps {
+  /**
+   * エディタへ挿入するための口（ADR 0020）。
+   *
+   * スキーマツリーからの挿入に使う。そのまま `SqlEditor` へ渡すだけであり、
+   * タブを切り替えると `key` で作り直されるので、口も張り替わる。
+   */
+  ref?: Ref<SqlEditorHandle>
   /** カーソル位置や選択が変わったときに呼ばれる。 */
   onCursorChange: (position: EditorPosition) => void
   /** `⌘⏎`。カーソル位置の文を実行する。 */
@@ -38,6 +46,7 @@ interface EditorPanelProps {
  * @param props 実行と中止の呼び出し口
  */
 export function EditorPanel({
+  ref,
   onCursorChange,
   onRunStatement,
   onRunSelection,
@@ -87,6 +96,7 @@ export function EditorPanel({
   return (
     <SqlEditor
       key={activeTab.id}
+      ref={ref}
       value={activeTab.content}
       catalog={catalog}
       identifierCase={identifierCase}
