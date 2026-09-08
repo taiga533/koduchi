@@ -107,3 +107,27 @@ describe('UnoCSS のユーティリティ', () => {
     expect(定義の数).toBe(3)
   })
 })
+
+describe('結果テーブルの当たりの色（ADR 0027）', () => {
+  it('当たりの面は CSS 変数を参照する', async () => {
+    // Arrange
+    const generator = await ジェネレータを作る()
+
+    // Act
+    const { css } = await generator.generate('bg-hit', { preflights: false })
+
+    // Assert
+    expect(css).toContain('var(--hit)')
+  })
+
+  it('当たりの面はライトとダークの両方で定義されている', () => {
+    // Arrange
+    const tokens = readFileSync(resolve(process.cwd(), 'src/theme/tokens.css'), 'utf8')
+
+    // Act: ライト・システム追従のダーク・ダーク固定の 3 箇所
+    const 定義の数 = [...tokens.matchAll(/--hit:/g)].length
+
+    // Assert
+    expect(定義の数).toBe(3)
+  })
+})

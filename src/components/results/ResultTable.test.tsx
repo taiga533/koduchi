@@ -598,3 +598,399 @@ describe('ResultTable の列幅と詳細表示', () => {
     expect(screen.getByTestId('cell-detail-panel')).toBeInTheDocument()
   })
 })
+
+/** 検索バーを開いて語を打つ。 */
+function 検索する(語: string) {
+  fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'f', metaKey: true })
+  fireEvent.change(screen.getByLabelText('表示中の結果を検索'), { target: { value: 語 } })
+}
+
+/** 当たりとして塗られているセルの testid を並べる。 */
+function 当たりのセル(): string[] {
+  return [...document.querySelectorAll('[data-match="true"]')].map(
+    (element) => element.getAttribute('data-testid') ?? '',
+  )
+}
+
+describe('ResultTable の検索', () => {
+  /** 4 行 2 列。`ORDERS` を 2 行、`orders` を 1 行含む。 */
+  const 検索用の結果: TabExecution = {
+    ...emptyExecution,
+    status: 'succeeded',
+    columns: [
+      { name: 'ID', typeName: 'NUMBER(4)', kind: 'number' },
+      { name: 'LABEL', typeName: 'VARCHAR2(80)', kind: 'text' },
+    ],
+    rows: [
+      [
+        { text: '10', kind: 'number' },
+        { text: 'ORDERS', kind: 'text' },
+      ],
+      [
+        { text: '20', kind: 'number' },
+        { text: 'ITEMS', kind: 'text' },
+      ],
+      [
+        { text: '30', kind: 'number' },
+        { text: 'orders', kind: 'text' },
+      ],
+      [
+        { text: '40', kind: 'number' },
+        { text: '', kind: 'null' },
+      ],
+    ],
+    exhausted: true,
+    elapsedMs: 12,
+  }
+
+  it('⌘F で検索バーが開く', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'f', metaKey: true })
+
+    // Assert
+    expect(screen.getByTestId('result-search-bar')).toBeInTheDocument()
+  })
+
+  it('⇧⌘F では検索バーを開かない', () => {
+    // Arrange: ⇧⌘F はオブジェクトのソース検索（ADR 0021）である
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), {
+      key: 'f',
+      metaKey: true,
+      shiftKey: true,
+    })
+
+    // Assert
+    expect(screen.queryByTestId('result-search-bar')).not.toBeInTheDocument()
+  })
+
+  it('検索バーは開くまで出ない', () => {
+    // Arrange & Act
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Assert
+    expect(screen.queryByTestId('result-search-bar')).not.toBeInTheDocument()
+  })
+
+  it('当たったセルがすべて塗られる', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act: 既定では大文字と小文字を区別しない
+    検索する('orders')
+
+    // Assert
+    expect(当たりのセル()).toEqual(['result-cell-0-1', 'result-cell-2-1'])
+  })
+
+  it('語を打つと 1 件目へ選択が飛ぶ', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    検索する('orders')
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-0-1'])
+  })
+
+  it('⏎ で次の当たりへ進む', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), { key: 'Enter' })
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-2-1'])
+  })
+
+  it('末尾の次は先頭へ巻き戻る', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+    const 欄 = screen.getByLabelText('表示中の結果を検索')
+    fireEvent.keyDown(欄, { key: 'Enter' })
+
+    // Act
+    fireEvent.keyDown(欄, { key: 'Enter' })
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-0-1'])
+  })
+
+  it('⇧⏎ で前の当たりへ戻る', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), {
+      key: 'Enter',
+      shiftKey: true,
+    })
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-2-1'])
+  })
+
+  it('⌘G でも次の当たりへ進む', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'g', metaKey: true })
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-2-1'])
+  })
+
+  it('変換中の ⏎ では当たりが進まない', () => {
+    // Arrange: 変換を確定する ⏎ は keyCode 229 で届く（ADR 0025）
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), {
+      key: 'Enter',
+      keyCode: 229,
+    })
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-0-1'])
+  })
+
+  it('変換中の esc では検索バーが閉じない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), {
+      key: 'Escape',
+      isComposing: true,
+    })
+
+    // Assert
+    expect(screen.getByTestId('result-search-bar')).toBeInTheDocument()
+  })
+
+  it('esc で検索バーが閉じる', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), { key: 'Escape' })
+
+    // Assert
+    expect(screen.queryByTestId('result-search-bar')).not.toBeInTheDocument()
+  })
+
+  it('大文字と小文字を区別すると綴りの違うものは外れる', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act
+    fireEvent.click(screen.getByLabelText('大文字と小文字を区別'))
+
+    // Assert
+    expect(当たりのセル()).toEqual(['result-cell-2-1'])
+  })
+
+  it('NULL のセルは NULL という語で拾える', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    検索する('null')
+
+    // Assert
+    expect(当たりのセル()).toEqual(['result-cell-3-1'])
+  })
+
+  it('カーソルが尽きていれば件数だけを出す', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    検索する('orders')
+
+    // Assert
+    expect(screen.getByTestId('result-search-summary')).toHaveTextContent('1 / 2 件')
+  })
+
+  it('カーソルが尽きていなければ探した行数を必ず添える', () => {
+    // Arrange: 4 行だけ取得済みで、まだ続きがある
+    const 途中の結果: TabExecution = { ...検索用の結果, exhausted: false }
+    render(<ResultTable tabId="tab-1" execution={途中の結果} onRequestMore={() => {}} />)
+
+    // Act
+    検索する('orders')
+
+    // Assert
+    expect(screen.getByTestId('result-search-summary')).toHaveTextContent(
+      '1 / 2 件（取得済みの 4 行のうち）',
+    )
+  })
+
+  it('カーソルが尽きていれば残りを読み込むボタンは出ない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    検索する('orders')
+
+    // Assert
+    expect(screen.queryByText('残りを読み込んで探す')).not.toBeInTheDocument()
+  })
+
+  it('残りを読み込むボタンで続きを要求する', () => {
+    // Arrange
+    const 途中の結果: TabExecution = { ...検索用の結果, exhausted: false }
+    const 要求 = vi.fn()
+    render(<ResultTable tabId="tab-1" execution={途中の結果} onRequestMore={要求} />)
+    検索する('orders')
+    要求.mockClear()
+
+    // Act
+    fireEvent.click(screen.getByText('残りを読み込んで探す'))
+
+    // Assert
+    expect(要求).toHaveBeenCalled()
+  })
+
+  it('読み込みは押し直すと止まる', () => {
+    // Arrange
+    const 途中の結果: TabExecution = { ...検索用の結果, exhausted: false }
+    render(<ResultTable tabId="tab-1" execution={途中の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+    fireEvent.click(screen.getByText('残りを読み込んで探す'))
+
+    // Act
+    fireEvent.click(screen.getByText('読み込みを止める'))
+
+    // Assert
+    expect(screen.getByText('残りを読み込んで探す')).toBeInTheDocument()
+  })
+
+  it('切り詰められた値を探したときは断り書きが出る', () => {
+    // Arrange: CLOB が 64KB で切れているセルを含む結果
+    const 切れた結果: TabExecution = {
+      ...検索用の結果,
+      columns: [{ name: 'NOTE', typeName: 'CLOB', kind: 'text' }],
+      rows: [[{ text: '長い本文', kind: 'text', truncated: true }]],
+    }
+    render(<ResultTable tabId="tab-1" execution={切れた結果} onRequestMore={() => {}} />)
+
+    // Act
+    検索する('本文')
+
+    // Assert
+    expect(screen.getByText('一部の値は先頭 64 KB までしか探していません')).toBeInTheDocument()
+  })
+
+  it('切り詰めが無ければ断り書きは出ない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+
+    // Act
+    検索する('orders')
+
+    // Assert
+    expect(screen.queryByText(/先頭 64 KB/)).not.toBeInTheDocument()
+  })
+
+  it('続きの行が届いても今いる当たりは動かない', () => {
+    // Arrange
+    const 途中の結果: TabExecution = { ...検索用の結果, exhausted: false }
+    const { rerender } = render(
+      <ResultTable tabId="tab-1" execution={途中の結果} onRequestMore={() => {}} />,
+    )
+    検索する('orders')
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), { key: 'Enter' })
+
+    // Act: 既にある行はそのままに、当たりを 1 つ含む行が後ろへ足される
+    const 続き: TabExecution = {
+      ...途中の結果,
+      rows: [
+        ...途中の結果.rows,
+        [
+          { text: '50', kind: 'number' },
+          { text: 'ORDERS', kind: 'text' },
+        ],
+      ],
+    }
+    rerender(<ResultTable tabId="tab-1" execution={続き} onRequestMore={() => {}} />)
+
+    // Assert: 2 件目に居たまま、総数だけが増える
+    expect(選択中のセル()).toEqual(['result-cell-2-1'])
+    expect(screen.getByTestId('result-search-summary')).toHaveTextContent(
+      '2 / 3 件（取得済みの 5 行のうち）',
+    )
+  })
+
+  it('矢印キーの移動は当たりとは別に動く', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    検索する('orders')
+
+    // Act: 選択だけを 1 つ下へ動かす
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'ArrowDown' })
+
+    // Assert: 選択は動くが、当たりの塗りはそのまま残る
+    expect(選択中のセル()).toEqual(['result-cell-1-1'])
+    expect(当たりのセル()).toEqual(['result-cell-0-1', 'result-cell-2-1'])
+  })
+})
+
+describe('ResultTable の検索を閉じたあと', () => {
+  const 検索用の結果: TabExecution = {
+    ...emptyExecution,
+    status: 'succeeded',
+    columns: [{ name: 'LABEL', typeName: 'VARCHAR2(80)', kind: 'text' }],
+    rows: [[{ text: 'ORDERS', kind: 'text' }]],
+    exhausted: true,
+    elapsedMs: 12,
+  }
+
+  it('閉じると当たりの塗りが消える', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'f', metaKey: true })
+    fireEvent.change(screen.getByLabelText('表示中の結果を検索'), {
+      target: { value: 'orders' },
+    })
+
+    // Act
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), { key: 'Escape' })
+
+    // Assert
+    expect(当たりのセル()).toEqual([])
+  })
+
+  it('開き直すと語がそのまま残っている', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={検索用の結果} onRequestMore={() => {}} />)
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'f', metaKey: true })
+    fireEvent.change(screen.getByLabelText('表示中の結果を検索'), {
+      target: { value: 'orders' },
+    })
+    fireEvent.keyDown(screen.getByLabelText('表示中の結果を検索'), { key: 'Escape' })
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'f', metaKey: true })
+
+    // Assert
+    expect(screen.getByLabelText('表示中の結果を検索')).toHaveValue('orders')
+    expect(当たりのセル()).toEqual(['result-cell-0-0'])
+  })
+})

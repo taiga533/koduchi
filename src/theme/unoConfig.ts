@@ -50,6 +50,8 @@ export const koduchiUnoConfig = defineConfig({
       err: 'var(--err)',
       /** 注意（未コミットの表示。ADR 0012） */
       warn: 'var(--warn)',
+      /** 結果テーブルの検索で当たったセルの面（ADR 0027） */
+      hit: 'var(--hit)',
 
       /** 差分表示（未使用。ADR 0008） */
       dmb: 'var(--dmb)',

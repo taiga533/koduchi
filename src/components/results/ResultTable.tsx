@@ -7,9 +7,10 @@
  * 行の高さは設定で決まる固定値であり、セルの内容は折り返さない。そのため実寸を
  * 測る必要がなく、見積りをそのまま使える。
  *
- * セル選択とコピーはこのコンポーネントの中に閉じる。選択を `ui` ストアへ置くと
- * 矢印キーの打鍵ごとにアプリ全体が描き直るためである。タブを切り替えたときは
- * `ResultPane` が `key` を変えて作り直すので、選択はその場で捨てられる。
+ * セル選択・コピー・検索はこのコンポーネントの中に閉じる。これらを `ui` ストアへ
+ * 置くと矢印キーや検索欄の打鍵ごとにアプリ全体が描き直るためである。タブを切り
+ * 替えたときは `ResultPane` が `key` を変えて作り直すので、選択も検索語もその場で
+ * 捨てられる。
  *
  * マウスの操作は場所と回数で割り振ってあり、互いに食い合わない。
  *
@@ -22,9 +23,13 @@
  * | 見出しの右端をドラッグ | 列幅を変える                     |
  * | 見出しをダブルクリック | 列幅を内容に合わせる             |
  *
- * 列幅の勘定は `columnSizing.ts`、詳細パネルは `CellDetailPanel.tsx` にある。
+ * 列幅の勘定は `columnSizing.ts`、詳細パネルは `CellDetailPanel.tsx`、検索の当たり
+ * 判定は `resultSearch.ts` にある。
+ *
  * 列の並べ替え（ソート）は実装しない。分割取得のため、取得済みの行だけを並べ替
  * えると全体を並べ替えたように見えて嘘になる（ADR README の「結果テーブル」節）。
+ * **検索はその決定に触れない**（ADR 0027）。並びを偽らず、当たった場所へ選択を
+ * 飛ばすだけであり、探した範囲は件数の隣にそのまま書ける。
  */
 
 import type { MouseEvent as ReactMouseEvent } from 'react'
@@ -46,7 +51,8 @@ import {
 } from './columnSizing'
 import { CellDetailPanel } from './CellDetailPanel'
 import { ResultContextMenu } from './ResultContextMenu'
-import type { CellSelection, SelectionRange } from './selection'
+import { ResultSearchBar } from './ResultSearchBar'
+import type { CellPosition, CellSelection, SelectionRange } from './selection'
 import {
   buildCopyText,
   columnSelection,
@@ -59,6 +65,17 @@ import {
   selectionRange,
   selectionShadow,
 } from './selection'
+import type { SearchOutcome } from './resultSearch'
+import {
+  indexOfMatch,
+  matchKey,
+  matchKeySet,
+  matchSummary,
+  nextMatchIndex,
+  searchRows,
+  selectionAt,
+  truncationNote,
+} from './resultSearch'
 
 /** 行番号を出す先頭列の幅（ピクセル）。 */
 const ROW_NUMBER_WIDTH = 44
@@ -122,6 +139,24 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
   /** ドラッグ中か。押し下げから離すまでの間だけ真になる。 */
   const draggingRef = useRef(false)
 
+  /** 検索バーが開いているか（ADR 0027）。 */
+  const [searching, setSearching] = useState(false)
+  const [needle, setNeedle] = useState('')
+  const [caseSensitive, setCaseSensitive] = useState(false)
+  /**
+   * 今いる当たりの位置。番号ではなく位置で持つ。
+   *
+   * 続きの行が届くと当たりの並びは後ろへ伸びるが、既にある当たりの位置は動かない。
+   * 位置で持てば、読み込みのたびに現在地が飛ぶことがない。
+   */
+  const [currentMatch, setCurrentMatch] = useState<CellPosition | null>(null)
+  /** 残りの行を読み込みながら探している最中か。 */
+  const [loadingRest, setLoadingRest] = useState(false)
+  /** `⌘F` を押すたびに増える。検索欄へ焦点を戻す合図。 */
+  const [focusToken, setFocusToken] = useState(0)
+  /** 前回の検索結果。続きの行だけを走査するために持ち越す。 */
+  const outcomeRef = useRef<SearchOutcome | null>(null)
+
   const rowCount = execution.rows.length
   const columnCount = execution.columns.length
   const columns = execution.columns
@@ -149,10 +184,13 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
 
   // 実行し直すと列が入れ替わる。古い選択と詳細は意味を失うため捨てる。列幅は
   // 列名をキーに `ui` ストアが持っており、同じ列名なら保たれるので触らない。
+  // 検索語は残す（同じ語をもう一度探し直したいのが普通である）が、当たりの位置は
+  // 別の結果の座標なので捨てる。
   useEffect(() => {
     setSelection(null)
     setMenu(null)
     setDetail(null)
+    setCurrentMatch(null)
   }, [columns])
 
   // 選択が画面の外へ出たら追いかける（仮想スクロールのため自動では見えない）。
@@ -162,6 +200,62 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
       virtualizer.scrollToIndex(focusRow)
     }
   }, [focusRow, virtualizer])
+
+  // 取得済みの行から当たりを拾う（ADR 0027）。続きが届いただけのときは
+  // `searchRows` が前回の結果へ継ぎ足すので、届いたかたまりの数だけ全体を
+  // 走査し直すことにはならない。
+  //
+  // バーを閉じている間は語を空として扱う。**語は残す**（`⌘F` で開き直せばその
+  // まま探し直せる）が、閉じたのに当たりが塗られたままでは「まだ探している」と
+  // 見えてしまう。
+  const outcome = useMemo(() => {
+    const 探す語 = searching ? needle : ''
+    const next = searchRows(outcomeRef.current, rows, 探す語, { caseSensitive })
+    outcomeRef.current = next
+    return next
+  }, [rows, searching, needle, caseSensitive])
+
+  const matches = outcome.matches
+  const matchIndex = currentMatch === null ? -1 : indexOfMatch(matches, currentMatch)
+  const matchKeys = useMemo(() => matchKeySet(matches), [matches])
+
+  /**
+   * 当たりへ飛ぶ。選択そのものを動かす。
+   *
+   * 塗るだけにせず選択を動かすのは、当たりを見つけた次の操作がたいてい `⌘C` だから
+   * である。画面外の当たりは、選択を追いかける既存の `scrollToIndex` がそのまま
+   * 連れて行く。
+   */
+  const goToMatch = useCallback((position: CellPosition | undefined) => {
+    if (position === undefined) {
+      return
+    }
+    setCurrentMatch(position)
+    setSelection(selectionAt(position))
+  }, [])
+
+  // 当たりがあるのに現在地が無いときは 1 件目に置く。語を打ち替えた直後と、
+  // 残りを読み込んで初めて当たったときの両方がここを通る。
+  useEffect(() => {
+    if (currentMatch === null && matches.length > 0) {
+      goToMatch(matches[0])
+    }
+  }, [currentMatch, goToMatch, matches])
+
+  // 「残りを読み込んで探す」。カーソルが尽きるまで次のかたまりを頼み続ける。
+  // 押し直せば途中で止まり、それまでに届いた行の当たりはそのまま残る。
+  useEffect(() => {
+    if (!loadingRest) {
+      return
+    }
+    if (execution.exhausted) {
+      setLoadingRest(false)
+      return
+    }
+    if (!execution.loadingMore) {
+      onRequestMore()
+    }
+  }, [loadingRest, execution.exhausted, execution.loadingMore, rowCount, onRequestMore])
 
   // ドラッグはテーブルの外で離されることもあるため、窓全体で終わりを拾う。
   useEffect(() => {
@@ -244,10 +338,67 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
     setMenu({ x: event.clientX, y: event.clientY, column })
   }, [])
 
+  /** 検索バーを開き、検索欄へ焦点を移す（`⌘F`）。既に開いていれば語を選び直す。 */
+  const openSearch = useCallback(() => {
+    setSearching(true)
+    setFocusToken((token) => token + 1)
+  }, [])
+
+  /**
+   * 検索バーを閉じる。
+   *
+   * 語は残す（`⌘F` で開き直したときにそのまま探し直せる）が、残りの読み込みは
+   * 止める。閉じた後の焦点はテーブル本体へ戻す。
+   */
+  const closeSearch = useCallback(() => {
+    setSearching(false)
+    setLoadingRest(false)
+    scrollRef.current?.focus()
+  }, [])
+
+  /** 次（または前）の当たりへ移る。端では巻き戻る。 */
+  const stepMatch = useCallback(
+    (forward: boolean) => {
+      goToMatch(matches[nextMatchIndex(matches.length, matchIndex, forward)])
+    },
+    [goToMatch, matchIndex, matches],
+  )
+
+  /** 検索語を打ち替える。現在地は捨て、当たりの 1 件目へ寄せ直す。 */
+  const changeNeedle = useCallback((next: string) => {
+    setNeedle(next)
+    setCurrentMatch(null)
+  }, [])
+
+  /** 大小の扱いを切り替える。語を打ち替えたときと同じく現在地を捨てる。 */
+  const changeCaseSensitive = useCallback((next: boolean) => {
+    setCaseSensitive(next)
+    setCurrentMatch(null)
+  }, [])
+
   /** テーブルに焦点があるときのキー操作。 */
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (rowCount === 0 || columnCount === 0) {
+        return
+      }
+
+      // `⌘F` は焦点のある器の中を探す。エディタの `⌘F`（CodeMirror の keymap）と
+      // 同じ意味であり、焦点は同時に 2 か所へは無いため食い合わない（ADR 0027）。
+      //
+      // `⇧` と `⌥` を除くのは、`⇧⌘F`（オブジェクトのソース検索。ADR 0021）と
+      // `⌥⌘F`（エディタの置換）が別の割り当てだからである。修飾の重なる枝は
+      // 絞りの強いほうから見る（CLAUDE.md の「キーバインドの置き場所」）。
+      if (event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        openSearch()
+        return
+      }
+
+      // `⌘G` / `⇧⌘G` は次・前の当たりへ。これもエディタと同じ割り当てである。
+      if (event.metaKey && event.key.toLowerCase() === 'g') {
+        event.preventDefault()
+        stepMatch(!event.shiftKey)
         return
       }
 
@@ -279,7 +430,7 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
         )
       }
     },
-    [columnCount, copyRange, rowCount, selection],
+    [columnCount, copyRange, openSearch, rowCount, selection, stepMatch],
   )
 
   const template = gridTemplate(columns, widths, ROW_NUMBER_WIDTH)
@@ -348,6 +499,23 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
   return (
     <div className="flex-1 min-h-0 flex overflow-hidden">
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden text-11.5px">
+        {searching ? (
+          <ResultSearchBar
+            needle={needle}
+            onNeedleChange={changeNeedle}
+            caseSensitive={caseSensitive}
+            onCaseSensitiveChange={changeCaseSensitive}
+            summary={matchSummary(matches.length, matchIndex, rowCount, execution.exhausted)}
+            note={truncationNote(outcome.sawTruncated)}
+            onStep={stepMatch}
+            onClose={closeSearch}
+            hasMore={!execution.exhausted}
+            loadingRest={loadingRest}
+            onToggleRest={() => setLoadingRest((running) => !running)}
+            focusToken={focusToken}
+          />
+        ) : null}
+
         <div
           ref={headerRef}
           data-testid="result-table-header"
@@ -409,11 +577,16 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                       const selected = range
                         ? isSelected(range, virtualRow.index, cellIndex)
                         : false
+                      // 当たりはすべて塗る。何件がどのあたりに固まっているかは、
+                      // 件数の数字だけでは分からない（ADR 0027）。今いる当たりは
+                      // 選択されているので、選択の面と外枠が重ねて描かれる。
+                      const hit = matchKeys.has(matchKey(virtualRow.index, cellIndex))
                       return (
                         <div
                           key={columns[cellIndex]?.name ?? cellIndex}
                           data-testid={`result-cell-${virtualRow.index}-${cellIndex}`}
                           data-selected={selected ? 'true' : undefined}
+                          data-match={hit ? 'true' : undefined}
                           onMouseDown={(event) =>
                             beginSelect(virtualRow.index, cellIndex, event.shiftKey)
                           }
@@ -425,7 +598,7 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                           className={`border-r border-gl truncate ${
                             isRightAligned(cell.kind) ? 'text-right' : ''
                           } ${cell.kind === 'null' ? 'text-fg5 italic' : ''} ${
-                            selected ? 'bg-fill' : ''
+                            hit ? 'bg-hit' : selected ? 'bg-fill' : ''
                           }`}
                           style={{ padding: 'var(--rp)', boxShadow: selectionShadow(edges) }}
                           title={displayText(cell)}
