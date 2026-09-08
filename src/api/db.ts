@@ -20,7 +20,10 @@ import type {
   HistoryEntry,
   HistoryQuery,
   NewHistoryEntry,
+  NewSavedQuery,
   SavedConnection,
+  SavedQuery,
+  SavedQueryQuery,
   SchemaFilter,
   SchemaNode,
   SessionOverview,
@@ -81,6 +84,14 @@ export interface DbApi {
   deleteHistory(id: number): Promise<boolean>
   /** 履歴を全件削除し、消した件数を返す。 */
   clearHistory(): Promise<number>
+  /** クエリを 1 件保存し、採番された ID を返す（ADR 0018）。 */
+  createSavedQuery(query: NewSavedQuery): Promise<number>
+  /** 保存済みクエリを更新日時の新しい順に取り出す。 */
+  listSavedQueries(query: SavedQueryQuery): Promise<SavedQuery[]>
+  /** 保存済みクエリの名前と SQL を書き換える。 */
+  updateSavedQuery(id: number, name: string, sql: string, updatedAt: number): Promise<boolean>
+  /** 保存済みクエリを 1 件削除する。 */
+  deleteSavedQuery(id: number): Promise<boolean>
   /** ウィンドウ 1 つぶんのセッションを保存する。 */
   saveSession(windowLabel: string, state: SessionState): Promise<void>
   /** ウィンドウ 1 つぶんのセッションを読む。 */
@@ -156,6 +167,11 @@ const tauriDbApi: DbApi = {
   listHistory: (query) => invoke('list_history', { query }),
   deleteHistory: (id) => invoke('delete_history', { id }),
   clearHistory: () => invoke('clear_history'),
+  createSavedQuery: (query) => invoke('create_saved_query', { query }),
+  listSavedQueries: (query) => invoke('list_saved_queries', { query }),
+  updateSavedQuery: (id, name, sql, updatedAt) =>
+    invoke('update_saved_query', { id, name, sql, updatedAt }),
+  deleteSavedQuery: (id) => invoke('delete_saved_query', { id }),
   saveSession: (windowLabel, state) => invoke('save_session', { windowLabel, state }),
   loadSession: (windowLabel) => invoke('load_session', { windowLabel }),
 

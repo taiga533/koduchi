@@ -56,7 +56,7 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 | `src-tauri/src/tnsnames/`    | tnsnames.ora の自前パーサ（ADR 0006）                                |
 | `src-tauri/src/config/`      | `connections.toml` の読み書き（ADR 0004）                            |
 | `src-tauri/src/keychain/`    | `keyring` の包み。パスワードだけを置く（ADR 0004）                   |
-| `src-tauri/src/history/`     | 履歴とセッション復元の SQLite（ADR 0005）                            |
+| `src-tauri/src/history/`     | 履歴・保存済みクエリ・セッション復元の SQLite（ADR 0005・0018）      |
 | `src-tauri/src/csv/`         | CSV の書き出し                                                       |
 
 **設定ファイルの置き場所**: すべて `app_config_dir()`（`~/Library/Application Support/ninja.taiga533.koduchi/`）の下に置く。`instant_client.toml`（ADR 0001）/ `connections.toml`（ADR 0004・0013）/ `settings.toml`（テーマと CSV の書式）/ `history.sqlite3`（ADR 0005）の 4 つ。**パスワードはどれにも書かない。** キーチェーンのサービス名は `ninja.taiga533.koduchi`、アカウント名は接続の一意 ID である。接続を削除したらキーチェーンのエントリも必ず消す。
@@ -75,11 +75,13 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 **スキーマツリーの種別**（ADR 0014）: 種別は 12 個（`ObjectKind`）。列挙元は `ALL_OBJECTS` の 10 種別に加え、索引が `ALL_INDEXES`（`GENERATED = 'N'` のみ）、DB link が `ALL_DB_LINKS` である。**所有者が `PUBLIC` のものは列挙しない**（公開シノニムだけで数万件になる）。**制約はツリーに出さない**（理由は ADR 0014。テーブル定義ビューを作る波で扱う）。ツリーはスキーマとオブジェクトの間に**種別の束**を 1 段挟む。束の並びは `OBJECT_KIND_ORDER`、鍵は `kindGroupKey`（`KODUCHI.#table`）。絞り込み中だけ束は既定で開く。種別ごとの表示可否は `SchemaFilter.kinds` として `connections.toml` に持ち、**落とした種別は問い合わせにも行かない**。補完のカタログには索引・トリガー・DB link を流さない（`catalog.ts` の `isCompletable`）。
 
-**キーバインドの置き場所**: エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` と検索の `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` は CodeMirror の keymap に、それ以外（`⌘E` / `⇧⌘E` / `⌥⌘S` / `⌥⌘C` / `⌥⌘R` / `⌘S` / `⌘O` / `⌘T` / `⌘W` / `⌃⌘N`）は `App.tsx` の `keydown` に置く。後者は `event.defaultPrevented` を見て、エディタが既に処理したものを二重に扱わない。結果テーブルの中でしか意味を持たない `⌘C` / `⇧⌘C` / `⌘A` は `ResultTable` の `keydown` に置く。`⌘K` と `⌘I` は**割り当てない**（将来のための予約）。
+**キーバインドの置き場所**: エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` と検索の `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` は CodeMirror の keymap に、それ以外（`⌘E` / `⇧⌘E` / `⌥⌘S` / `⌥⌘C` / `⌥⌘R` / `⌘S` / `⇧⌘S` / `⌘O` / `⌘T` / `⌘W` / `⌃⌘N` / `⌘K`）は `App.tsx` の `keydown` に置く。後者は `event.defaultPrevented` を見て、エディタが既に処理したものを二重に扱わない。修飾の重なる `⌘S` / `⇧⌘S` / `⌥⌘S` は、絞りの強い枝から先に見る。結果テーブルの中でしか意味を持たない `⌘C` / `⇧⌘C` / `⌘A` は `ResultTable` の `keydown` に置く。`⌘I`（Ask AI）は**割り当てない**（将来のための予約）。`⌘K` はコマンドパレット（ADR 0018）に割り当て済みである。
 
 **結果テーブルのコピー**: セル選択は `ResultTable` の中に閉じた状態で持つ（`ui` ストアへ置くと打鍵ごとにアプリ全体が描き直る）。タブを切り替えたときは `ResultPane` が `key={tabId}` で作り直し、選択を捨てる。範囲の判定とコピー文字列の組み立ては `src/components/results/selection.ts` の純粋な関数に寄せてある。クリップボードは `src/api/clipboard.ts` 越しに呼ぶ（テストで差し替えるため）。
 
 **結果テーブルの列幅と詳細**: 列幅は `ui` ストアの `resultColumnWidths`（タブ ID → 列名 → 幅）に置く。選択と違って再実行やタブ切替をまたいで残す値だからである。幅の勘定は `src/components/results/columnSizing.ts` の純粋な関数に寄せてあり、内容合わせは実寸を測らず PlemolJP の送り幅（半角 0.528em、全角はその 2 倍）から見積もる。セルの詳細は `CellDetailPanel.tsx`。マウス操作の割り振りは `ResultTable.tsx` 冒頭の表に書いてある。**列のソートは実装しない**（理由は `adr/README.md`）。
+
+**保存済みクエリとコマンドパレット**（ADR 0018）: 保存済みクエリは `history.sqlite3` の `saved_query` 表に置く。履歴と同じく全接続で 1 つの表であり、接続名を添えてスコープを切り替える（**既定は「全接続」**。履歴と逆である）。**バインド変数の値は保存しない。** パレット（`⌘K`）が探すのはコマンド / スキーマ / 保存済みクエリ / 履歴の 4 種で、**見出しの並びは固定**、当たり判定と順序は `src/components/palette/paletteSearch.ts` の純粋な関数に寄せてある。拾い方は大小を区別しない**部分一致**であり、あいまい一致は使わない。列はパレットの候補にしない（補完の領分、ADR 0013）。
 
 **トランザクション**（ADR 0012）: 自動コミットは接続ごとの項目で、既定はオフ（手動コミット）。未コミットかどうかは実行のたびに `DBMS_TRANSACTION.LOCAL_TRANSACTION_ID` を読んで決める。**クライアント側で DML を数えない。** コミット / ロールバックはプールの全接続へ配る。未コミットのまま接続を手放させないための関所は `App.tsx` の `resolvePendingTransaction` にあり、ウィンドウを閉じる経路（`onWindowCloseRequested`）・アプリの終了（`lib.rs` の `RunEvent::ExitRequested`）・切断（`disconnectAndReset`）のすべてがここを通る。
 

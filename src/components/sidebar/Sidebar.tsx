@@ -2,17 +2,19 @@
  * サイドバー（デザイン 3a の左パネル）。
  *
  * スキーマ / 履歴 / 保存済み の 3 セグメントを持つ。スキーマは段階的に読み込まれ、
- * 列情報の読み込み中は下部に進捗を出す（ADR 0007）。保存済みクエリは器のみで、
- * 空状態だけを表示する（ADR の機能スコープ）。
+ * 列情報の読み込み中は下部に進捗を出す（ADR 0007）。保存済みクエリは履歴と同じ
+ * 保管庫に入っており、同じ検索欄とスコープ切替で扱える（ADR 0018）。
  */
 
 import { useEffect } from 'react'
 import { Plus, Search } from 'lucide-react'
 import { formatColumnProgress, useSchemaStore } from '../../stores/schema'
 import { useHistoryStore } from '../../stores/history'
+import { useSavedQueryStore } from '../../stores/savedQuery'
 import type { SidebarSegment } from '../../stores/ui'
 import { useUiStore } from '../../stores/ui'
 import { HistoryList } from './HistoryList'
+import { SavedQueryList } from './SavedQueryList'
 import { SchemaFilterMenu } from './SchemaFilterMenu'
 import { SchemaTree } from './SchemaTree'
 
@@ -39,7 +41,7 @@ interface SidebarProps {
   connectionName: string | null
   /** 別の接続を新しいウィンドウで開く。 */
   onOpenNewConnection: () => void
-  /** 履歴の SQL をエディタへ入れる。 */
+  /** 履歴と保存済みクエリの SQL をエディタへ入れる。 */
   onUseHistory: (sql: string) => void
   /** サイドバーの幅（px）。境界のドラッグで変わる。 */
   width: number
@@ -66,6 +68,11 @@ export function Sidebar({
   const reloadHistory = useHistoryStore((state) => state.reload)
   const setHistoryConnection = useHistoryStore((state) => state.setConnectionName)
 
+  const savedSearch = useSavedQueryStore((state) => state.search)
+  const setSavedSearch = useSavedQueryStore((state) => state.setSearch)
+  const reloadSaved = useSavedQueryStore((state) => state.reload)
+  const setSavedConnection = useSavedQueryStore((state) => state.setConnectionName)
+
   // 履歴の絞り込み条件はストアが持つ。ここでは対象の接続を伝え、履歴を開いた
   // ときに読み直すだけでよい。スコープと検索語の変化はストア側で拾う。
   useEffect(() => {
@@ -75,9 +82,23 @@ export function Sidebar({
     }
   }, [connectionName, reloadHistory, segment, setHistoryConnection])
 
-  // 保存済みクエリは器だけなので、検索も効かない（ADR の機能スコープ）。
-  const search = segment === 'history' ? historySearch : segment === 'schema' ? schemaSearch : ''
-  const setSearch = segment === 'history' ? setHistorySearch : setSchemaSearch
+  // 保存済みクエリも同じ形で扱う（ADR 0018）。
+  useEffect(() => {
+    setSavedConnection(connectionName)
+    if (segment === 'saved') {
+      void reloadSaved()
+    }
+  }, [connectionName, reloadSaved, segment, setSavedConnection])
+
+  // 検索欄は 1 つで、セグメントごとに宛先のストアを差し替える。
+  const search =
+    segment === 'history' ? historySearch : segment === 'saved' ? savedSearch : schemaSearch
+  const setSearch =
+    segment === 'history'
+      ? setHistorySearch
+      : segment === 'saved'
+        ? setSavedSearch
+        : setSchemaSearch
 
   return (
     <aside
@@ -113,7 +134,6 @@ export function Sidebar({
               onChange={(event) => setSearch(event.target.value)}
               placeholder={FILTER_LABELS[segment]}
               aria-label={FILTER_LABELS[segment]}
-              disabled={segment === 'saved'}
               className="flex-1 min-w-0 bg-transparent border-none outline-none text-12px text-fg font-inherit placeholder:text-fg4"
             />
           </div>
@@ -133,11 +153,7 @@ export function Sidebar({
       >
         {segment === 'schema' ? <SchemaTree /> : null}
         {segment === 'history' ? <HistoryList onUse={onUseHistory} /> : null}
-        {segment === 'saved' ? (
-          <p className="m-0 px-14px py-16px text-12px leading-[1.6] text-fg5 text-center">
-            保存したクエリがここに並びます
-          </p>
-        ) : null}
+        {segment === 'saved' ? <SavedQueryList onUse={onUseHistory} /> : null}
       </div>
 
       {segment === 'schema' && progress !== '' ? (
