@@ -21,6 +21,9 @@ import type {
   HistoryQuery,
   NewHistoryEntry,
   NewSavedQuery,
+  ObjectDdl,
+  ObjectDefinition,
+  ObjectKind,
   SavedConnection,
   SavedQuery,
   SavedQueryQuery,
@@ -103,6 +106,26 @@ export interface DbApi {
   schemaColumns(id: string, owner: string): Promise<TableColumn[]>
 
   /**
+   * テーブル定義ビュー 1 枚ぶんの内容を取る（ADR 0019）。
+   *
+   * 列・制約・索引をまとめて返す。DDL は含まない。列は段階 2 のキャッシュを
+   * 使い回さず Rust 側が引き直すため、読み込みの途中でも欠けない。
+   */
+  objectDefinition(
+    id: string,
+    owner: string,
+    name: string,
+    kind: ObjectKind,
+  ): Promise<ObjectDefinition>
+  /**
+   * オブジェクト 1 つの DDL を取る（ADR 0019）。
+   *
+   * パッケージは仕様と本体の 2 つが返る。権限が無い接続では `permission` の
+   * 区分でエラーになる。空の定義ではない。
+   */
+  objectDdl(id: string, owner: string, name: string, kind: ObjectKind): Promise<ObjectDdl>
+
+  /**
    * セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
    *
    * 参照権限が無い接続では `permission` の区分でエラーになる。空の一覧では
@@ -177,6 +200,10 @@ const tauriDbApi: DbApi = {
 
   schemaOverview: (id, filter) => invoke('schema_overview', { id, filter }),
   schemaColumns: (id, owner) => invoke('schema_columns', { id, owner }),
+
+  objectDefinition: (id, owner, name, kind) =>
+    invoke('object_definition', { id, owner, name, kind }),
+  objectDdl: (id, owner, name, kind) => invoke('object_ddl', { id, owner, name, kind }),
 
   listSessions: (id) => invoke('list_sessions', { id }),
   killSession: (id, sid, serial) => invoke('kill_session', { id, sid, serial }),

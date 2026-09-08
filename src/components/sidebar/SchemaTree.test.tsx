@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { SchemaNode, TableColumn } from '../../types/db'
 import { useSchemaStore } from '../../stores/schema'
+import { useDefinitionStore } from '../../stores/definition'
 import { flattenSchemas, SchemaTree } from './SchemaTree'
 
 /**
@@ -66,6 +67,7 @@ const 列一覧: Record<string, TableColumn[]> = {
 
 beforeEach(() => {
   useSchemaStore.getState().clear()
+  useDefinitionStore.getState().clear()
   useSchemaStore.setState({
     schemas: スキーマ一覧,
     columns: 列一覧,
@@ -77,7 +79,7 @@ beforeEach(() => {
 describe('SchemaTree', () => {
   it('スキーマ名とオブジェクト数が並ぶ', () => {
     // Arrange
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
 
     // Act
     const row = screen.getByRole('button', { name: /KODUCHI/ })
@@ -89,7 +91,7 @@ describe('SchemaTree', () => {
 
   it('スキーマを展開すると種別の束が並ぶ', async () => {
     // Arrange
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
@@ -102,21 +104,21 @@ describe('SchemaTree', () => {
 
   it('種別の束を展開するとその種別のオブジェクトだけが並ぶ', async () => {
     // Arrange
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
     // Assert
-    expect(screen.getByRole('button', { name: /USERS/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'USERS' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /ORDER_TOTAL/ })).not.toBeInTheDocument()
   })
 
   it('追加した種別もそれぞれの束として並ぶ', async () => {
     // Arrange
     useSchemaStore.setState({ schemas: 種別の多いスキーマ, columns: {} })
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
@@ -131,12 +133,12 @@ describe('SchemaTree', () => {
 
   it('テーブルを展開すると列名と型が並ぶ', async () => {
     // Arrange
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
     // Act
-    await userEvent.click(screen.getByRole('button', { name: /USERS/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'USERS' }))
 
     // Assert
     expect(screen.getByText('USER_ID')).toBeInTheDocument()
@@ -145,12 +147,12 @@ describe('SchemaTree', () => {
 
   it('関数は展開できない', async () => {
     // Arrange
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
 
     // Act
-    const 関数 = screen.getByRole('button', { name: /ORDER_TOTAL/ })
+    const 関数 = screen.getByRole('button', { name: 'ORDER_TOTAL' })
 
     // Assert
     expect(関数).not.toHaveAttribute('aria-expanded')
@@ -159,13 +161,13 @@ describe('SchemaTree', () => {
   it('絞り込み中は束を開かなくても当たったオブジェクトが見える', async () => {
     // Arrange
     useSchemaStore.setState({ search: 'order' })
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
 
     // Assert
-    expect(screen.getByRole('button', { name: /ORDER_TOTAL/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ORDER_TOTAL' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /USERS/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /テーブル/ })).not.toBeInTheDocument()
   })
@@ -175,7 +177,7 @@ describe('SchemaTree', () => {
     useSchemaStore.setState({ status: 'failed', error: 'ORA-00942', schemas: [] })
 
     // Act
-    render(<SchemaTree />)
+    render(<SchemaTree connectionId="c1" />)
 
     // Assert
     expect(screen.getByText('ORA-00942')).toBeInTheDocument()
@@ -313,16 +315,57 @@ describe('flattenSchemas', () => {
 })
 
 describe('テーブル定義ビュー', () => {
-  it('テーブルには定義の入口があるが操作できない', async () => {
-    // Arrange
-    render(<SchemaTree />)
+  it('オブジェクトの行から定義ビューを開ける', async () => {
+    // Arrange: 入口は 1 つだけ。行のクリックの意味は変えない（ADR 0019）
+    render(<SchemaTree connectionId="c1" />)
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
     // Act
-    const 入口 = screen.getByTitle('テーブル定義ビューは未実装です')
+    await userEvent.click(screen.getByRole('button', { name: 'USERS の定義を開く' }))
 
     // Assert
-    expect(入口).toHaveAttribute('aria-disabled', 'true')
+    expect(useDefinitionStore.getState().target).toEqual({
+      owner: 'KODUCHI',
+      name: 'USERS',
+      kind: 'table',
+    })
+  })
+
+  it('列を持たない種別からも定義ビューを開ける', async () => {
+    // Arrange: ファンクションやパッケージは DDL を見る道がここにしかない
+    render(<SchemaTree connectionId="c1" />)
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'ORDER_TOTAL の定義を開く' }))
+
+    // Assert
+    expect(useDefinitionStore.getState().target?.kind).toBe('function')
+  })
+
+  it('繋がっていなければ定義の入口を出さない', async () => {
+    // Arrange
+    render(<SchemaTree connectionId={null} />)
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Act & Assert
+    expect(screen.queryByRole('button', { name: 'USERS の定義を開く' })).not.toBeInTheDocument()
+  })
+
+  it('行のクリックはこれまでどおり展開に使う', async () => {
+    // Arrange: ツリーのマウス操作の割り振りは変えていない（ADR 0019・0020）
+    render(<SchemaTree connectionId="c1" />)
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'USERS' }))
+
+    // Assert
+    expect(screen.getByText('USER_ID')).toBeInTheDocument()
+    expect(useDefinitionStore.getState().target).toBeNull()
   })
 })

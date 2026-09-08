@@ -9,9 +9,10 @@
 //! タブには「結果は破棄されました。再実行してください」を出す。
 
 use crate::db::actor::ConnectionHandle;
+use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
-use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use std::sync::{Arc, Mutex};
 
@@ -358,6 +359,39 @@ impl ConnectionPool {
         }
     }
 
+    /// テーブル定義ビュー 1 枚ぶんの内容を取る（ADR 0019）。
+    ///
+    /// 結果セットを保持していない接続で読むため、利用者が見ている結果は
+    /// 壊れない。スキーマ取得・実行計画・セッション一覧と同じ経路である。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    pub fn object_definition(
+        &self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<ObjectDefinition> {
+        self.background_handle()?
+            .object_definition(owner, name, kind)
+    }
+
+    /// オブジェクト 1 つの DDL を取る（ADR 0019）。
+    ///
+    /// 定義の取得と同じく、結果セットを保持していない接続で読む。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    pub fn object_ddl(&self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl> {
+        self.background_handle()?.object_ddl(owner, name, kind)
+    }
+
     /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
     ///
     /// 結果セットを保持していない接続で読むため、利用者が見ている結果は
@@ -426,6 +460,8 @@ mod tests {
         ロールバックした回数: Arc<AtomicUsize>,
         /// セッションの一覧を求められた回数（ADR 0017）。
         一覧を求められた回数: Arc<AtomicUsize>,
+        /// DDL を求められた回数（ADR 0019）。
+        定義を求められた回数: Arc<AtomicUsize>,
     }
 
     struct 何もしない中止経路;
@@ -500,6 +536,32 @@ mod tests {
             Ok(String::new())
         }
 
+        fn object_definition(
+            &mut self,
+            owner: &str,
+            name: &str,
+            kind: ObjectKind,
+        ) -> DbResult<ObjectDefinition> {
+            Ok(ObjectDefinition {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                kind,
+                columns: Vec::new(),
+                constraints: Vec::new(),
+                indexes: Vec::new(),
+            })
+        }
+
+        fn object_ddl(&mut self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl> {
+            self.定義を求められた回数.fetch_add(1, Ordering::SeqCst);
+            Ok(ObjectDdl {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                kind,
+                parts: Vec::new(),
+            })
+        }
+
         fn list_sessions(&mut self) -> DbResult<SessionOverview> {
             self.一覧を求められた回数.fetch_add(1, Ordering::SeqCst);
             Ok(SessionOverview::new(1, 10, Vec::new()))
@@ -514,7 +576,8 @@ mod tests {
     fn 数えるプールを作る(
         本数: usize,
     ) -> (ConnectionPool, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-        let (pool, コミットした回数, ロールバックした回数, _) = 数えるプールを組む(本数);
+        let (pool, コミットした回数, ロールバックした回数, _, _) =
+            数えるプールを組む(本数);
         (pool, コミットした回数, ロールバックした回数)
     }
 
@@ -526,21 +589,25 @@ mod tests {
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
     ) {
         let コミットした回数 = Arc::new(AtomicUsize::new(0));
         let ロールバックした回数 = Arc::new(AtomicUsize::new(0));
         let 一覧を求められた回数 = Arc::new(AtomicUsize::new(0));
+        let 定義を求められた回数 = Arc::new(AtomicUsize::new(0));
 
         let drivers: Vec<_> = (0..本数)
             .map(|_| {
                 let コミット = Arc::clone(&コミットした回数);
                 let ロールバック = Arc::clone(&ロールバックした回数);
                 let 一覧 = Arc::clone(&一覧を求められた回数);
+                let 定義 = Arc::clone(&定義を求められた回数);
                 move || {
                     Ok(数えるドライバ {
                         コミットした回数: コミット,
                         ロールバックした回数: ロールバック,
                         一覧を求められた回数: 一覧,
+                        定義を求められた回数: 定義,
                     })
                 }
             })
@@ -552,6 +619,7 @@ mod tests {
             コミットした回数,
             ロールバックした回数,
             一覧を求められた回数,
+            定義を求められた回数,
         )
     }
 
@@ -571,13 +639,26 @@ mod tests {
     #[test]
     fn セッションの一覧は一本の接続だけで読む() {
         // Arrange: 一覧はコミットと違い、全接続へ配る必要が無い（ADR 0017）
-        let (pool, _, _, 一覧を求められた回数) = 数えるプールを組む(4);
+        let (pool, _, _, 一覧を求められた回数, _) = 数えるプールを組む(4);
 
         // Act
         pool.list_sessions().unwrap();
 
         // Assert
         assert_eq!(一覧を求められた回数.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ddlの取得は一本の接続だけで読む() {
+        // Arrange: 定義もコミットと違い、全接続へ配る必要が無い（ADR 0019）
+        let (pool, _, _, _, 定義を求められた回数) = 数えるプールを組む(4);
+
+        // Act
+        pool.object_ddl("KODUCHI", "ORDERS", ObjectKind::Table)
+            .unwrap();
+
+        // Assert
+        assert_eq!(定義を求められた回数.load(Ordering::SeqCst), 1);
     }
 
     #[test]

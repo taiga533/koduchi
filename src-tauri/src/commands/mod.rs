@@ -7,6 +7,7 @@
 pub mod config;
 pub mod connection;
 pub mod csv;
+pub mod definition;
 pub mod files;
 pub mod history;
 pub mod instant_client;

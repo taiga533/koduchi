@@ -559,6 +559,115 @@ export interface SessionOverview {
   chains: BlockingNode[]
 }
 
+/**
+ * 制約の種類（ADR 0019）。
+ *
+ * `ALL_CONSTRAINTS.CONSTRAINT_TYPE` の 4 つだけを扱う。ビューにしか付かない
+ * 種類（`WITH CHECK OPTION` と読み取り専用）は落としてある。
+ */
+export type ConstraintKind = 'primaryKey' | 'unique' | 'foreignKey' | 'check'
+
+/** 制約の種類の表示名。定義ビューの「制約」タブに出す。 */
+export const CONSTRAINT_KIND_LABELS: Record<ConstraintKind, string> = {
+  primaryKey: '主キー',
+  unique: '一意',
+  foreignKey: '外部キー',
+  check: '検査',
+}
+
+/** テーブルに付いている制約 1 つ（ADR 0019）。 */
+export interface TableConstraint {
+  name: string
+  kind: ConstraintKind
+  /** 制約が掛かっている列。定義した順に並ぶ。 */
+  columns: string[]
+  /** 検査制約の条件。`check` 以外では `null`。 */
+  searchCondition: string | null
+  /** 外部キーの参照先スキーマ。 */
+  referencedOwner: string | null
+  /** 外部キーの参照先テーブル。 */
+  referencedTable: string | null
+  /** 外部キーの参照先の列。`columns` と同じ順で対応する。 */
+  referencedColumns: string[]
+  /** 外部キーの削除規則（`CASCADE` / `SET NULL` / `NO ACTION`）。 */
+  deleteRule: string | null
+  /** 制約が有効か。 */
+  enabled: boolean
+}
+
+/** 索引が並べている列 1 つ。 */
+export interface IndexColumn {
+  name: string
+  /** 降順の索引列か。 */
+  descending: boolean
+}
+
+/** テーブルに付いている索引 1 つ（ADR 0019）。 */
+export interface TableIndex {
+  name: string
+  /** 索引の所有者。表と別のスキーマに作れるため、名前だけでは足りない。 */
+  owner: string
+  unique: boolean
+  /** `NORMAL` / `BITMAP` / `FUNCTION-BASED NORMAL` など。 */
+  indexType: string
+  /** `VALID` / `UNUSABLE` など。 */
+  status: string | null
+  /**
+   * 自動生成された索引か（ADR 0019）。
+   *
+   * ツリー（ADR 0014）では落としているが、定義ビューでは出す。主キーや
+   * 一意制約の索引が見えないと「この列で引けるのか」が分からない。
+   */
+  generated: boolean
+  /** 索引が並べている列。定義した順に並ぶ。 */
+  columns: IndexColumn[]
+}
+
+/**
+ * テーブル定義ビュー 1 枚ぶんの内容（ADR 0019）。
+ *
+ * DDL は含まない。`DBMS_METADATA.GET_DDL` は重く権限にも敏感であるため、
+ * DDL タブを開いたときに `objectDdl` で別に取る。
+ */
+export interface ObjectDefinition {
+  owner: string
+  name: string
+  kind: ObjectKind
+  /** 列。列を持たない種別では空。 */
+  columns: TableColumn[]
+  /** 制約。テーブルとマテリアライズドビュー以外では空。 */
+  constraints: TableConstraint[]
+  /** 索引。テーブルとマテリアライズドビュー以外では空。 */
+  indexes: TableIndex[]
+}
+
+/** `DBMS_METADATA.GET_DDL` で取った定義の断片 1 つ（ADR 0019）。 */
+export interface DdlPart {
+  /** 見出し（`パッケージ仕様` など）。 */
+  label: string
+  sql: string
+}
+
+/** オブジェクト 1 つの DDL（ADR 0019）。 */
+export interface ObjectDdl {
+  owner: string
+  name: string
+  kind: ObjectKind
+  /** 定義の断片。パッケージだけが 2 つになる。 */
+  parts: DdlPart[]
+}
+
+/**
+ * 定義ビューを開く対象（ADR 0019）。
+ *
+ * スキーマツリーの行がそのまま指す 3 つ組である。
+ */
+export interface DefinitionTarget {
+  owner: string
+  name: string
+  kind: ObjectKind
+}
+
 /** 設定画面で決める見た目の設定（ADR 0008）。 */
 export interface AppearanceSettings {
   theme: string

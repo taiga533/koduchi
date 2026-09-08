@@ -5,14 +5,17 @@
 
 pub mod bind;
 pub mod convert;
+pub mod definition;
+pub mod errors;
 pub mod instant_client;
 pub mod plan;
 pub mod schema;
 pub mod sessions;
 
+use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
-use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use oracle::sql_type::OracleType;
 use oracle::{Connection, ResultSet, Row};
@@ -427,6 +430,19 @@ impl Driver for OracleDriver {
         // 実行そのものは読み取り専用トランザクションの中でも行える。
         // 書き込みを伴う文はデータベース側が拒む（ADR 0004）。
         plan::actual(&self.connection, sql, binds)
+    }
+
+    fn object_definition(
+        &mut self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<ObjectDefinition> {
+        definition::load_definition(&self.connection, owner, name, kind)
+    }
+
+    fn object_ddl(&mut self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl> {
+        definition::load_ddl(&self.connection, owner, name, kind)
     }
 
     fn list_sessions(&mut self) -> DbResult<SessionOverview> {
