@@ -30,6 +30,7 @@ import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
 import { BindValuesDialog } from './components/editor/BindValuesDialog'
 import { EditorPanel } from './components/editor/EditorPanel'
+import { confirmCloseTab } from './components/editor/closing'
 import { SaveQueryDialog } from './components/editor/SaveQueryDialog'
 import { Splitter } from './components/layout/Splitter'
 import {
@@ -527,12 +528,25 @@ export function App() {
   /**
    * タブを閉じる。
    *
+   * 書きかけの SQL があるときは先に尋ねる（ADR 0023）。閉じたタブはセッションへも
+   * 書き出されないため、ここで捨てた内容は再起動しても戻らない。
+   *
    * 開いたままのカーソルはデータベース側の資源を握り続けるため、閉じる前に
    * 明示的に手放す（ADR 0003）。結果テーブルで手を入れた列幅も、二度と使われない
    * ため一緒に忘れる。
+   *
+   * **タブを閉じる経路はここ 1 つである。**タブの `✕` も `⌘W` もここを通る。
    */
   const closeTabAndRelease = useCallback(
-    (tabId: string) => {
+    async (tabId: string) => {
+      const tab = useTabStore.getState().tabs.find((item) => item.id === tabId)
+      if (!tab) {
+        return
+      }
+      if (!(await confirmCloseTab(tab, tab.name))) {
+        return
+      }
+
       if (connection) {
         void releaseTab(connection.id, tabId)
       }
@@ -961,7 +975,7 @@ export function App() {
         handled(() => {
           const tabId = useTabStore.getState().activeTabId
           if (tabId) {
-            closeTabAndRelease(tabId)
+            void closeTabAndRelease(tabId)
           }
         })
         return
