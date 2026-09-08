@@ -684,11 +684,20 @@ export interface DefinitionTarget {
   kind: ObjectKind
 }
 
-/** 設定画面で決める見た目の設定（ADR 0008）。 */
+/**
+ * 設定画面で決める見た目の設定（ADR 0008）。
+ *
+ * Rust 側（`commands/config.rs`）は保存と読み出しだけを行い、綴りの意味は解釈
+ * しない。そのため型はすべて素の文字列であり、値へ読み直すのはフロントエンドの
+ * `theme/appearance.ts` の役目である。この項目を持たない古い `settings.toml` も
+ * あるため、読む側は欠落と知らない綴りの両方を既定へ落とす。
+ */
 export interface AppearanceSettings {
   theme: string
   gridLines: boolean
   rowHeight: string
+  /** `small` / `medium` / `large` / `xlarge` のいずれか。 */
+  editorFontSize: string
 }
 
 /** アプリ全体の設定。 */

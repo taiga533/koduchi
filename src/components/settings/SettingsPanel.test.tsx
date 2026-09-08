@@ -16,6 +16,7 @@ beforeEach(() => {
   setDbApi(fake.api)
   useUiStore.setState({ appearance: defaultAppearance, csvOptions: defaultCsvOptions })
   document.documentElement.removeAttribute('data-theme')
+  document.documentElement.removeAttribute('data-editor-font-size')
 })
 
 afterEach(() => {
@@ -45,6 +46,31 @@ describe('SettingsPanel', () => {
 
     // Assert
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+  })
+
+  it('エディタの文字の大きさは 4 択である', () => {
+    // Arrange
+    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+
+    // Act
+    const 選択肢 = ['小', '標準', '大', '特大'].map((label) =>
+      screen.getByRole('button', { name: label }),
+    )
+
+    // Assert
+    expect(選択肢).toHaveLength(4)
+  })
+
+  it('エディタの文字を大きくするとルート要素へ反映される', async () => {
+    // Arrange
+    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '特大' }))
+
+    // Assert
+    expect(document.documentElement.getAttribute('data-editor-font-size')).toBe('xlarge')
+    expect(useUiStore.getState().appearance.editorFontSize).toBe('xlarge')
   })
 
   it('罫線の有無を切り替えられる', async () => {

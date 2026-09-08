@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi, type FakeCalls } from '../test/fakeDbApi'
 import { defaultAppearance } from '../theme/appearance'
+import type { AppSettings } from '../types/db'
 import { defaultCsvOptions } from '../types/db'
 import {
   EDITOR_HEIGHT_DEFAULT,
@@ -31,6 +32,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute('data-theme')
   document.documentElement.removeAttribute('data-grid-lines')
   document.documentElement.removeAttribute('data-row-height')
+  document.documentElement.removeAttribute('data-editor-font-size')
 })
 
 afterEach(() => {
@@ -74,6 +76,30 @@ describe('useUiStore', () => {
     expect(calls.saveAppSettings[0].appearance.rowHeight).toBe('comfortable')
   })
 
+  it('エディタの文字を大きくすると属性が付き保存される', () => {
+    // Arrange
+    // 既定は標準（属性なし）
+
+    // Act
+    useUiStore.getState().setEditorFontSize('large')
+
+    // Assert
+    expect(document.documentElement.getAttribute('data-editor-font-size')).toBe('large')
+    expect(calls.saveAppSettings[0].appearance.editorFontSize).toBe('large')
+  })
+
+  it('エディタの文字を標準へ戻すと属性が外れる', () => {
+    // Arrange
+    useUiStore.getState().setEditorFontSize('xlarge')
+
+    // Act
+    useUiStore.getState().setEditorFontSize('medium')
+
+    // Assert
+    expect(document.documentElement.hasAttribute('data-editor-font-size')).toBe(false)
+    expect(calls.saveAppSettings[1].appearance.editorFontSize).toBe('medium')
+  })
+
   it('csv の書式を変えると次回のために保存される', () => {
     // Arrange
     const options = {
@@ -95,7 +121,12 @@ describe('useUiStore', () => {
     setDbApi(
       createFakeDbApi({
         appSettings: {
-          appearance: { theme: 'light', gridLines: false, rowHeight: 'comfortable' },
+          appearance: {
+            theme: 'light',
+            gridLines: false,
+            rowHeight: 'comfortable',
+            editorFontSize: 'large',
+          },
           csv: { delimiter: 'semicolon', encoding: 'shiftJis', nullText: 'backslash' },
         },
       }).api,
@@ -109,9 +140,37 @@ describe('useUiStore', () => {
       theme: 'light',
       gridLines: false,
       rowHeight: 'comfortable',
+      editorFontSize: 'large',
     })
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    expect(document.documentElement.getAttribute('data-editor-font-size')).toBe('large')
     expect(useUiStore.getState().csvOptions.encoding).toBe('shiftJis')
+  })
+
+  it('文字の大きさを持たない古い設定を読んでも既定へ落ちて他の項目は保たれる', async () => {
+    // Arrange
+    // editorFontSize を足す前に書かれた settings.toml を Rust 側が読んだ形
+    const 古い設定 = {
+      appearance: { theme: 'dark', gridLines: false, rowHeight: 'comfortable' },
+      csv: defaultCsvOptions,
+    }
+    setDbApi(
+      createFakeDbApi({
+        appSettings: 古い設定 as unknown as AppSettings,
+      }).api,
+    )
+
+    // Act
+    await useUiStore.getState().loadSettings()
+
+    // Assert
+    expect(useUiStore.getState().appearance).toEqual({
+      theme: 'dark',
+      gridLines: false,
+      rowHeight: 'comfortable',
+      editorFontSize: 'medium',
+    })
+    expect(document.documentElement.hasAttribute('data-editor-font-size')).toBe(false)
   })
 
   it('設定が読めなくても既定値のまま動く', async () => {
