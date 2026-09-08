@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi, type FakeCalls } from '../test/fakeDbApi'
 import type { SchemaNode, TableColumn } from '../types/db'
-import { filterSchemas, formatColumnProgress, nodeKey, useSchemaStore } from './schema'
+import { defaultSchemaFilter } from '../types/db'
+import {
+  filterSchemas,
+  formatColumnProgress,
+  kindGroupKey,
+  nodeKey,
+  useSchemaStore,
+} from './schema'
 
 /** スキーマ 1 つを組み立てる。 */
 function スキーマ(name: string, objects: string[]): SchemaNode {
@@ -71,7 +78,7 @@ describe('useSchemaStore', () => {
     await useSchemaStore.getState().load('c1')
 
     // Assert
-    expect(calls.schemaOverview[0].filter).toEqual({ excludeSystem: true, hideEmpty: true })
+    expect(calls.schemaOverview[0].filter).toEqual(defaultSchemaFilter)
   })
 
   it('取得済みなら二度目の読み込みは走らない', async () => {
@@ -90,11 +97,17 @@ describe('useSchemaStore', () => {
     await useSchemaStore.getState().load('c1')
 
     // Act
-    await useSchemaStore.getState().setFilter('c1', { excludeSystem: false, hideEmpty: false })
+    await useSchemaStore
+      .getState()
+      .setFilter('c1', { ...defaultSchemaFilter, excludeSystem: false, hideEmpty: false })
 
     // Assert
     expect(calls.schemaOverview).toHaveLength(2)
-    expect(calls.schemaOverview[1].filter).toEqual({ excludeSystem: false, hideEmpty: false })
+    expect(calls.schemaOverview[1].filter).toEqual({
+      ...defaultSchemaFilter,
+      excludeSystem: false,
+      hideEmpty: false,
+    })
   })
 
   it('列の取得に失敗しても残りのスキーマは読み込む', async () => {
@@ -147,6 +160,26 @@ describe('useSchemaStore', () => {
     // Assert
     expect(useSchemaStore.getState().expanded[key]).toBe(true)
     expect(key).toBe('KODUCHI.USERS')
+  })
+
+  it('開閉は値を渡せばその値になる', () => {
+    // Arrange: 覚えていない束を閉じる場合である（ADR 0014）
+    const key = kindGroupKey('KODUCHI', 'table')
+
+    // Act
+    useSchemaStore.getState().toggle(key, false)
+
+    // Assert
+    expect(useSchemaStore.getState().expanded[key]).toBe(false)
+  })
+
+  it('種別の束の鍵はオブジェクトの鍵と衝突しない', () => {
+    // Arrange & Act
+    const 束 = kindGroupKey('KODUCHI', 'table')
+
+    // Assert
+    expect(束).toBe('KODUCHI.#table')
+    expect(束).not.toBe(nodeKey('KODUCHI', 'table'))
   })
 })
 

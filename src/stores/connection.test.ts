@@ -36,6 +36,34 @@ describe('useConnectionStore', () => {
     expect(state.error).toBeNull()
   })
 
+  it('色とグループを渡さずに繋ぐと色なしのグループ未指定になる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    await useConnectionStore.getState().connect('dev', params)
+
+    // Assert
+    const state = useConnectionStore.getState()
+    expect(state.connection?.color).toBe('none')
+    expect(state.connection?.group).toBeNull()
+  })
+
+  it('渡した色とグループは接続の状態に残る', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    await useConnectionStore.getState().connect('prod', params, { color: 'red', group: '本番' })
+
+    // Assert
+    const state = useConnectionStore.getState()
+    expect(state.connection?.color).toBe('red')
+    expect(state.connection?.group).toBe('本番')
+  })
+
   it('接続に失敗するとエラーメッセージを保持する', async () => {
     // Arrange
     const { api } = createFakeDbApi({
@@ -105,6 +133,8 @@ describe('isManualCommit', () => {
     name: '開発',
     params: { ...params, readOnly, autoCommit },
     completion: { identifierCase: 'preserve' as const },
+    color: 'none' as const,
+    group: null,
   })
 
   it('読み取り専用でも自動コミットでもない接続は手動コミットである', () => {
