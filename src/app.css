@@ -21,3 +21,14 @@ body {
 * {
   box-sizing: border-box;
 }
+
+/*
+ * タブ帯（34px）の横スクロール。
+ *
+ * バーを出すと 34px の帯の中でタブが潰れるため隠す。隠れたタブへは、選んだ
+ * タブを見える位置へ送る仕掛け（`TabBar.tsx`）と `⌘K` のパレットで届く。
+ * WebView は WebKit なので `::-webkit-scrollbar` で消える。
+ */
+.tab-scroller::-webkit-scrollbar {
+  display: none;
+}
