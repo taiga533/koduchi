@@ -12,6 +12,7 @@ use crate::db::actor::ConnectionHandle;
 use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::sessions::SessionOverview;
 use std::sync::{Arc, Mutex};
 
 /// プールが持つ接続の既定の本数。
@@ -357,6 +358,26 @@ impl ConnectionPool {
         }
     }
 
+    /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
+    ///
+    /// 結果セットを保持していない接続で読むため、利用者が見ている結果は
+    /// 壊れない。スキーマ取得や実行計画と同じ経路である。
+    pub fn list_sessions(&self) -> DbResult<SessionOverview> {
+        self.background_handle()?.list_sessions()
+    }
+
+    /// セッションを 1 つ終了する（ADR 0017）。
+    ///
+    /// 読み取り専用の接続と、小槌自身が張っている接続はドライバが弾く。
+    ///
+    /// # 引数
+    ///
+    /// * `sid` - 対象の `SID`
+    /// * `serial` - 対象の `SERIAL#`
+    pub fn kill_session(&self, sid: u32, serial: u32) -> DbResult<()> {
+        self.background_handle()?.kill_session(sid, serial)
+    }
+
     /// 実行中の文を中止する（`⌘.`）。
     ///
     /// # 引数
@@ -403,6 +424,8 @@ mod tests {
     struct 数えるドライバ {
         コミットした回数: Arc<AtomicUsize>,
         ロールバックした回数: Arc<AtomicUsize>,
+        /// セッションの一覧を求められた回数（ADR 0017）。
+        一覧を求められた回数: Arc<AtomicUsize>,
     }
 
     struct 何もしない中止経路;
@@ -476,30 +499,60 @@ mod tests {
         fn actual_plan(&mut self, _sql: &str, _binds: &[Bind]) -> DbResult<String> {
             Ok(String::new())
         }
+
+        fn list_sessions(&mut self) -> DbResult<SessionOverview> {
+            self.一覧を求められた回数.fetch_add(1, Ordering::SeqCst);
+            Ok(SessionOverview::new(1, 10, Vec::new()))
+        }
+
+        fn kill_session(&mut self, _sid: u32, _serial: u32) -> DbResult<()> {
+            Ok(())
+        }
     }
 
     /// 数を数えるドライバを `本数` ぶん載せたプールを作る。
     fn 数えるプールを作る(
         本数: usize,
     ) -> (ConnectionPool, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let (pool, コミットした回数, ロールバックした回数, _) = 数えるプールを組む(本数);
+        (pool, コミットした回数, ロールバックした回数)
+    }
+
+    /// 数を数えるドライバを `本数` ぶん載せたプールと、数えている値をすべて返す。
+    fn 数えるプールを組む(
+        本数: usize,
+    ) -> (
+        ConnectionPool,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
         let コミットした回数 = Arc::new(AtomicUsize::new(0));
         let ロールバックした回数 = Arc::new(AtomicUsize::new(0));
+        let 一覧を求められた回数 = Arc::new(AtomicUsize::new(0));
 
         let drivers: Vec<_> = (0..本数)
             .map(|_| {
                 let コミット = Arc::clone(&コミットした回数);
                 let ロールバック = Arc::clone(&ロールバックした回数);
+                let 一覧 = Arc::clone(&一覧を求められた回数);
                 move || {
                     Ok(数えるドライバ {
                         コミットした回数: コミット,
                         ロールバックした回数: ロールバック,
+                        一覧を求められた回数: 一覧,
                     })
                 }
             })
             .collect();
 
         let pool = pool_from_drivers(drivers, DEFAULT_CHUNK_SIZE).unwrap();
-        (pool, コミットした回数, ロールバックした回数)
+        (
+            pool,
+            コミットした回数,
+            ロールバックした回数,
+            一覧を求められた回数,
+        )
     }
 
     #[test]
@@ -513,6 +566,18 @@ mod tests {
 
         // Assert
         assert_eq!(コミットした回数.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn セッションの一覧は一本の接続だけで読む() {
+        // Arrange: 一覧はコミットと違い、全接続へ配る必要が無い（ADR 0017）
+        let (pool, _, _, 一覧を求められた回数) = 数えるプールを組む(4);
+
+        // Act
+        pool.list_sessions().unwrap();
+
+        // Assert
+        assert_eq!(一覧を求められた回数.load(Ordering::SeqCst), 1);
     }
 
     #[test]

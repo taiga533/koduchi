@@ -39,6 +39,7 @@ import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
 import { ResultPane } from './components/results/ResultPane'
+import { SessionsPanel } from './components/sessions/SessionsPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
@@ -59,6 +60,7 @@ import { isManualCommit, useConnectionStore } from './stores/connection'
 import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { useSchemaStore } from './stores/schema'
+import { useSessionsStore } from './stores/sessions'
 import type { BindInput } from './stores/tab'
 import {
   fillBindDefaults,
@@ -174,6 +176,9 @@ export function App() {
   const settingsOpen = useUiStore((state) => state.settingsOpen)
   const openSettings = useUiStore((state) => state.openSettings)
   const closeSettings = useUiStore((state) => state.closeSettings)
+  const sessionsOpen = useUiStore((state) => state.sessionsOpen)
+  const openSessions = useUiStore((state) => state.openSessions)
+  const closeSessions = useUiStore((state) => state.closeSessions)
   const loadSettings = useUiStore((state) => state.loadSettings)
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
@@ -184,6 +189,8 @@ export function App() {
   const setEditorHeight = useUiStore((state) => state.setEditorHeight)
   const clampToWindow = useUiStore((state) => state.clampToWindow)
   const restoreLayout = useUiStore((state) => state.restoreLayout)
+
+  const clearSessions = useSessionsStore((state) => state.clear)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
@@ -542,6 +549,9 @@ export function App() {
 
     clearExecutions()
     clearSchemas()
+    // セッションの一覧は接続に属する。切断したら捨てる（ADR 0017）。
+    clearSessions()
+    closeSessions()
 
     try {
       await disconnect()
@@ -550,7 +560,15 @@ export function App() {
     }
 
     setConnectionView({ mode: 'picker' })
-  }, [clearExecutions, clearSchemas, disconnect, releaseTab, resolvePendingTransaction])
+  }, [
+    clearExecutions,
+    clearSchemas,
+    clearSessions,
+    closeSessions,
+    disconnect,
+    releaseTab,
+    resolvePendingTransaction,
+  ])
 
   /**
    * 実行中のすべてのタブを中止する（`⌘.` と同じ）。
@@ -817,6 +835,13 @@ export function App() {
   const overlay = (
     <>
       {settings}
+      {sessionsOpen ? (
+        <SessionsPanel
+          connectionId={connection.id}
+          readOnly={connection.params.readOnly}
+          onClose={closeSessions}
+        />
+      ) : null}
       {bindPrompt ? (
         <BindPrompt
           names={bindPrompt.names}
@@ -852,6 +877,7 @@ export function App() {
     <Shell
       onOpenSettings={openSettings}
       onDisconnect={() => void disconnectAndReset()}
+      onOpenSessions={openSessions}
       onCommit={commitTransaction}
       onRollback={rollbackTransaction}
       overlay={overlay}
@@ -993,6 +1019,7 @@ function Shell({
   children,
   onOpenSettings,
   onDisconnect,
+  onOpenSessions,
   onCommit,
   onRollback,
   overlay,
@@ -1000,6 +1027,8 @@ function Shell({
   children: React.ReactNode
   onOpenSettings: () => void
   onDisconnect: () => void
+  /** セッションとロックのパネルを開く（ADR 0017）。接続中の画面だけが渡す。 */
+  onOpenSessions?: () => void
   /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
@@ -1015,6 +1044,7 @@ function Shell({
         onOpenSettings={onOpenSettings}
         onDisconnect={onDisconnect}
         onSwitchConnection={onDisconnect}
+        onOpenSessions={onOpenSessions}
         onCommit={onCommit}
         onRollback={onRollback}
       />

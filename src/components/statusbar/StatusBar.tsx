@@ -19,7 +19,16 @@
  */
 
 import { useState } from 'react'
-import { ArrowLeftRight, Check, ChevronUp, Lock, Settings, Undo2, Unplug } from 'lucide-react'
+import {
+  Activity,
+  ArrowLeftRight,
+  Check,
+  ChevronUp,
+  Lock,
+  Settings,
+  Undo2,
+  Unplug,
+} from 'lucide-react'
 import { isManualCommit, useConnectionStore } from '../../stores/connection'
 import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
@@ -32,6 +41,13 @@ interface StatusBarProps {
   onDisconnect: () => void
   /** 接続を切り替える。切断して接続を選ぶ画面を出す。 */
   onSwitchConnection: () => void
+  /**
+   * セッションとロックのパネルを開く（ADR 0017）。
+   *
+   * 渡さないとメニューに項目が出ない。接続していない画面では意味を持たない
+   * ためである。
+   */
+  onOpenSessions?: () => void
   /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
@@ -53,6 +69,7 @@ export function StatusBar({
   onOpenSettings,
   onDisconnect,
   onSwitchConnection,
+  onOpenSessions,
   onCommit,
   onRollback,
 }: StatusBarProps) {
@@ -73,7 +90,11 @@ export function StatusBar({
       {connection ? <span>Oracle</span> : null}
       <span className="flex-1" />
       {status === 'connected' ? (
-        <ConnectionMenu onDisconnect={onDisconnect} onSwitchConnection={onSwitchConnection} />
+        <ConnectionMenu
+          onDisconnect={onDisconnect}
+          onSwitchConnection={onSwitchConnection}
+          onOpenSessions={onOpenSessions}
+        />
       ) : (
         <span>{STATUS_LABELS[status]}</span>
       )}
@@ -143,14 +164,19 @@ function TransactionButton({
  * 接続を選ぶ画面へ戻る。同じ動きに 2 つの入口を置いてあるのは、切り替えの
  * つもりの利用者に「切断」しか見えないと、その道が無いように見えるためである。
  *
+ * セッションとロック（ADR 0017）もここから開く。「今どこへ繋がっているか」を
+ * 出している所は、そのデータベースのセッションを覗く入口としても自然である。
+ *
  * ステータスバーは画面の最下段にあるため、メニューは上へ開く。
  */
 function ConnectionMenu({
   onDisconnect,
   onSwitchConnection,
+  onOpenSessions,
 }: {
   onDisconnect: () => void
   onSwitchConnection: () => void
+  onOpenSessions?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const color = useConnectionStore((state) => state.connection?.color ?? 'none')
@@ -200,6 +226,13 @@ function ConnectionMenu({
             label="別の接続へ切り替え…"
             onSelect={() => select(onSwitchConnection)}
           />
+          {onOpenSessions ? (
+            <MenuItem
+              icon={<Activity size={13} />}
+              label="セッションとロック…"
+              onSelect={() => select(onOpenSessions)}
+            />
+          ) : null}
         </div>
       ) : null}
     </div>

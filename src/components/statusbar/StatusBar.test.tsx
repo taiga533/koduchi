@@ -125,6 +125,34 @@ describe('StatusBar', () => {
     expect(handlers.onSwitchConnection).toHaveBeenCalledTimes(1)
   })
 
+  it('セッションとロックを選ぶとパネルを開く手続きが呼ばれる', async () => {
+    // Arrange: 入口は「今どこへ繋がっているか」を出している所に置く（ADR 0017）
+    接続済みにする()
+    const handlers = ハンドラを作る()
+    const onOpenSessions = vi.fn()
+    render(<StatusBar {...handlers} onOpenSessions={onOpenSessions} />)
+    await userEvent.click(screen.getByRole('button', { name: '接続中' }))
+
+    // Act
+    await userEvent.click(screen.getByRole('menuitem', { name: 'セッションとロック…' }))
+
+    // Assert
+    expect(onOpenSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('パネルを開く手続きが無ければセッションの項目は出ない', async () => {
+    // Arrange: 接続していない画面では意味を持たない
+    接続済みにする()
+    const handlers = ハンドラを作る()
+    render(<StatusBar {...handlers} />)
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '接続中' }))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: 'セッションとロック…' })).not.toBeInTheDocument()
+  })
+
   it('手動コミットの接続で未コミットのときは未コミットと出る', () => {
     // Arrange
     接続済みにする()

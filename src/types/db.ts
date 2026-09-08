@@ -139,6 +139,12 @@ export type DbErrorKind =
   | 'closed'
   /** 履歴や設定など、アプリ自身の保管庫の読み書きに失敗した（ADR 0005）。 */
   | 'storage'
+  /**
+   * 権限が足りず、見ることも行うこともできない（ADR 0017）。
+   *
+   * 「権限が無くて見えない」を「空だった」と混同させないための区分である。
+   */
+  | 'permission'
 
 /** データベース操作のエラー。 */
 export interface DbError {
@@ -458,6 +464,64 @@ export const defaultCsvOptions: CsvOptions = {
   delimiter: 'comma',
   encoding: 'utf8Bom',
   nullText: 'blank',
+}
+
+/**
+ * `V$SESSION` の 1 行（ADR 0017）。
+ *
+ * 並ぶのは `TYPE = 'USER'` のセッションだけである。バックグラウンドプロセスは
+ * 調べものの対象にならない。
+ */
+export interface SessionRow {
+  /** `SID`。kill の対象を指すのに使う。 */
+  sid: number
+  /** `SERIAL#`。`SID` は使い回されるため、kill には両方が要る。 */
+  serial: number
+  username: string | null
+  /** `ACTIVE` / `INACTIVE` / `KILLED` など。 */
+  status: string
+  osuser: string | null
+  machine: string | null
+  /** クライアント側のプロセス ID。小槌自身の接続を見分けるのに使う。 */
+  process: string | null
+  program: string | null
+  module: string | null
+  /** 待機イベント。`enq: TX - row lock contention` などが入る。 */
+  event: string | null
+  /** 今の待機に入ってからの秒数。 */
+  secondsInWait: number
+  sqlId: string | null
+  /** ログオン時刻（`YYYY-MM-DD HH24:MI:SS`）。 */
+  logonTime: string | null
+  /** 待たせている側のセッション。待っていなければ `null`。 */
+  blockingSession: number | null
+  /** 待たせている側のインスタンス番号。 */
+  blockingInstance: number | null
+  /**
+   * 小槌自身が張っている接続か（ADR 0017）。
+   *
+   * 真の行には kill のボタンを出さない。自分自身だけでなく、同じプールの
+   * 残りの接続も、別のウィンドウの接続も含む。
+   */
+  own: boolean
+}
+
+/** ブロッキングの連鎖 1 節点（ADR 0017）。 */
+export interface BlockingNode {
+  sid: number
+  /** この節点が待たせているセッション。 */
+  blocked: BlockingNode[]
+}
+
+/** セッション一覧 1 回ぶんの取得結果（ADR 0017）。 */
+export interface SessionOverview {
+  /** 今繋がっているインスタンスの番号。 */
+  instance: number
+  /** この一覧を読んだ接続自身の `SID`。 */
+  currentSid: number
+  sessions: SessionRow[]
+  /** ブロッキングの連鎖。誰も待たせていなければ空になる。 */
+  chains: BlockingNode[]
 }
 
 /** 設定画面で決める見た目の設定（ADR 0008）。 */

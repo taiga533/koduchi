@@ -22,6 +22,12 @@ pub enum DbErrorKind {
     Closed,
     /// 履歴や設定など、アプリ自身の保管庫の読み書きに失敗した（ADR 0005）。
     Storage,
+    /// 権限が足りず、見ることも行うこともできない（ADR 0017）。
+    ///
+    /// 「権限が無くて見えない」を「空だった」と混同させないための区分である。
+    /// `V$SESSION` を参照できない接続と、セッションが 1 つも無い状態とを、
+    /// 同じ画面で表してはならない。
+    Permission,
 }
 
 /// データベース操作のエラー。
@@ -66,6 +72,11 @@ impl DbError {
     pub fn storage(message: impl Into<String>) -> Self {
         Self::new(DbErrorKind::Storage, message)
     }
+
+    /// 権限が足りないことを表すエラーを作る（ADR 0017）。
+    pub fn permission(message: impl Into<String>) -> Self {
+        Self::new(DbErrorKind::Permission, message)
+    }
 }
 
 /// データベース操作の結果。
@@ -85,6 +96,15 @@ mod tests {
 
         // Assert
         assert_eq!(displayed, "ORA-00942: table or view does not exist");
+    }
+
+    #[test]
+    fn 権限が足りないエラーはその区分を持つ() {
+        // Arrange & Act
+        let error = DbError::permission("V$SESSION を参照できません");
+
+        // Assert
+        assert_eq!(error.kind, DbErrorKind::Permission);
     }
 
     #[test]

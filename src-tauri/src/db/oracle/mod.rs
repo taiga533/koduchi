@@ -8,10 +8,12 @@ pub mod convert;
 pub mod instant_client;
 pub mod plan;
 pub mod schema;
+pub mod sessions;
 
 use crate::db::driver::{Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::sessions::SessionOverview;
 use oracle::sql_type::OracleType;
 use oracle::{Connection, ResultSet, Row};
 use std::sync::Arc;
@@ -425,5 +427,13 @@ impl Driver for OracleDriver {
         // 実行そのものは読み取り専用トランザクションの中でも行える。
         // 書き込みを伴う文はデータベース側が拒む（ADR 0004）。
         plan::actual(&self.connection, sql, binds)
+    }
+
+    fn list_sessions(&mut self) -> DbResult<SessionOverview> {
+        sessions::load_sessions(&self.connection)
+    }
+
+    fn kill_session(&mut self, sid: u32, serial: u32) -> DbResult<()> {
+        sessions::kill_session(&self.connection, sid, serial, self.read_only)
     }
 }

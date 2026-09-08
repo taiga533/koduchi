@@ -22,6 +22,8 @@ import type {
   SavedConnection,
   SchemaFilter,
   SchemaNode,
+  SessionOverview,
+  SessionRow,
   SessionState,
   TableColumn,
   TnsnamesFile,
@@ -46,6 +48,8 @@ export interface FakeCalls {
   saveSession: { windowLabel: string; state: SessionState }[]
   schemaOverview: { id: string; filter: SchemaFilter }[]
   schemaColumns: { id: string; owner: string }[]
+  listSessions: string[]
+  killSession: { id: string; sid: number; serial: number }[]
   explainPlan: { id: string; sql: string; binds: Bind[] }[]
   actualPlan: { id: string; sql: string; binds: Bind[] }[]
   saveConnection: { connection: SavedConnection; password: string | null }[]
@@ -87,6 +91,12 @@ export interface FakeDbApiOptions {
   session?: SessionState
   /** 実行計画のテキスト。 */
   planText?: string
+  /** セッションの一覧（ADR 0017）。 */
+  sessions?: SessionOverview
+  /** セッションの一覧で投げるエラー。権限不足の表示を確かめるのに使う。 */
+  sessionsError?: unknown
+  /** kill で投げるエラー。 */
+  killError?: unknown
   /** tnsnames.ora の内容。 */
   tnsnames?: TnsnamesFile
   /** アプリ設定。 */
@@ -105,6 +115,43 @@ export const emptyResponse: ExecuteResponse = {
   notices: [],
   inTransaction: false,
   discardedTab: null,
+}
+
+/** 何も指定しないときのセッション一覧（ADR 0017）。 */
+export const emptySessionOverview: SessionOverview = {
+  instance: 1,
+  currentSid: 1,
+  sessions: [],
+  chains: [],
+}
+
+/**
+ * セッション 1 行を組み立てる。
+ *
+ * 指定しなかった項目は、待ってもいなければ待たせてもいない `INACTIVE` の
+ * セッションになる。
+ *
+ * @param row 差し替える項目。`sid` は必須
+ */
+export function sessionRow(row: Partial<SessionRow> & { sid: number }): SessionRow {
+  return {
+    serial: row.sid * 10,
+    username: 'KODUCHI',
+    status: 'INACTIVE',
+    osuser: 'taiga',
+    machine: 'mac.local',
+    process: '4242',
+    program: 'sqlplus',
+    module: null,
+    event: null,
+    secondsInWait: 0,
+    sqlId: null,
+    logonTime: '2026-09-08 10:00:00',
+    blockingSession: null,
+    blockingInstance: null,
+    own: false,
+    ...row,
+  }
 }
 
 /** 何も指定しないときのアプリ設定。 */
@@ -164,6 +211,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     saveSession: [],
     schemaOverview: [],
     schemaColumns: [],
+    listSessions: [],
+    killSession: [],
     explainPlan: [],
     actualPlan: [],
     saveConnection: [],
@@ -305,6 +354,21 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     schemaColumns: async (id, owner) => {
       calls.schemaColumns.push({ id, owner })
       return options.columns?.[owner] ?? []
+    },
+
+    listSessions: async (id) => {
+      calls.listSessions.push(id)
+      if (options.sessionsError !== undefined) {
+        throw options.sessionsError
+      }
+      return options.sessions ?? emptySessionOverview
+    },
+
+    killSession: async (id, sid, serial) => {
+      calls.killSession.push({ id, sid, serial })
+      if (options.killError !== undefined) {
+        throw options.killError
+      }
     },
 
     explainPlan: async (id, sql, binds) => {

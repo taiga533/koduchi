@@ -23,6 +23,7 @@ import type {
   SavedConnection,
   SchemaFilter,
   SchemaNode,
+  SessionOverview,
   SessionState,
   TableColumn,
   TnsnamesFile,
@@ -90,6 +91,20 @@ export interface DbApi {
   /** スキーマ 1 つぶんの列情報を取る（段階 2）。 */
   schemaColumns(id: string, owner: string): Promise<TableColumn[]>
 
+  /**
+   * セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
+   *
+   * 参照権限が無い接続では `permission` の区分でエラーになる。空の一覧では
+   * ない。「見えない」と「居ない」は別物である。
+   */
+  listSessions(id: string): Promise<SessionOverview>
+  /**
+   * セッションを 1 つ終了する（ADR 0017）。
+   *
+   * 読み取り専用の接続と、小槌自身が張っている接続は Rust 側が弾く。
+   */
+  killSession(id: string, sid: number, serial: number): Promise<void>
+
   /** 見積りだけの実行計画をテキストで返す（`⌘E`）。 */
   explainPlan(id: string, sql: string, binds: Bind[]): Promise<string>
   /** 実測付きの実行計画をテキストで返す（`⇧⌘E`）。 */
@@ -146,6 +161,9 @@ const tauriDbApi: DbApi = {
 
   schemaOverview: (id, filter) => invoke('schema_overview', { id, filter }),
   schemaColumns: (id, owner) => invoke('schema_columns', { id, owner }),
+
+  listSessions: (id) => invoke('list_sessions', { id }),
+  killSession: (id, sid, serial) => invoke('kill_session', { id, sid, serial }),
 
   explainPlan: (id, sql, binds) => invoke('explain_plan', { id, sql, binds }),
   actualPlan: (id, sql, binds) => invoke('actual_plan', { id, sql, binds }),

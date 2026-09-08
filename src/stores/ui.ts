@@ -58,6 +58,12 @@ interface UiState {
   /** 設定画面を開いているか。 */
   settingsOpen: boolean
   /**
+   * セッションとロックのパネルを開いているか（ADR 0017）。
+   *
+   * 閉じるとパネルごと消えるため、自動更新の間隔も一緒に止まる。
+   */
+  sessionsOpen: boolean
+  /**
    * 結果テーブルで手を入れた列幅。タブ ID → 列名 → 幅（ピクセル）。
    *
    * 列名をキーにするため、同じクエリを実行し直しても幅が保たれる。設定ファイルや
@@ -98,6 +104,10 @@ interface UiState {
   ) => void
   openSettings: () => void
   closeSettings: () => void
+  /** セッションとロックのパネルを開く（ADR 0017）。 */
+  openSessions: () => void
+  /** セッションとロックのパネルを閉じる。 */
+  closeSessions: () => void
   /** 保存済みの設定を読み込んで反映する。起動時に 1 度呼ぶ。 */
   loadSettings: () => Promise<void>
 }
@@ -150,6 +160,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   appearance: defaultAppearance,
   csvOptions: defaultCsvOptions,
   settingsOpen: false,
+  sessionsOpen: false,
   resultColumnWidths: {},
 
   selectSidebarSegment: (segment) => set({ sidebarSegment: segment }),
@@ -241,6 +252,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+
+  openSessions: () => set({ sessionsOpen: true }),
+  closeSessions: () => set({ sessionsOpen: false }),
 
   loadSettings: async () => {
     try {
