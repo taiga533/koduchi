@@ -300,3 +300,19 @@ describe('SourceSearchPanel の IME 対応（ADR 0025）', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('SourceSearchPanel の本物の IME 対応（ADR 0025 の測り直し）', () => {
+  it('変換確定の ⏎（keyCode 229）では暗黙の送信を止める', async () => {
+    // Arrange
+    パネルを描く()
+    const 入力 = screen.getByLabelText('ソースに含まれる文字列')
+    await userEvent.type(入力, 'utl')
+
+    // Act
+    const 通った = fireEvent.keyDown(入力, { key: 'Enter', keyCode: 229, isComposing: false })
+
+    // Assert
+    expect(通った).toBe(false)
+    expect(calls.searchSource).toHaveLength(0)
+  })
+})

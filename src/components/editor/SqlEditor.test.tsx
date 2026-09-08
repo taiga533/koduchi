@@ -1,6 +1,6 @@
 import { createRef } from 'react'
 import { describe, expect, it } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { SchemaNode, TableColumn } from '../../types/db'
 import { buildCatalog, EMPTY_CATALOG } from './catalog'
@@ -421,5 +421,85 @@ describe('整形（⇧⌥F、ADR 0024）', () => {
 
     // Assert
     expect(行数()).toBeGreaterThan(1)
+  })
+})
+
+describe('変換中の打鍵（ADR 0025）', () => {
+  it('検索パネルで変換中の esc を押してもパネルは閉じない', async () => {
+    // Arrange
+    描く({ value: 'select a from t' })
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+    await waitFor(() => expect(検索パネル()).not.toBeNull())
+
+    // Act
+    fireEvent.keyDown(検索欄('search'), { key: 'Escape', keyCode: 27, isComposing: true })
+
+    // Assert
+    expect(検索パネル()).not.toBeNull()
+  })
+
+  it('検索パネルで変換確定の ⏎（keyCode 229）もパネルへ渡さない', async () => {
+    // Arrange
+    描く({ value: 'select a from t' })
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+    await waitFor(() => expect(検索パネル()).not.toBeNull())
+
+    // Act
+    const 通った = fireEvent.keyDown(検索欄('search'), {
+      key: 'Enter',
+      keyCode: 229,
+      isComposing: false,
+    })
+
+    // Assert: 止めるのは伝播だけで、既定の動作は残す（文字が入らなくならない）
+    expect(通った).toBe(true)
+    expect(検索パネル()).not.toBeNull()
+  })
+
+  it('検索パネルで変換していないときの esc は今までどおり閉じる', async () => {
+    // Arrange
+    描く({ value: 'select a from t' })
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}f{/Meta}')
+    await waitFor(() => expect(検索パネル()).not.toBeNull())
+
+    // Act
+    fireEvent.keyDown(検索欄('search'), { key: 'Escape', keyCode: 27, isComposing: false })
+
+    // Assert
+    await waitFor(() => expect(検索パネル()).toBeNull())
+  })
+
+  it('本文の変換確定では改行が入らない（CodeMirror 側が既に捨てている）', async () => {
+    // Arrange: 本文にこの関所は無い。@codemirror/view の ignoreDuringComposition が
+    // WebKit の「compositionend の後に ⏎ が届く」癖まで面倒を見ていることを見張る。
+    const { 通知 } = 描く({})
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('-- ')
+    const 領域 = 編集領域()
+
+    // Act: 実機の順序で送る
+    fireEvent.compositionStart(領域, { data: '' })
+    fireEvent.compositionUpdate(領域, { data: 'ゆーざ' })
+    fireEvent.compositionEnd(領域, { data: 'ユーザ' })
+    fireEvent.keyDown(領域, { key: 'Enter', keyCode: 229, isComposing: false })
+
+    // Assert
+    expect(通知.content[通知.content.length - 1]).toBe('-- ')
+  })
+
+  it('本文の変換していない ⏎ は今までどおり改行が入る', async () => {
+    // Arrange
+    const { 通知 } = 描く({})
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('select 1')
+
+    // Act
+    await userEvent.keyboard('{Enter}')
+
+    // Assert
+    expect(通知.content[通知.content.length - 1]).toBe('select 1\n')
   })
 })
