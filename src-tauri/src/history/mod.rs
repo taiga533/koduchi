@@ -7,6 +7,9 @@
 //! セッション復元（エディタタブ・サイドバーの選択セグメント・ペインの寸法）も
 //! 同じ SQLite に置く。テーブルが 1 つ増えるだけで済むためである。結果セット・
 //! スキーマツリーの展開状態・接続そのものは復元しない。
+//!
+//! 保存済みクエリ（ADR 0018）も同じ保管庫に置く。履歴と同じく全接続を横断する
+//! 1 つの表であり、保存したときの接続名を添えてスコープ絞り込みに使う。
 
 use crate::db::error::{DbError, DbErrorKind};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -56,6 +59,52 @@ pub struct HistoryQuery {
     #[serde(default)]
     pub connection_name: Option<String>,
     /// SQL の部分一致で絞る語。
+    #[serde(default)]
+    pub search: Option<String>,
+    /// 取り出す最大件数。
+    pub limit: u32,
+}
+
+/// 保存するクエリ 1 件（ADR 0018）。
+///
+/// バインド変数の**値**は保存しない。履歴と同じく個人情報が入りうるためである
+/// （ADR 0005）。保存するのは SQL 本体だけである。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewSavedQuery {
+    /// 一覧に出す名前。重複は許す。
+    pub name: String,
+    /// SQL 全文。切り詰めない。
+    pub sql: String,
+    /// 保存したときの接続の表示名。スコープ絞り込みに使う。
+    pub connection_name: String,
+    /// 保存した時刻（Unix エポックからのミリ秒）。
+    pub saved_at: i64,
+}
+
+/// 保存済みのクエリ 1 件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedQuery {
+    pub id: i64,
+    pub name: String,
+    pub sql: String,
+    pub connection_name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 保存済みクエリの絞り込み条件。
+///
+/// 形は `HistoryQuery` に揃えてある。サイドバーのスコープ切替と検索欄が
+/// 履歴と同じ作りであるためである。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedQueryQuery {
+    /// 接続名。`None` なら全接続。
+    #[serde(default)]
+    pub connection_name: Option<String>,
+    /// 名前または SQL の部分一致で絞る語。
     #[serde(default)]
     pub search: Option<String>,
     /// 取り出す最大件数。
@@ -129,6 +178,17 @@ create table if not exists session_state (
     active_tab_id text,
     sidebar_segment text
 );
+
+create table if not exists saved_query (
+    id integer primary key autoincrement,
+    name text not null,
+    sql text not null,
+    connection_name text not null,
+    created_at integer not null,
+    updated_at integer not null
+);
+create index if not exists idx_saved_query_updated_at
+    on saved_query (updated_at desc);
 "#;
 
 /// `session_state` に後から足した列。
@@ -293,6 +353,117 @@ impl HistoryStore {
         connection
             .execute("delete from query_history", [])
             .map_err(|error| to_db_error("履歴を削除できませんでした", error))
+    }
+
+    /// クエリを 1 件保存し、採番された ID を返す（ADR 0018）。
+    ///
+    /// 同じ名前を弾かない。名前は目印であって鍵ではないためである。
+    ///
+    /// # 引数
+    ///
+    /// * `query` - 保存する内容
+    pub fn save_query(&self, query: &NewSavedQuery) -> Result<i64, DbError> {
+        let connection = self.locked();
+        connection
+            .execute(
+                "insert into saved_query
+                     (name, sql, connection_name, created_at, updated_at)
+                 values (?1, ?2, ?3, ?4, ?4)",
+                params![query.name, query.sql, query.connection_name, query.saved_at,],
+            )
+            .map_err(|error| to_db_error("クエリを保存できませんでした", error))?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    /// 保存済みクエリを新しい順に取り出す。
+    ///
+    /// 並びは更新日時の降順である。使うたびに名前を直したものが上に来るほうが、
+    /// 手元でよく使うものへ早く届く。
+    ///
+    /// # 引数
+    ///
+    /// * `query` - 絞り込み条件
+    pub fn list_queries(&self, query: &SavedQueryQuery) -> Result<Vec<SavedQuery>, DbError> {
+        let connection = self.locked();
+
+        // 条件は 2 つとも省略できるため、`is null or …` で分岐を SQL 側へ寄せる。
+        // 検索語は名前と SQL の両方へ当てる。名前を思い出せなくても中身で辿れる。
+        let mut statement = connection
+            .prepare(
+                "select id, name, sql, connection_name, created_at, updated_at
+                 from saved_query
+                 where (?1 is null or connection_name = ?1)
+                   and (?2 is null
+                        or name like ?2 escape '\\'
+                        or sql like ?2 escape '\\')
+                 order by updated_at desc, id desc
+                 limit ?3",
+            )
+            .map_err(|error| to_db_error("保存済みクエリを読み出せませんでした", error))?;
+
+        let pattern = query
+            .search
+            .as_deref()
+            .map(|search| format!("%{}%", escape_like(search)));
+
+        let rows = statement
+            .query_map(
+                params![query.connection_name, pattern, query.limit],
+                |row| {
+                    Ok(SavedQuery {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        sql: row.get(2)?,
+                        connection_name: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|error| to_db_error("保存済みクエリを読み出せませんでした", error))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| to_db_error("保存済みクエリを読み出せませんでした", error))
+    }
+
+    /// 保存済みクエリの名前と SQL を書き換える。
+    ///
+    /// 名前の変更も本文の上書きもこの 1 つで済ませる。作成日時は動かさない。
+    ///
+    /// # 引数
+    ///
+    /// * `id` - 対象の ID
+    /// * `name` - 新しい名前
+    /// * `sql` - 新しい SQL
+    /// * `updated_at` - 更新した時刻（Unix エポックからのミリ秒）
+    pub fn update_query(
+        &self,
+        id: i64,
+        name: &str,
+        sql: &str,
+        updated_at: i64,
+    ) -> Result<bool, DbError> {
+        let connection = self.locked();
+        let updated = connection
+            .execute(
+                "update saved_query set name = ?2, sql = ?3, updated_at = ?4 where id = ?1",
+                params![id, name, sql, updated_at],
+            )
+            .map_err(|error| to_db_error("保存済みクエリを更新できませんでした", error))?;
+        Ok(updated > 0)
+    }
+
+    /// 保存済みクエリを 1 件削除する。
+    ///
+    /// # 引数
+    ///
+    /// * `id` - 削除する ID
+    pub fn delete_query(&self, id: i64) -> Result<bool, DbError> {
+        let connection = self.locked();
+        let deleted = connection
+            .execute("delete from saved_query where id = ?1", params![id])
+            .map_err(|error| to_db_error("保存済みクエリを削除できませんでした", error))?;
+        Ok(deleted > 0)
     }
 
     /// ウィンドウ 1 つぶんのセッションを保存する。
@@ -686,6 +857,297 @@ mod tests {
         // Assert
         assert_eq!(deleted, 2);
         assert!(store.list(&全件()).unwrap().is_empty());
+    }
+
+    fn 保存クエリを作る(name: &str, sql: &str, connection_name: &str) -> NewSavedQuery {
+        NewSavedQuery {
+            name: String::from(name),
+            sql: String::from(sql),
+            connection_name: String::from(connection_name),
+            saved_at: 1_700_000_000_000,
+        }
+    }
+
+    fn 保存クエリ全件() -> SavedQueryQuery {
+        SavedQueryQuery {
+            connection_name: None,
+            search: None,
+            limit: 100,
+        }
+    }
+
+    #[test]
+    fn 保存したクエリを読み戻せる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let query = 保存クエリを作る("今日の売上", "select * from sales", "開発");
+
+        // Act
+        let id = store.save_query(&query).unwrap();
+        let listed = store.list_queries(&保存クエリ全件()).unwrap();
+
+        // Assert
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, id);
+        assert_eq!(listed[0].name, "今日の売上");
+        assert_eq!(listed[0].sql, "select * from sales");
+        assert_eq!(listed[0].connection_name, "開発");
+        assert_eq!(listed[0].created_at, 1_700_000_000_000);
+        assert_eq!(listed[0].updated_at, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn 保存クエリは更新日時の新しい順に並ぶ() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let mut 古い = 保存クエリを作る("古い", "select 1 from dual", "開発");
+        古い.saved_at = 1_000;
+        let mut 新しい = 保存クエリを作る("新しい", "select 2 from dual", "開発");
+        新しい.saved_at = 2_000;
+        store.save_query(&古い).unwrap();
+        store.save_query(&新しい).unwrap();
+
+        // Act
+        let listed = store.list_queries(&保存クエリ全件()).unwrap();
+
+        // Assert
+        assert_eq!(
+            listed.iter().map(|q| q.name.as_str()).collect::<Vec<_>>(),
+            vec!["新しい", "古い"]
+        );
+    }
+
+    #[test]
+    fn 接続名を指定すると保存クエリはその接続のものだけになる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "開発の",
+                "select 1 from dual",
+                "開発",
+            ))
+            .unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "本番の",
+                "select 2 from dual",
+                "本番",
+            ))
+            .unwrap();
+
+        // Act
+        let listed = store
+            .list_queries(&SavedQueryQuery {
+                connection_name: Some(String::from("本番")),
+                ..保存クエリ全件()
+            })
+            .unwrap();
+
+        // Assert
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "本番の");
+    }
+
+    #[test]
+    fn 保存クエリの検索語は名前とsqlの両方に当たる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "売上",
+                "select 1 from dual",
+                "開発",
+            ))
+            .unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "在庫",
+                "select * from sales",
+                "開発",
+            ))
+            .unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "無関係",
+                "select 2 from dual",
+                "開発",
+            ))
+            .unwrap();
+
+        // Act
+        let 名前で当たる = store
+            .list_queries(&SavedQueryQuery {
+                search: Some(String::from("売上")),
+                ..保存クエリ全件()
+            })
+            .unwrap();
+        let sqlで当たる = store
+            .list_queries(&SavedQueryQuery {
+                search: Some(String::from("sales")),
+                ..保存クエリ全件()
+            })
+            .unwrap();
+
+        // Assert
+        assert_eq!(名前で当たる.len(), 1);
+        assert_eq!(名前で当たる[0].name, "売上");
+        assert_eq!(sqlで当たる.len(), 1);
+        assert_eq!(sqlで当たる[0].name, "在庫");
+    }
+
+    #[test]
+    fn 保存クエリの検索語のワイルドカードは字面どおりに扱われる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "100%の集計",
+                "select 1 from dual",
+                "開発",
+            ))
+            .unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "ただの集計",
+                "select 2 from dual",
+                "開発",
+            ))
+            .unwrap();
+
+        // Act
+        let listed = store
+            .list_queries(&SavedQueryQuery {
+                search: Some(String::from("%の")),
+                ..保存クエリ全件()
+            })
+            .unwrap();
+
+        // Assert
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "100%の集計");
+    }
+
+    #[test]
+    fn 保存クエリの名前とsqlを更新できる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let id = store
+            .save_query(&保存クエリを作る(
+                "仮の名前",
+                "select 1 from dual",
+                "開発",
+            ))
+            .unwrap();
+
+        // Act
+        let 更新できた = store
+            .update_query(id, "本当の名前", "select 2 from dual", 1_700_000_009_999)
+            .unwrap();
+        let listed = store.list_queries(&保存クエリ全件()).unwrap();
+
+        // Assert
+        assert!(更新できた);
+        assert_eq!(listed[0].name, "本当の名前");
+        assert_eq!(listed[0].sql, "select 2 from dual");
+        assert_eq!(listed[0].created_at, 1_700_000_000_000);
+        assert_eq!(listed[0].updated_at, 1_700_000_009_999);
+    }
+
+    #[test]
+    fn 存在しない保存クエリの更新は偽を返す() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+
+        // Act
+        let 更新できた = store
+            .update_query(999, "名前", "select 1 from dual", 1)
+            .unwrap();
+
+        // Assert
+        assert!(!更新できた);
+    }
+
+    #[test]
+    fn 保存クエリを一件だけ削除できる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let id = store
+            .save_query(&保存クエリを作る(
+                "消す",
+                "select 1 from dual",
+                "開発",
+            ))
+            .unwrap();
+        store
+            .save_query(&保存クエリを作る(
+                "残す",
+                "select 2 from dual",
+                "開発",
+            ))
+            .unwrap();
+
+        // Act
+        let 消せた = store.delete_query(id).unwrap();
+        let listed = store.list_queries(&保存クエリ全件()).unwrap();
+
+        // Assert
+        assert!(消せた);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "残す");
+    }
+
+    #[test]
+    fn 存在しない保存クエリの削除は偽を返す() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+
+        // Act
+        let 消せた = store.delete_query(999).unwrap();
+
+        // Assert
+        assert!(!消せた);
+    }
+
+    #[test]
+    fn 保存クエリの表が無い古いファイルでも開ける() {
+        // Arrange: 保存済みクエリを導入する前と同じ、履歴の表だけを持つファイル
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.sqlite3");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "create table query_history (
+                         id integer primary key autoincrement,
+                         sql text not null,
+                         connection_name text not null,
+                         started_at integer not null,
+                         elapsed_ms integer not null,
+                         row_count integer,
+                         succeeded integer not null,
+                         error_message text
+                     );
+                     insert into query_history
+                         (sql, connection_name, started_at, elapsed_ms, succeeded)
+                     values ('select 1 from dual', '開発', 1, 2, 1);",
+                )
+                .unwrap();
+        }
+
+        // Act
+        let store = HistoryStore::open(&path).unwrap();
+        let id = store
+            .save_query(&保存クエリを作る(
+                "新しく保存",
+                "select 1 from dual",
+                "開発",
+            ))
+            .unwrap();
+
+        // Assert: 既存の履歴は残り、保存済みクエリの表が足されている
+        assert_eq!(store.list(&全件()).unwrap().len(), 1);
+        assert_eq!(store.list_queries(&保存クエリ全件()).unwrap()[0].id, id);
     }
 
     #[test]

@@ -39,6 +39,14 @@ Range.prototype.getBoundingClientRect ??= function (): DOMRect {
 }
 
 /**
+ * jsdom の要素は `scrollIntoView` を持たない。コマンドパレット（ADR 0018）が
+ * 選択を画面の中へ追い込むのに使うため、何もしないものを補う。
+ *
+ * 画面の外へ出たものを見せる操作であり、内容・属性・通知には影響しない。
+ */
+Element.prototype.scrollIntoView ??= function (): void {}
+
+/**
  * jsdom の `navigator.platform` は空である。CodeMirror は読み込みの時点でこれを
  * 見て `Mod` を `⌘` と `Ctrl` のどちらへ割り当てるかを決めるため、そのままでは
  * `⌘F` などの macOS 向けのキーバインドがテストから叩けない。このアプリは macOS

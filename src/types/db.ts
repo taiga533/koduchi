@@ -282,6 +282,41 @@ export interface HistoryQuery {
   limit: number
 }
 
+/**
+ * 保存するクエリ 1 件（ADR 0018）。
+ *
+ * バインド変数の**値**は保存しない。履歴と同じく個人情報が入りうるためである
+ * （ADR 0005）。保存するのは SQL 本体だけである。
+ */
+export interface NewSavedQuery {
+  /** 一覧に出す名前。重複は許す。 */
+  name: string
+  sql: string
+  /** 保存したときの接続の表示名。スコープ絞り込みに使う。 */
+  connectionName: string
+  /** 保存した時刻（Unix エポックからのミリ秒）。 */
+  savedAt: number
+}
+
+/** 保存済みのクエリ 1 件。 */
+export interface SavedQuery {
+  id: number
+  name: string
+  sql: string
+  connectionName: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** 保存済みクエリの絞り込み条件。形は `HistoryQuery` に揃えてある。 */
+export interface SavedQueryQuery {
+  /** 接続名。`null` なら全接続。 */
+  connectionName: string | null
+  /** 名前または SQL の部分一致で絞る語。 */
+  search: string | null
+  limit: number
+}
+
 /** 復元するエディタタブ 1 枚（ADR 0005）。 */
 export interface SessionTab {
   id: string

@@ -5,16 +5,24 @@
  * ずらしている。ここではその分だけ左端を空け、42px の帯に接続名・検索ボックス・
  * Ask AI ボタンを並べる。
  *
- * 検索ボックスと Ask AI は器のみで、操作はできない（ADR の機能スコープ）。
+ * 検索ボックスはコマンドパレット（`⌘K`、ADR 0018）の入口である。押すとパレットが
+ * 開く。接続していないときは押せない。Ask AI は器のみで、操作はできない
+ * （ADR の機能スコープ）。
  */
 
 import { Search, Sparkles } from 'lucide-react'
 import { useConnectionStore } from '../../stores/connection'
 import { TITLE_BAR_HEIGHT, titleBarContentLeft } from './geometry'
 
-export function TitleBar() {
+interface TitleBarProps {
+  /** コマンドパレットを開く（`⌘K`）。未接続の画面では渡さない。 */
+  onOpenPalette?: () => void
+}
+
+export function TitleBar({ onOpenPalette }: TitleBarProps) {
   const connection = useConnectionStore((state) => state.connection)
   const status = useConnectionStore((state) => state.status)
+  const 押せる = connection !== null && onOpenPalette !== undefined
 
   return (
     <header
@@ -41,13 +49,18 @@ export function TitleBar() {
       </div>
 
       <div data-tauri-drag-region className="flex-1 flex justify-center items-center">
-        <div className="flex items-center gap-9px w-400px px-10px py-4px rounded-7px bg-panel border border-line">
+        <button
+          type="button"
+          disabled={!押せる}
+          onClick={onOpenPalette}
+          className="flex items-center gap-9px w-400px px-10px py-4px rounded-7px bg-panel border border-line cursor-pointer font-inherit text-left disabled:cursor-default"
+        >
           <Search size={14} className="text-fg5 shrink-0" />
           <span className="flex-1 text-12px text-fg4">
             {connection ? 'テーブル・クエリ・コマンドを検索' : '接続すると検索できます'}
           </span>
           {connection ? <span className="text-10.5px text-fg5">⌘K</span> : null}
-        </div>
+        </button>
       </div>
 
       <div className="flex items-center gap-8px px-11px py-5px rounded-7px bg-panel border border-line">

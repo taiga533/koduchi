@@ -8,14 +8,15 @@
  * 3. 接続中 … エディタと結果ペイン
  *
  * キーバインドのうち、エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` は
- * CodeMirror 側に置く。それ以外はウィンドウ全体で効かせる。
+ * CodeMirror 側に置く。それ以外はウィンドウ全体で効かせる。`⌘K` のコマンドパレットと
+ * `⇧⌘S` のクエリ保存もここにある（ADR 0018）。
  *
  * 打鍵のたびに描き直る範囲を狭く保つ。カーソル位置は `ui` ストアへ逃がし、
  * 実行に要る位置は ref で持つ。サイドバーと結果ペインへ渡すコールバックは
  * 選択中のタブに依存させず、押された時点のタブをストアから読む。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { getDbApi } from './api/db'
 import { InstantClientNotice } from './components/connection/InstantClientNotice'
@@ -26,6 +27,7 @@ import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
 import { BindValuesDialog } from './components/editor/BindValuesDialog'
 import { EditorPanel } from './components/editor/EditorPanel'
+import { SaveQueryDialog } from './components/editor/SaveQueryDialog'
 import { Splitter } from './components/layout/Splitter'
 import {
   EDITOR_HEIGHT_DEFAULT,
@@ -35,6 +37,8 @@ import {
   SIDEBAR_WIDTH_MIN,
   editorHeightMax,
 } from './components/layout/paneSizes'
+import type { PaletteCommand } from './components/palette/CommandPalette'
+import { CommandPalette } from './components/palette/CommandPalette'
 import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
@@ -54,7 +58,8 @@ import {
 import { isManualCommit, useConnectionStore } from './stores/connection'
 import { selectAnyRunning, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
-import { useSchemaStore } from './stores/schema'
+import { nodeKey, useSchemaStore } from './stores/schema'
+import { useSavedQueryStore } from './stores/savedQuery'
 import type { BindInput } from './stores/tab'
 import {
   selectActiveTab,
@@ -121,6 +126,8 @@ export function App() {
   const [csvOpen, setCsvOpen] = useState(false)
   const [bindPrompt, setBindPrompt] = useState<{ names: string[]; run: PendingRun } | null>(null)
   const [disconnectBlocked, setDisconnectBlocked] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [saveQueryPrompt, setSaveQueryPrompt] = useState<{ name: string; sql: string } | null>(null)
   const [csvProgress, setCsvProgress] = useState<CsvExportState | null>(null)
   const csvCancelled = useRef(false)
   // 実行に要る位置は描画に関わらないため、状態ではなく ref で持つ。
@@ -166,6 +173,8 @@ export function App() {
   const setEditorHeight = useUiStore((state) => state.setEditorHeight)
   const clampToWindow = useUiStore((state) => state.clampToWindow)
   const restoreLayout = useUiStore((state) => state.restoreLayout)
+
+  const saveQuery = useSavedQueryStore((state) => state.save)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
@@ -584,6 +593,65 @@ export function App() {
     [updateContent],
   )
 
+  /**
+   * `⌘K`。コマンドパレットを開く（ADR 0018）。
+   *
+   * 探せるのは現ウィンドウの接続の中だけであるため、繋がっていないときは開かない。
+   */
+  const openPalette = useCallback(() => {
+    if (useConnectionStore.getState().connection) {
+      setPaletteOpen(true)
+    }
+  }, [])
+
+  /**
+   * パレットで選んだスキーマのオブジェクトをサイドバーで示す。
+   *
+   * ツリーへ位置を伝える仕組みは足さず、既にある絞り込みと開閉で済ませる。
+   * スキーマを開いたうえで名前を検索欄へ入れれば、その 1 件だけが残る。
+   */
+  const revealSchemaObject = useCallback(
+    (schemaName: string, objectName: string | null) => {
+      selectSidebarSegment('schema')
+      const schema = useSchemaStore.getState()
+      schema.setSearch(objectName ?? schemaName)
+      if (!schema.expanded[nodeKey(schemaName)]) {
+        schema.toggle(nodeKey(schemaName))
+      }
+    },
+    [selectSidebarSegment],
+  )
+
+  /**
+   * `⇧⌘S`。今のタブの内容を保存済みクエリにする（ADR 0018）。
+   *
+   * 選択範囲があればその中だけを保存する。名前の既定値はタブの名前から
+   * `.sql` を落としたものである。
+   */
+  const promptSaveQuery = useCallback(() => {
+    const tab = selectActiveTab(useTabStore.getState())
+    if (!tab) {
+      return
+    }
+    const sql = positionRef.current.selectedText ?? tab.content
+    if (sql.trim() === '') {
+      return
+    }
+    setSaveQueryPrompt({ name: tab.name.replace(/\.sql$/, ''), sql })
+  }, [])
+
+  /** 名前が決まった。保存済みクエリへ積む。 */
+  const commitSaveQuery = useCallback(
+    (name: string) => {
+      const active = useConnectionStore.getState().connection
+      if (saveQueryPrompt && active) {
+        void saveQuery(name, saveQueryPrompt.sql, active.name)
+      }
+      setSaveQueryPrompt(null)
+    },
+    [saveQuery, saveQueryPrompt],
+  )
+
   /** `⌥⌘S`。CSV の保存ダイアログを開く。 */
   const openCsvDialog = useCallback(() => {
     setCsvProgress(null)
@@ -646,6 +714,58 @@ export function App() {
     }
   }, [connection, csvOptions, markExhausted])
 
+  /**
+   * コマンドパレットに並べる動作（ADR 0018）。
+   *
+   * 中身は既存のキーバインドで呼べるものだけである。パレットのためだけの動作は
+   * 作らない。キーを覚えていなくても辿り着けるようにするのが役目だからである。
+   */
+  const paletteCommands = useMemo<PaletteCommand[]>(
+    () => [
+      { id: 'run', label: '実行（カーソル位置の文）', shortcut: '⌘⏎', run: runStatement },
+      { id: 'run-selection', label: '選択範囲のみ実行', shortcut: '⇧⌘⏎', run: runSelection },
+      { id: 'run-script', label: 'すべて実行', shortcut: '⌥⌘⏎', run: runScript },
+      { id: 'explain', label: '実行計画を生成', shortcut: '⌘E', run: () => void runPlan(false) },
+      {
+        id: 'explain-actual',
+        label: '実測付きで実行計画を生成',
+        shortcut: '⇧⌘E',
+        run: () => void runPlan(true),
+      },
+      { id: 'cancel', label: '実行を中止', shortcut: '⌘.', run: cancelExecution },
+      { id: 'csv', label: '結果を CSV で保存', shortcut: '⌥⌘S', run: openCsvDialog },
+      { id: 'commit', label: 'コミット', shortcut: '⌥⌘C', run: commitTransaction },
+      { id: 'rollback', label: 'ロールバック', shortcut: '⌥⌘R', run: rollbackTransaction },
+      { id: 'save-query', label: 'クエリを保存済みへ追加', shortcut: '⇧⌘S', run: promptSaveQuery },
+      { id: 'save-file', label: 'ファイルに保存', shortcut: '⌘S', run: () => void saveActiveTab() },
+      { id: 'open-file', label: 'ファイルを開く', shortcut: '⌘O', run: () => void openSqlFile() },
+      { id: 'new-tab', label: '新しいタブ', shortcut: '⌘T', run: openNewTab },
+      {
+        id: 'new-window',
+        label: '別の接続を新しいウィンドウで開く',
+        shortcut: '⌃⌘N',
+        run: openNewConnectionWindow,
+      },
+      { id: 'settings', label: '設定を開く', shortcut: '', run: openSettings },
+    ],
+    [
+      cancelExecution,
+      commitTransaction,
+      openCsvDialog,
+      openNewConnectionWindow,
+      openNewTab,
+      openSettings,
+      openSqlFile,
+      promptSaveQuery,
+      rollbackTransaction,
+      runPlan,
+      runScript,
+      runSelection,
+      runStatement,
+      saveActiveTab,
+    ],
+  )
+
   // ウィンドウ全体で効くキーバインド（ADR の「キーバインド」節）。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -677,6 +797,10 @@ export function App() {
         handled(openCsvDialog)
         return
       }
+      if (key === 's' && event.shiftKey) {
+        handled(promptSaveQuery)
+        return
+      }
       if (key === 's') {
         handled(() => void saveActiveTab())
         return
@@ -700,6 +824,10 @@ export function App() {
       }
       if (key === 'n' && event.ctrlKey) {
         handled(openNewConnectionWindow)
+        return
+      }
+      if (key === 'k') {
+        handled(openPalette)
       }
     }
 
@@ -712,7 +840,9 @@ export function App() {
     openCsvDialog,
     openNewConnectionWindow,
     openNewTab,
+    openPalette,
     openSqlFile,
+    promptSaveQuery,
     runPlan,
     saveActiveTab,
   ])
@@ -817,6 +947,23 @@ export function App() {
           onClose={() => setDisconnectBlocked(false)}
         />
       ) : null}
+      {saveQueryPrompt ? (
+        <SaveQueryDialog
+          defaultName={saveQueryPrompt.name}
+          sql={saveQueryPrompt.sql}
+          onSubmit={commitSaveQuery}
+          onClose={() => setSaveQueryPrompt(null)}
+        />
+      ) : null}
+      {paletteOpen ? (
+        <CommandPalette
+          connectionName={connection.name}
+          commands={paletteCommands}
+          onUseSql={useHistorySql}
+          onRevealSchemaObject={revealSchemaObject}
+          onClose={() => setPaletteOpen(false)}
+        />
+      ) : null}
     </>
   )
 
@@ -826,6 +973,7 @@ export function App() {
       onDisconnect={() => void disconnectAndReset()}
       onCommit={commitTransaction}
       onRollback={rollbackTransaction}
+      onOpenPalette={openPalette}
       overlay={overlay}
     >
       <Sidebar
@@ -956,7 +1104,7 @@ function BindPrompt({
  * 3 パネル構成の枠。
  *
  * タイトルバー・本体・ステータスバーを縦に並べる。本体の中身は呼び出し側が渡す。
- * 設定画面と CSV の保存ダイアログは、この枠の上に重ねる。
+ * 設定画面・CSV の保存ダイアログ・コマンドパレットは、この枠の上に重ねる。
  *
  * 切断はステータスバーの接続状態から呼ぶ。「切断」と「別の接続へ切り替え…」は
  * どちらも同じ動きであるため、受け取る手続きは 1 つでよい。
@@ -967,6 +1115,7 @@ function Shell({
   onDisconnect,
   onCommit,
   onRollback,
+  onOpenPalette,
   overlay,
 }: {
   children: React.ReactNode
@@ -976,12 +1125,14 @@ function Shell({
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
   onRollback?: () => void
+  /** `⌘K`。コマンドパレットを開く（ADR 0018）。接続中の画面だけが渡す。 */
+  onOpenPalette?: () => void
   overlay?: React.ReactNode
 }) {
   return (
     <div className="relative h-full flex flex-col bg-bg">
       <SessionSaver />
-      <TitleBar />
+      <TitleBar onOpenPalette={onOpenPalette} />
       <div className="flex-1 min-h-0 flex gap-6px p-6px">{children}</div>
       <StatusBar
         onOpenSettings={onOpenSettings}

@@ -19,7 +19,10 @@ import type {
   HistoryEntry,
   HistoryQuery,
   NewHistoryEntry,
+  NewSavedQuery,
   SavedConnection,
+  SavedQuery,
+  SavedQueryQuery,
   SchemaFilter,
   SchemaNode,
   SessionState,
@@ -43,6 +46,10 @@ export interface FakeCalls {
   listHistory: HistoryQuery[]
   deleteHistory: number[]
   clearHistory: number
+  createSavedQuery: NewSavedQuery[]
+  listSavedQueries: SavedQueryQuery[]
+  updateSavedQuery: { id: number; name: string; sql: string; updatedAt: number }[]
+  deleteSavedQuery: number[]
   saveSession: { windowLabel: string; state: SessionState }[]
   schemaOverview: { id: string; filter: SchemaFilter }[]
   schemaColumns: { id: string; owner: string }[]
@@ -79,6 +86,8 @@ export interface FakeDbApiOptions {
   passwords?: Record<string, string>
   /** 履歴の一覧。 */
   history?: HistoryEntry[]
+  /** 保存済みクエリの一覧（ADR 0018）。 */
+  savedQueries?: SavedQuery[]
   /** スキーマツリーの段階 1 の応答。 */
   schemas?: SchemaNode[]
   /** スキーマごとの列情報。 */
@@ -161,6 +170,10 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     listHistory: [],
     deleteHistory: [],
     clearHistory: 0,
+    createSavedQuery: [],
+    listSavedQueries: [],
+    updateSavedQuery: [],
+    deleteSavedQuery: [],
     saveSession: [],
     schemaOverview: [],
     schemaColumns: [],
@@ -179,6 +192,7 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
   }
 
   let nextHistoryId = 1
+  let nextSavedQueryId = 1
 
   const api: DbApi = {
     instantClientStatus: async () =>
@@ -282,6 +296,34 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     clearHistory: async () => {
       calls.clearHistory += 1
       return options.history?.length ?? 0
+    },
+
+    createSavedQuery: async (query) => {
+      calls.createSavedQuery.push(query)
+      nextSavedQueryId += 1
+      return nextSavedQueryId
+    },
+
+    listSavedQueries: async (query) => {
+      calls.listSavedQueries.push(query)
+      const entries = options.savedQueries ?? []
+      return entries.filter(
+        (entry) =>
+          (query.connectionName === null || entry.connectionName === query.connectionName) &&
+          (query.search === null ||
+            entry.name.includes(query.search) ||
+            entry.sql.includes(query.search)),
+      )
+    },
+
+    updateSavedQuery: async (id, name, sql, updatedAt) => {
+      calls.updateSavedQuery.push({ id, name, sql, updatedAt })
+      return true
+    },
+
+    deleteSavedQuery: async (id) => {
+      calls.deleteSavedQuery.push(id)
+      return true
     },
 
     saveSession: async (windowLabel, state) => {
