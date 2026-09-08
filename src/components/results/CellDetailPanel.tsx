@@ -4,12 +4,17 @@
  * 結果テーブルの右側に開き、セルの全文を等幅で出す。テーブルを隠さないため、
  * 値を読みながら別の行へ移れる。折り返しと JSON の整形は切り替えられる。
  * `esc` で閉じる。
+ *
+ * `CLOB` が 64KB を超えて切り詰められているときは、本文の上に注意書きを出す
+ * （ADR 0021 の「黙って切り詰めない」）。全文を出す顔をしたパネルで末尾の
+ * 欠けた値を黙って出すと、利用者はそれが値の全部だと信じてしまう。
  */
 
 import { useEffect, useState } from 'react'
 import { WrapText, X } from 'lucide-react'
+import { CLOB_LIMIT_BYTES } from '../../types/db'
 import type { Cell, Column } from '../../types/db'
-import { characterCount, detailBody, formatJson, isOpaque } from './cellDetail'
+import { detailBody, formatJson, isOpaque, isTruncated, sizeLabel } from './cellDetail'
 import { isComposingKey } from '../../input/ime'
 
 interface CellDetailPanelProps {
@@ -75,12 +80,19 @@ export function CellDetailPanel({ column, cell, rowNumber, onClose }: CellDetail
         <span>
           {rowNumber} 行目 · {column.typeName}
         </span>
-        <span>
-          {cell.kind === 'null'
-            ? '値なし（NULL）'
-            : `${characterCount(cell.text).toLocaleString('ja-JP')} 文字`}
-        </span>
+        <span>{sizeLabel(cell)}</span>
       </div>
+
+      {isTruncated(cell) ? (
+        <p
+          data-testid="cell-detail-truncated"
+          role="status"
+          className="m-0 px-10px py-7px shrink-0 text-10.5px text-warn leading-[1.6] border-b border-line2"
+        >
+          値が大きいため先頭 {CLOB_LIMIT_BYTES / 1024} KB までしか取得していません。
+          ここに出ているのは値の全部ではありません。
+        </p>
+      ) : null}
 
       {jsonAvailable ? (
         <label className="px-10px py-6px shrink-0 flex items-center gap-6px text-11px text-fg3 cursor-pointer border-b border-line2">

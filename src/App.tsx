@@ -878,6 +878,8 @@ export function App() {
         rows: result.rows,
         done: true,
         error: result.status === 'cancelled' ? '書き出しを中止しました' : null,
+        // 切り詰められたまま書き出したセルはダイアログで伝える（ADR 0021）。
+        truncatedCells: result.truncatedCells,
       })
     } catch (error) {
       setCsvProgress({

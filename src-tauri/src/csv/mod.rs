@@ -270,17 +270,11 @@ mod tests {
     }
 
     fn 文字列セル(text: &str) -> Cell {
-        Cell {
-            text: String::from(text),
-            kind: CellKind::Text,
-        }
+        Cell::new(CellKind::Text, text)
     }
 
     fn nullセル() -> Cell {
-        Cell {
-            text: String::new(),
-            kind: CellKind::Null,
-        }
+        Cell::null()
     }
 
     #[test]

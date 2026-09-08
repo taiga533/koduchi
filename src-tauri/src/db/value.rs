@@ -5,6 +5,10 @@
 //! あり、JSON の数値（実質 `f64`）に載せると精度が壊れるためである。
 //!
 //! `kind` は結果テーブルが右寄せの判定と NULL の描き分けに使う。
+//!
+//! 上限を超えて切り詰めた値だけは `truncated` を添える。切れたことを伝えない
+//! 表示は、末尾の無い文字列を全文だと信じさせる（ADR 0021 の「黙って切り詰め
+//! ない」）。
 
 use serde::{Deserialize, Serialize};
 
@@ -29,12 +33,30 @@ pub enum CellKind {
     Null,
 }
 
+/// 偽のときに `truncated` をシリアライズから省くための判定。
+///
+/// 結果セットは 1,000 行 × 列数のセルを IPC に載せる（ADR 0003）。切り詰めが
+/// 起きるのは CLOB のごく一部であり、すべてのセルに `"truncated":false` を
+/// 積むと無駄が大きい。省いた側は `#[serde(default)]` で偽として読める。
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// 結果テーブルの 1 セル。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cell {
     /// 表示に使う文字列。`kind` が `Null` のときは空文字列。
     pub text: String,
     pub kind: CellKind,
+    /// 上限を超えて切り詰めた値か。
+    ///
+    /// `CLOB` は先頭 64KB までしか運ばない（ADR の「値の受け渡し」節）。切れて
+    /// いることを伝えないと、利用者は末尾の無い文字列を全文だと信じてしまう。
+    /// **打ち切ったときも黙って切り詰めない**（ADR 0021 で決めた原則）ため、
+    /// 事実をセルに載せて運ぶ。切り詰めは `kind` の区分ではない（`kind` は
+    /// 右寄せの判定と NULL の描き分けに使う）ので、独立した項目にしてある。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
 }
 
 impl Cell {
@@ -43,6 +65,7 @@ impl Cell {
         Cell {
             text: String::new(),
             kind: CellKind::Null,
+            truncated: false,
         }
     }
 
@@ -51,6 +74,18 @@ impl Cell {
         Cell {
             text: text.into(),
             kind,
+            truncated: false,
+        }
+    }
+
+    /// 切り詰めた値のセルを作る。
+    ///
+    /// `text` には切り詰めた**後**の文字列を渡す。
+    pub fn new_truncated(kind: CellKind, text: impl Into<String>) -> Self {
+        Cell {
+            text: text.into(),
+            kind,
+            truncated: true,
         }
     }
 }
@@ -223,5 +258,54 @@ mod tests {
 
         // Assert
         assert_eq!(json, r#"{"text":"2026-08-30 15:04:05","kind":"datetime"}"#);
+    }
+    #[test]
+    fn 切り詰めたセルは切り詰めの印を持つ() {
+        // Arrange
+        let text = "あい";
+
+        // Act
+        let cell = Cell::new_truncated(CellKind::Text, text);
+
+        // Assert
+        assert!(cell.truncated);
+        assert_eq!(cell.text, "あい");
+    }
+
+    #[test]
+    fn 切り詰めていないセルはtruncatedを送らない() {
+        // Arrange
+        let cell = Cell::new(CellKind::Text, "abc");
+
+        // Act
+        let json = serde_json::to_string(&cell).unwrap();
+
+        // Assert: 大多数のセルに `"truncated":false` を積まないための省略
+        assert_eq!(json, r#"{"text":"abc","kind":"text"}"#);
+    }
+
+    #[test]
+    fn 切り詰めたセルはtruncatedを真として送る() {
+        // Arrange
+        let cell = Cell::new_truncated(CellKind::Text, "abc");
+
+        // Act
+        let json = serde_json::to_string(&cell).unwrap();
+
+        // Assert
+        assert_eq!(json, r#"{"text":"abc","kind":"text","truncated":true}"#);
+    }
+
+    #[test]
+    fn truncatedを持たない古い形のjsonも読める() {
+        // Arrange
+        let json = r#"{"text":"abc","kind":"text"}"#;
+
+        // Act
+        let cell: Cell = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert_eq!(cell, Cell::new(CellKind::Text, "abc"));
+        assert!(!cell.truncated);
     }
 }

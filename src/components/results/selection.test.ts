@@ -283,3 +283,22 @@ describe('buildCopyText', () => {
     expect(文字列).toBe('30')
   })
 })
+
+describe('buildCopyText と切り詰め', () => {
+  it('切り詰められたセルも印を混ぜずに値だけをコピーする', () => {
+    // Arrange: コピーした文字列は別のクエリへ貼るデータであり、注記が混ざると汚れる
+    const 切れた行: Cell[][] = [
+      [
+        { text: '10', kind: 'number' },
+        { text: '{"id":1', kind: 'text', truncated: true },
+      ],
+    ]
+    const 範囲 = { top: 0, bottom: 0, left: 0, right: 1 }
+
+    // Act
+    const 文字列 = buildCopyText(列, 切れた行, 範囲, false)
+
+    // Assert
+    expect(文字列).toBe('10\t{"id":1')
+  })
+})

@@ -162,3 +162,51 @@ describe('CellDetailPanel の IME 対応（ADR 0025）', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('CellDetailPanel の切り詰めの知らせ', () => {
+  it('切り詰められた値には注意書きを出す', () => {
+    // Arrange: 全文を出す顔のパネルで末尾の欠けた値を黙って出してはならない
+    const cell = { text: '{"id":1', kind: 'text' as const, truncated: true }
+
+    // Act
+    render(<CellDetailPanel column={JSON列} cell={cell} rowNumber={1} onClose={() => {}} />)
+
+    // Assert
+    expect(screen.getByTestId('cell-detail-truncated')).toHaveTextContent('64 KB')
+    expect(screen.getByTestId('cell-detail-truncated')).toHaveTextContent('全部ではありません')
+  })
+
+  it('切り詰められていない値には注意書きを出さない', () => {
+    // Arrange
+    const cell = { text: '{"id":1}', kind: 'text' as const }
+
+    // Act
+    render(<CellDetailPanel column={JSON列} cell={cell} rowNumber={1} onClose={() => {}} />)
+
+    // Assert
+    expect(screen.queryByTestId('cell-detail-truncated')).not.toBeInTheDocument()
+  })
+
+  it('切り詰められた値の文字数には先頭までである旨が付く', () => {
+    // Arrange: 文字数だけを出すと、切り詰めた後の数を全体の長さだと読ませてしまう
+    const cell = { text: 'abcde', kind: 'text' as const, truncated: true }
+
+    // Act
+    render(<CellDetailPanel column={JSON列} cell={cell} rowNumber={1} onClose={() => {}} />)
+
+    // Assert
+    const panel = screen.getByTestId('cell-detail-panel')
+    expect(panel).toHaveTextContent('5 文字（先頭 64 KB のみ')
+  })
+
+  it('切り詰められた値でも本文はそのまま出す', () => {
+    // Arrange: 本文は選んでコピーできるデータであり、注記を混ぜると汚れる
+    const cell = { text: '{"id":1', kind: 'text' as const, truncated: true }
+
+    // Act
+    render(<CellDetailPanel column={JSON列} cell={cell} rowNumber={1} onClose={() => {}} />)
+
+    // Assert
+    expect(screen.getByTestId('cell-detail-body').textContent).toBe('{"id":1')
+  })
+})

@@ -110,3 +110,30 @@ describe('CsvSaveDialog', () => {
     expect(表示).toHaveTextContent('書き出しを中止しました')
   })
 })
+
+describe('CsvSaveDialog の切り詰めの知らせ', () => {
+  it('切り詰められたまま書き出したセルがあれば数を伝える', () => {
+    // Arrange & Act
+    描く({ progress: { rows: 1000, done: true, error: null, truncatedCells: 3 } })
+
+    // Assert
+    expect(screen.getByTestId('csv-truncated-notice')).toHaveTextContent('3 個のセル')
+    expect(screen.getByTestId('csv-truncated-notice')).toHaveTextContent('64 KB')
+  })
+
+  it('切り詰められたセルが無ければ知らせを出さない', () => {
+    // Arrange & Act
+    描く({ progress: { rows: 1000, done: true, error: null, truncatedCells: 0 } })
+
+    // Assert
+    expect(screen.queryByTestId('csv-truncated-notice')).not.toBeInTheDocument()
+  })
+
+  it('書き出し中はまだ知らせを出さない', () => {
+    // Arrange & Act
+    描く({ progress: { rows: 500, done: false, error: null, truncatedCells: 2 } })
+
+    // Assert
+    expect(screen.queryByTestId('csv-truncated-notice')).not.toBeInTheDocument()
+  })
+})

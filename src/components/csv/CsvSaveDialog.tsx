@@ -10,6 +10,7 @@
  */
 
 import { X } from 'lucide-react'
+import { CLOB_LIMIT_BYTES } from '../../types/db'
 import type { CsvDelimiter, CsvEncoding, CsvNullText, CsvOptions } from '../../types/db'
 
 /** 区切り文字の選択肢。 */
@@ -38,6 +39,14 @@ export interface CsvExportState {
   rows: number
   done: boolean
   error: string | null
+  /**
+   * 切り詰められたまま書き出したセルの数（ADR 0021 の「黙って切り詰めない」）。
+   *
+   * 64KB を超える `CLOB` は先頭までしか運ばれていない（ADR の「値の受け渡し」
+   * 節）。CSV にもその値が並ぶため、書き終えたことだけを伝えるわけにいかない。
+   * 省略されたときは 0 として扱う。
+   */
+  truncatedCells?: number
 }
 
 interface CsvSaveDialogProps {
@@ -114,6 +123,17 @@ export function CsvSaveDialog({
               (progress.done
                 ? `${progress.rows.toLocaleString('ja-JP')} 行を書き出しました`
                 : `${progress.rows.toLocaleString('ja-JP')} 行を書き出し中…`)}
+          </p>
+        ) : null}
+
+        {progress?.done && (progress.truncatedCells ?? 0) > 0 ? (
+          <p
+            data-testid="csv-truncated-notice"
+            className="m-0 text-11.5px text-warn leading-[1.6]"
+            role="status"
+          >
+            {(progress.truncatedCells ?? 0).toLocaleString('ja-JP')} 個のセルは値が大きいため 先頭{' '}
+            {CLOB_LIMIT_BYTES / 1024} KB までしか書き出せていません。
           </p>
         ) : null}
 

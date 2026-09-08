@@ -18,7 +18,23 @@ export interface Cell {
   /** 表示に使う文字列。`kind` が `null` のときは空文字列。 */
   text: string
   kind: CellKind
+  /**
+   * 上限を超えて切り詰められた値か（ADR 0021 の「黙って切り詰めない」）。
+   *
+   * `CLOB` は先頭 64KB までしか運ばない（「値の受け渡し」節）。切れていない
+   * セルでは Rust 側が項目そのものを省くため、省略可能である。**真のときは
+   * 「これで全部だ」と読ませてはならない。**
+   */
+  truncated?: boolean
 }
+
+/**
+ * `CLOB` を運ぶ上限（バイト）。
+ *
+ * Rust 側の `CLOB_LIMIT_BYTES` と同じ値である。切り詰めたことを伝える文言に
+ * 「先頭 64 KB」と書くために持つ。
+ */
+export const CLOB_LIMIT_BYTES = 64 * 1024
 
 /** 結果セットの列。 */
 export interface Column {
