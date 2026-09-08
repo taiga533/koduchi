@@ -203,6 +203,25 @@ export interface TableColumn {
   kind: CellKind
 }
 
+/**
+ * 補完で挿入する識別子の綴り（ADR 0013）。
+ *
+ * Oracle のカタログは名前を大文字で持つため、`preserve` では `TABLE_NAME` が
+ * そのまま入る。`lower` を選ぶと `table_name` になる。引用符を付けずに書いた
+ * 識別子は Oracle が大文字へ畳んで解釈するため、どちらでも同じ表に解決される。
+ */
+export type IdentifierCase = 'lower' | 'upper' | 'preserve'
+
+/** 補完の設定。接続ごとに `connections.toml` へ保存する（ADR 0013）。 */
+export interface CompletionSettings {
+  identifierCase: IdentifierCase
+}
+
+/** 補完の設定の既定値。カタログの綴りをそのまま出す。 */
+export const defaultCompletionSettings: CompletionSettings = {
+  identifierCase: 'preserve',
+}
+
 /** 保存する接続先の指定方法（ADR 0004・0006）。 */
 export type SavedTarget =
   | { method: 'ezConnect'; host: string; port: number; serviceName: string }
@@ -218,6 +237,8 @@ export interface SavedConnection {
   /** 実行のたびに自動でコミットするか（ADR 0012）。既定は偽。 */
   autoCommit: boolean
   schemaFilter: SchemaFilter
+  /** 補完の設定（ADR 0013）。省略された古い設定ファイルでは既定値になる。 */
+  completion: CompletionSettings
   target: SavedTarget
 }
 

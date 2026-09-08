@@ -58,6 +58,7 @@ const 接続済み = {
       readOnly: false,
       autoCommit: false,
     },
+    completion: { identifierCase: 'preserve' as const },
   },
   error: null,
 }
@@ -74,6 +75,7 @@ function 接続済みにする(readOnly = false, autoCommit = false): void {
     connection: {
       ...接続済み.connection,
       params: { ...接続済み.connection.params, readOnly, autoCommit },
+      completion: { identifierCase: 'preserve' as const },
     },
   })
 }
@@ -276,6 +278,7 @@ describe('App', () => {
           readOnly: false,
           autoCommit: false,
         },
+        completion: { identifierCase: 'preserve' as const },
       },
       error: null,
     })
@@ -450,6 +453,7 @@ describe('App', () => {
           readOnly: false,
           autoCommit: false,
         },
+        completion: { identifierCase: 'preserve' as const },
       },
       error: null,
     })

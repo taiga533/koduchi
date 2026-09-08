@@ -104,6 +104,7 @@ describe('isManualCommit', () => {
     savedId: null,
     name: '開発',
     params: { ...params, readOnly, autoCommit },
+    completion: { identifierCase: 'preserve' as const },
   })
 
   it('読み取り専用でも自動コミットでもない接続は手動コミットである', () => {

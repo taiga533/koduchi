@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { SchemaNode, TableColumn } from '../../types/db'
+import { buildCatalog, EMPTY_CATALOG } from './catalog'
 import { SqlEditor, type EditorPosition } from './SqlEditor'
 
 /** 既定の props でエディタを描き、通知された内容を集めて返す。 */
@@ -8,7 +10,8 @@ function 描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {})
   const 通知: { content: string[]; position: EditorPosition[] } = { content: [], position: [] }
   const props: React.ComponentProps<typeof SqlEditor> = {
     value: '',
-    schema: {},
+    catalog: EMPTY_CATALOG,
+    identifierCase: 'preserve',
     onChange: (content) => 通知.content.push(content),
     onCursorChange: (position) => 通知.position.push(position),
     onRunStatement: () => {},
@@ -37,6 +40,34 @@ function 検索欄(name: 'search' | 'replace'): HTMLInputElement {
     throw new Error(`検索パネルの ${name} 欄が見つからない`)
   }
   return 欄
+}
+
+/** 補完に使うカタログ。KODUCHI スキーマに ORDERS が 1 つある。 */
+const カタログ = buildCatalog(
+  [
+    {
+      name: 'KODUCHI',
+      objectCount: 1,
+      objects: [{ name: 'ORDERS', kind: 'table' }],
+    } satisfies SchemaNode,
+  ],
+  {
+    KODUCHI: [
+      {
+        objectName: 'ORDERS',
+        name: 'ORDER_ID',
+        typeName: 'NUMBER(12)',
+        nullable: false,
+        kind: 'number',
+      } satisfies TableColumn,
+    ],
+  },
+  'KODUCHI',
+)
+
+/** 補完の候補一覧を取り出す。開いていなければ `null`。 */
+function 補完一覧(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.cm-tooltip-autocomplete')
 }
 
 /** 編集領域の要素を取り出す。 */
@@ -108,6 +139,30 @@ describe('SqlEditor', () => {
 
     // Assert
     expect(呼ばれた).toEqual(['script'])
+  })
+
+  it('カタログの表名が補完の候補に出る', async () => {
+    // Arrange: 補完ソースが方言の言語データに繋がっていることを確かめる
+    描く({ catalog: カタログ })
+    await userEvent.click(編集領域())
+
+    // Act
+    await userEvent.keyboard('select * from ord')
+
+    // Assert
+    await waitFor(() => expect(補完一覧()?.textContent).toContain('ORDERS'))
+  })
+
+  it('小文字を選ぶと候補も小文字で出る', async () => {
+    // Arrange
+    描く({ catalog: カタログ, identifierCase: 'lower' })
+    await userEvent.click(編集領域())
+
+    // Act
+    await userEvent.keyboard('select * from ord')
+
+    // Assert
+    await waitFor(() => expect(補完一覧()?.textContent).toContain('orders'))
   })
 
   it('外から内容を差し替えると反映される', () => {

@@ -14,6 +14,7 @@ const 開発: SavedConnection = {
   readOnly: false,
   autoCommit: false,
   schemaFilter: { excludeSystem: true, hideEmpty: true },
+  completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }
 
@@ -24,6 +25,7 @@ const 本番: SavedConnection = {
   readOnly: true,
   autoCommit: false,
   schemaFilter: { excludeSystem: false, hideEmpty: true },
+  completion: { identifierCase: 'preserve' },
   target: { method: 'tns', directory: '/etc/oracle', alias: 'PROD' },
 }
 

@@ -3,9 +3,11 @@
  *
  * 方言は接続種別に合わせる。Oracle を先に実装するため、現時点では Oracle 固定。
  *
- * 補完には取得済みのスキーマを渡す（ADR 0007）。スキーマは段階的に読み込まれる
- * ため、届くたびに `Compartment` で言語設定だけを差し替える。エディタを作り直すと
- * 取り消し履歴とカーソル位置が飛ぶ。
+ * 補完には取得済みのスキーマから組み立てたカタログを渡す（ADR 0007・0013）。
+ * 候補の組み立ては `sqlCompletion.ts` の自前のソースが行い、`lang-sql` へは
+ * キーワードの補完だけを任せる。カタログは段階的に読み込まれるため、届くたびに
+ * `Compartment` で言語設定だけを差し替える。エディタを作り直すと取り消し履歴と
+ * カーソル位置が飛ぶ。
  *
  * 実行（`⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎`）と中止（`⌘.`）、検索・置換（`⌘F` / `⌘G` /
  * `⇧⌘G` / `⌥⌘F`）はエディタの中でしか意味を持たないため、`App.tsx` の `keydown`
@@ -34,7 +36,11 @@ import {
   closeBracketsKeymap,
   completionKeymap,
 } from '@codemirror/autocomplete'
-import { PLSQL, sql } from '@codemirror/lang-sql'
+import { sql } from '@codemirror/lang-sql'
+import type { IdentifierCase } from '../../types/db'
+import type { Catalog } from './catalog'
+import { koduchiOracleDialect } from './dialect'
+import { sqlCompletionSource } from './sqlCompletion'
 import { koduchiEditorTheme } from './theme'
 import { koduchiSearch, koduchiSearchKeymap } from './search'
 
@@ -62,15 +68,36 @@ const CONTENT_ATTRIBUTES = {
   autocapitalize: 'off',
 }
 
+/**
+ * 言語まわりの拡張を組み立てる。
+ *
+ * `sql()` にはスキーマを渡さない。渡すと `lang-sql` の補完ソースが有効になり、
+ * 大文字小文字を区別する階層解決と引用符付きの挿入が復活する（ADR 0013）。
+ * ここから受け取るのはキーワードの補完だけで、識別子の候補は自前のソースが出す。
+ *
+ * @param catalog 補完に使うカタログ
+ * @param identifierCase 挿入する識別子の綴り
+ */
+function languageFor(catalog: Catalog, identifierCase: IdentifierCase) {
+  return [
+    sql({ dialect: koduchiOracleDialect, upperCaseKeywords: false }),
+    koduchiOracleDialect.language.data.of({
+      autocomplete: sqlCompletionSource(catalog, identifierCase),
+    }),
+  ]
+}
+
 interface SqlEditorProps {
   /** エディタの内容。 */
   value: string
   /**
-   * 補完に使うスキーマ。`{ テーブル名: 列名の並び }` の形。
+   * 補完に使うカタログ（ADR 0013）。
    *
    * 呼び出し側で記憶しておくこと。参照が変わるたびに言語設定を作り直す。
    */
-  schema: Record<string, string[]>
+  catalog: Catalog
+  /** 補完で挿入する識別子の綴り。接続ごとの設定（ADR 0013）。 */
+  identifierCase: IdentifierCase
   /** 内容が変わったときに呼ばれる。変換中は呼ばれず、確定時にまとめて呼ばれる。 */
   onChange: (value: string) => void
   /** カーソル位置や選択が変わったときに呼ばれる。 */
@@ -87,7 +114,8 @@ interface SqlEditorProps {
 
 export function SqlEditor({
   value,
-  schema,
+  catalog,
+  identifierCase,
   onChange,
   onCursorChange,
   onRunStatement,
@@ -143,7 +171,7 @@ export function SqlEditor({
         indentOnInput(),
         bracketMatching(),
         closeBrackets(),
-        language.current.of(sql({ dialect: PLSQL, schema, upperCaseKeywords: false })),
+        language.current.of(languageFor(catalog, identifierCase)),
         autocompletion(),
         // 補完の候補は編集領域の外（本体直下）へ出す。編集領域の中に足し引きすると、
         // 入力の最中に DOM が動いて変換に割り込む。
@@ -232,14 +260,12 @@ export function SqlEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // スキーマが届いたら補完の元だけを差し替える。
+  // カタログが届いたら補完の元だけを差し替える。
   useEffect(() => {
     view.current?.dispatch({
-      effects: language.current.reconfigure(
-        sql({ dialect: PLSQL, schema, upperCaseKeywords: false }),
-      ),
+      effects: language.current.reconfigure(languageFor(catalog, identifierCase)),
     })
-  }, [schema])
+  }, [catalog, identifierCase])
 
   // 外から内容が差し替わったとき（履歴からの流し込みなど）にエディタへ反映する。
   //

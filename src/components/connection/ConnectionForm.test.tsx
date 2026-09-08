@@ -14,6 +14,7 @@ const 保存済み: SavedConnection = {
   readOnly: false,
   autoCommit: false,
   schemaFilter: { excludeSystem: true, hideEmpty: true },
+  completion: { identifierCase: 'preserve' },
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
 }
 
@@ -230,6 +231,55 @@ describe('ConnectionForm', () => {
       readOnly: false,
       autoCommit: false,
     })
+  })
+
+  it('補完の綴りは既定でカタログのままになっている', () => {
+    // Arrange
+    描く()
+
+    // Act
+    const 選択 = screen.getByRole('button', { name: 'カタログのまま' })
+
+    // Assert
+    expect(選択).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('補完の綴りを選ぶと接続と保存の両方に載る', async () => {
+    // Arrange
+    描く()
+    await userEvent.type(screen.getByLabelText('名前'), '開発')
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+    await userEvent.click(screen.getByRole('button', { name: '小文字' }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
+
+    // Assert
+    await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
+    expect(calls.saveConnection[0].connection.completion).toEqual({ identifierCase: 'lower' })
+    expect(useConnectionStore.getState().connection?.completion).toEqual({
+      identifierCase: 'lower',
+    })
+  })
+
+  it('編集で開くと保存済みの綴りが選ばれている', async () => {
+    // Arrange
+    const initial: SavedConnection = {
+      ...保存済み,
+      completion: { identifierCase: 'lower' },
+    }
+
+    // Act
+    描く({}, { initial })
+
+    // Assert
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '小文字' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
+    )
   })
 
   it('保存にチェックが入っていればパスワードごと保存する', async () => {

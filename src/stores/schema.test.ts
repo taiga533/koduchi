@@ -2,13 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi, type FakeCalls } from '../test/fakeDbApi'
 import type { SchemaNode, TableColumn } from '../types/db'
-import {
-  buildCompletionSchema,
-  filterSchemas,
-  formatColumnProgress,
-  nodeKey,
-  useSchemaStore,
-} from './schema'
+import { filterSchemas, formatColumnProgress, nodeKey, useSchemaStore } from './schema'
 
 /** スキーマ 1 つを組み立てる。 */
 function スキーマ(name: string, objects: string[]): SchemaNode {
@@ -241,30 +235,5 @@ describe('filterSchemas', () => {
 
     // Assert
     expect(filtered).toEqual([])
-  })
-})
-
-describe('buildCompletionSchema', () => {
-  it('修飾ありと修飾なしの両方の名前で引ける', () => {
-    // Arrange
-    // 列一覧は読み込み済みとする
-
-    // Act
-    const table = buildCompletionSchema(スキーマ一覧, 列一覧)
-
-    // Assert
-    expect(table['KODUCHI.USERS']).toEqual(['USER_ID', 'EMAIL'])
-    expect(table.USERS).toEqual(['USER_ID', 'EMAIL'])
-  })
-
-  it('列がまだ読み込まれていない表は空の並びになる', () => {
-    // Arrange
-    const columns = {}
-
-    // Act
-    const table = buildCompletionSchema(スキーマ一覧, columns)
-
-    // Assert
-    expect(table['KODUCHI.USERS']).toEqual([])
   })
 })
