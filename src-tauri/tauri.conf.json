@@ -42,7 +42,6 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-",
       "entitlements": "entitlements.plist"
     }
   }

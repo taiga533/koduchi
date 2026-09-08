@@ -1,5 +1,6 @@
-# v* タグを push すると、Apple Silicon 向けの dmg を作って
-# GitHub の下書きリリースに添付する。公開ボタンは人間が押す。
+# v* タグを push すると、Apple Silicon 向けの dmg を作り、Developer ID で
+# 署名して公証（notarization）し、GitHub の下書きリリースに添付する。
+# 公開ボタンは人間が押す。署名と公証の決めごとは adr/0028-配布物の署名と公証.md。
 #
 # ここは tauri-apps/tauri-action で置き換えられる。今は使っていない。
 # 理由と移行の見取り図は adr/0011-cicdとリリース配布.md にある。
@@ -64,9 +65,32 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # 署名しない（ADR 0011）。Developer ID を用意したときは、
-      # ここに APPLE_SIGNING_IDENTITY などの環境変数を足す。
-      - name: dmg をビルドする
+      # 公証は App Store Connect API キーで行う（ADR 0028）。notarytool は
+      # キーを**ファイルのパス**で受け取るため、secret から書き出す。
+      # 置き場所はランナーの一時領域で、最後の手順で必ず消す。
+      - name: 公証に使う API キーを書き出す
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          printf '%s' "${APPLE_API_KEY_P8}" | base64 --decode >"${dir}/AuthKey.p8"
+          chmod 600 "${dir}/AuthKey.p8"
+          # パスそのものは秘密ではない。中身だけが秘密である。
+          echo "APPLE_API_KEY_PATH=${dir}/AuthKey.p8" >>"${GITHUB_ENV}"
+
+      # Tauri は APPLE_CERTIFICATE から署名の識別名を取る。tauri.conf.json に
+      # signingIdentity は書かない（書くと証明書名との一致検査に掛かり、
+      # "-" のままだと dmg の署名そのものが飛ぶ。ADR 0028）。
+      #
+      # この 1 回で .app の署名・公証・staple と dmg の署名まで進む。
+      # **dmg の公証は Tauri がやらない**ので次の手順で行う。
+      - name: dmg をビルドする（署名と .app の公証つき）
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bun run tauri build --target aarch64-apple-darwin --bundles dmg
 
       - name: 作られた dmg のパスを控える
@@ -78,6 +102,61 @@ jobs:
           [ -n "${dmg}" ] || { echo 'dmg が見つからない' >&2; exit 1; }
           echo "path=${dmg}" >>"${GITHUB_OUTPUT}"
           echo "作られた dmg: ${dmg}"
+
+      # Tauri が公証するのは .app だけである（バンドラの app.rs と
+      # dmg/mod.rs を読んで確かめた。ADR 0028）。利用者が受け取るのは dmg で
+      # あり、dmg 自身に公証の証跡が無いと Gatekeeper に止められる。
+      - name: dmg を公証して staple する
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          DMG_PATH: ${{ steps.dmg.outputs.path }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "${DMG_PATH}" \
+            --key "${APPLE_API_KEY_PATH}" \
+            --key-id "${APPLE_API_KEY}" \
+            --issuer "${APPLE_API_ISSUER}" \
+            --wait
+          xcrun stapler staple "${DMG_PATH}"
+
+      # 署名と公証は「ビルドが通った」では確かめられない。配る前にここで見る。
+      # 1 つでも欠けたら赤にして、下書きを作らずに落とす。
+      - name: 署名と公証を確かめる
+        env:
+          DMG_PATH: ${{ steps.dmg.outputs.path }}
+          EXPECTED_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          app="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos \
+            -maxdepth 1 -name '*.app' | head -n 1)"
+          [ -n "${app}" ] || { echo '.app が見つからない' >&2; exit 1; }
+
+          echo "== .app の署名 =="
+          codesign --verify --strict --deep --verbose=2 "${app}"
+          codesign -dv --verbose=4 "${app}" 2>&1 | grep -E 'Authority|TeamIdentifier|flags'
+
+          echo "== Team ID が期待どおりか =="
+          actual="$(codesign -dv --verbose=4 "${app}" 2>&1 \
+            | sed -n 's/^TeamIdentifier=//p')"
+          if [ -z "${EXPECTED_TEAM_ID}" ]; then
+            echo "::warning::vars.APPLE_TEAM_ID が空なので照合を飛ばす"
+          elif [ "${actual}" != "${EXPECTED_TEAM_ID}" ]; then
+            echo "::error::Team ID が違う（期待 ${EXPECTED_TEAM_ID} / 実際 ${actual}）" >&2
+            exit 1
+          fi
+
+          echo "== ハードンドランタイムが効いているか =="
+          codesign -dv --verbose=4 "${app}" 2>&1 | grep -q 'flags=.*runtime' \
+            || { echo '::error::hardened runtime が付いていない' >&2; exit 1; }
+
+          echo "== 公証の証跡（staple）=="
+          xcrun stapler validate "${app}"
+          xcrun stapler validate "${DMG_PATH}"
+
+          echo "== Gatekeeper の判定 =="
+          spctl -a -vvv -t exec "${app}"
+          spctl -a -vvv -t open --context context:primary-signature "${DMG_PATH}"
 
       - name: 下書きリリースを作る
         env:
@@ -96,5 +175,11 @@ jobs:
 
       - name: 次にすることを表示する
         run: |
-          echo "下書きリリース ${GITHUB_REF_NAME} に dmg を添付した。"
+          echo "下書きリリース ${GITHUB_REF_NAME} に署名・公証済みの dmg を添付した。"
           echo "dmg を開けることを確かめてから、GitHub 上で公開すること。"
+
+      # 失敗しても必ず消す。ランナーは使い捨てだが、鍵をログや後続の手順から
+      # 触れる場所に残さない。
+      - name: 公証の API キーを消す
+        if: always()
+        run: rm -f "${APPLE_API_KEY_PATH:-}" || true

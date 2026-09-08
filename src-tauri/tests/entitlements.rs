@@ -1,9 +1,15 @@
-//! 配布物のエンタイトルメントと `tauri.conf.json` の整合（ADR 0011）。
+//! 配布物のエンタイトルメントと `tauri.conf.json` の整合（ADR 0011・0028）。
 //!
 //! ライブラリ検証を切るエンタイトルメントが外れると、配布物では Instant Client を
 //! 読み込めなくなり、Oracle へ一切繋がらなくなる（ADR 0001）。手元の
 //! `bun run tauri dev` は署名を伴わないため、この壊れ方は**リリースしてからでないと
 //! 気づけない**。そのためファイルの存在と中身をテストで見張る。
+//!
+//! **ライブラリ検証を切る理由は ADR 0028 で変わった。**以前は ad-hoc 署名に
+//! Team ID が無いためだったが、今は Developer ID で署名しており Team ID がある。
+//! それでも要るのは、**Instant Client が Oracle の別の Team ID で署名されている**
+//! ためである。ハードンドランタイムのライブラリ検証は、正規の署名であっても
+//! 自分と違う Team ID の dylib を弾く。エンタイトルメントは残す。
 
 use std::fs;
 use std::path::PathBuf;
@@ -128,5 +134,24 @@ fn エンタイトルメントにxmlのコメントを書いていない() {
     assert!(
         !コメントを含む,
         "codesign がコメント付きの plist を読めない。意図は ADR 0011 に書くこと"
+    );
+}
+
+#[test]
+fn tauri設定に署名の識別名を書いていない() {
+    // Arrange: 署名の識別名は CI の `APPLE_CERTIFICATE` から取る（ADR 0028）。
+    // ここに書くと 2 つの壊れ方をする。証明書名との一致検査に掛かって
+    // リリースのビルドが落ちるか、`"-"` のままだと dmg の署名だけが黙って
+    // 飛ぶ（tauri-bundler の `dmg/mod.rs` は識別名が `"-"` のとき署名しない）。
+    let macos = macos_bundle_config();
+
+    // Act
+    let identity = macos.get("signingIdentity");
+
+    // Assert
+    assert!(
+        identity.is_none(),
+        "tauri.conf.json に signingIdentity を書かないこと（ADR 0028）。\
+         署名の識別名は CI の APPLE_CERTIFICATE から取る。実際の値: {identity:?}"
     );
 }
