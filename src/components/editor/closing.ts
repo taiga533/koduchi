@@ -21,11 +21,16 @@ import { confirm } from '@tauri-apps/plugin-dialog'
  * 確認の対象になりうるタブ。
  *
  * `dirty` も `content` も省略できる。並びには**それらを持たないタブが混ざる**
- * ためである（テーブル定義ビューのタブなど）。持たないタブは失うものが無い。
+ * ためである（定義タブ。ADR 0022 で実際に入った）。持たないタブは失うものが無い。
+ *
+ * `kind` は読まないが、型として受けておく。すべて省略可の型へ「1 つも項目の
+ * 重ならない値」を渡すと TypeScript が弱い型の検査で弾くためであり、タブの
+ * 並びの要素をそのまま渡せるようにするための受けである。
  */
 export interface ClosableTab {
   dirty?: boolean
   content?: string
+  kind?: string
 }
 
 /**

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { BindInput } from './tab'
+import type { BindInput, SqlTab } from './tab'
 import {
   applyBindText,
   baseName,
@@ -11,6 +11,22 @@ import {
   toBinds,
   useTabStore,
 } from './tab'
+
+/**
+ * 並びの n 枚目を SQL タブとして取り出す。
+ *
+ * タブの並びには定義タブも混ざりうるため（ADR 0022）、内容や未保存の印を
+ * 見るテストではここを通す。
+ *
+ * @param index 並びの位置
+ */
+function sqlTabAt(index: number): SqlTab {
+  const tab = useTabStore.getState().tabs[index]
+  if (tab.kind !== 'sql') {
+    throw new Error(`${index} 枚目は SQL タブではない`)
+  }
+  return tab
+}
 
 beforeEach(() => {
   resetUntitledCounter()
@@ -50,7 +66,7 @@ describe('useTabStore', () => {
     useTabStore.getState().updateContent(id, 'select 1 from dual')
 
     // Assert
-    const tab = useTabStore.getState().tabs[0]
+    const tab = sqlTabAt(0)
     expect(tab.content).toBe('select 1 from dual')
     expect(tab.dirty).toBe(true)
   })
@@ -78,7 +94,7 @@ describe('useTabStore', () => {
     const state = useTabStore.getState()
     expect(state.tabs).toHaveLength(1)
     expect(state.tabs[0].id).not.toBe(id)
-    expect(state.tabs[0].content).toBe('')
+    expect(sqlTabAt(0).content).toBe('')
   })
 
   it('選択していないタブを閉じても選択は変わらない', () => {
@@ -153,7 +169,7 @@ describe('useTabStore.moveTab', () => {
     useTabStore.getState().moveTab(一枚目.id, 2)
 
     // Assert
-    const 動いた先 = useTabStore.getState().tabs[2]
+    const 動いた先 = sqlTabAt(2)
     expect(動いた先.id).toBe(一枚目.id)
     expect(動いた先.content).toBe('select 1 from dual')
     expect(動いた先.dirty).toBe(true)
@@ -265,7 +281,7 @@ describe('ファイルを開く', () => {
     useTabStore.getState().openFile(filePath, 'select * from users')
 
     // Assert
-    const tab = useTabStore.getState().tabs[1]
+    const tab = sqlTabAt(1)
     expect(tab.name).toBe('users.sql')
     expect(tab.filePath).toBe(filePath)
     expect(tab.content).toBe('select * from users')
@@ -297,7 +313,7 @@ describe('保存', () => {
     useTabStore.getState().markSaved(id, '/tmp/query.sql')
 
     // Assert
-    const tab = useTabStore.getState().tabs[0]
+    const tab = sqlTabAt(0)
     expect(tab.dirty).toBe(false)
     expect(tab.name).toBe('query.sql')
     expect(tab.filePath).toBe('/tmp/query.sql')
@@ -329,7 +345,7 @@ describe('セッションの復元', () => {
     const state = useTabStore.getState()
     expect(state.tabs.map((tab) => tab.id)).toEqual(['t1', 't2'])
     expect(state.activeTabId).toBe('t2')
-    expect(state.tabs[0].dirty).toBe(true)
+    expect(sqlTabAt(0).dirty).toBe(true)
   })
 
   it('復元した無題の番号とぶつからない番号が次に振られる', () => {
@@ -358,6 +374,82 @@ describe('セッションの復元', () => {
   })
 })
 
+describe('定義タブ', () => {
+  it('定義タブを末尾へ足して選ぶ', () => {
+    // Arrange
+    const 対象 = { owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' } as const
+
+    // Act
+    const id = useTabStore.getState().openDefinitionTab(対象)
+
+    // Assert
+    const state = useTabStore.getState()
+    expect(state.tabs.map((tab) => tab.kind)).toEqual(['sql', 'definition'])
+    expect(state.tabs[1].name).toBe('SHIPMENTS')
+    expect(state.activeTabId).toBe(id)
+  })
+
+  it('同じ対象を 2 度開いてもタブは増えない', () => {
+    // Arrange
+    const 対象 = { owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' } as const
+    const 最初 = useTabStore.getState().openDefinitionTab(対象)
+    useTabStore.getState().selectTab(useTabStore.getState().tabs[0].id)
+
+    // Act
+    const 二度目 = useTabStore.getState().openDefinitionTab({ ...対象 })
+
+    // Assert
+    expect(useTabStore.getState().tabs).toHaveLength(2)
+    expect(二度目).toBe(最初)
+    expect(useTabStore.getState().activeTabId).toBe(最初)
+  })
+
+  it('定義タブへ内容を書き込もうとしても変わらない', () => {
+    // Arrange: 定義タブは編集できない（ADR 0022）
+    const id = useTabStore
+      .getState()
+      .openDefinitionTab({ owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' })
+
+    // Act
+    useTabStore.getState().updateContent(id, 'select 1')
+
+    // Assert
+    expect(useTabStore.getState().tabs[1]).toEqual({
+      kind: 'definition',
+      id,
+      name: 'SHIPMENTS',
+      target: { owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' },
+    })
+  })
+
+  it('定義タブも同じ手続きで閉じられる', () => {
+    // Arrange: 並びは 1 本であり、閉じる操作は種類を問わない
+    const id = useTabStore
+      .getState()
+      .openDefinitionTab({ owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' })
+
+    // Act
+    useTabStore.getState().closeTab(id)
+
+    // Assert
+    expect(useTabStore.getState().tabs.map((tab) => tab.kind)).toEqual(['sql'])
+  })
+
+  it('復元したタブに定義タブは混ざらない', () => {
+    // Arrange
+    useTabStore.getState().openDefinitionTab({ owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' })
+
+    // Act
+    useTabStore.getState().restore({
+      tabs: [{ id: 't1', name: '無題-9.sql', filePath: null, content: 'select 1', dirty: false }],
+      activeTabId: 't1',
+    })
+
+    // Assert
+    expect(useTabStore.getState().tabs.map((tab) => tab.kind)).toEqual(['sql'])
+  })
+})
+
 describe('selectSession', () => {
   it('未保存のバッファも含めて書き出す', () => {
     // Arrange
@@ -377,6 +469,26 @@ describe('selectSession', () => {
     ])
     expect(session.activeTabId).toBe(id)
     expect(session.sidebarSegment).toBe('schema')
+  })
+
+  it('定義タブは書き出さず、選んでいれば選択も落とす', () => {
+    // Arrange: 定義は接続に属し、再起動後は中身を出せない（ADR 0022）
+    const sqlId = useTabStore.getState().tabs[0].id
+    const definitionId = useTabStore
+      .getState()
+      .openDefinitionTab({ owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' })
+
+    // Act
+    const session = selectSession(useTabStore.getState(), {
+      sidebarSegment: 'schema',
+      sidebarWidth: 240,
+      editorHeight: 268,
+    })
+
+    // Assert
+    expect(useTabStore.getState().activeTabId).toBe(definitionId)
+    expect(session.tabs.map((tab) => tab.id)).toEqual([sqlId])
+    expect(session.activeTabId).toBeNull()
   })
 
   it('ペインの寸法も書き出す', () => {

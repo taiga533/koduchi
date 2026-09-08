@@ -1,9 +1,17 @@
 /**
  * エディタタブの並び（デザイン 3a の 34px 帯）。
  *
+ * 並ぶのは SQL タブと定義タブの 2 種類である（ADR 0022）。並びは 1 本であり、
+ * 選択・閉じる・並べ替えはどちらも同じに扱う。**定義タブも掴んで動かせる。**
+ *
  * 未保存の `●` 印は**名前の左**に置き、閉じるボタンは**常に右に出す**
  * （ADR 0023）。印とボタンを入れ替える作りにすると、未保存のタブが閉じられなく
- * なるうえ、`dirty` を持たないタブが並びに混ざったときに破綻する。
+ * なるうえ、`dirty` を持たないタブが並びに混ざったときに破綻する。定義タブが
+ * まさにそれであり、`dirty` は `tabKinds.ts` の `isDirty` 越しに見る。
+ *
+ * 定義タブには種類の分かるアイコンを名前の左へ添える（ADR 0022）。`●` 印と
+ * 同じ側だが、**定義タブは未保存にならない**ため両方が出ることはない。印の場所は
+ * 印が無いときも空けてあり、SQL タブと定義タブで名前の左端が揃う。
  *
  * 並べ替えは Pointer Events で行う。`Splitter` と同じく `setPointerCapture` を
  * 使い、`mousemove` を `window` に貼らない。落とす位置の計算は `tabOrder.ts` の
@@ -12,8 +20,9 @@
 
 import { useCallback, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Plus, TableProperties, X } from 'lucide-react'
 import { useTabStore } from '../../stores/tab'
+import { isDefinitionTab, isDirty } from '../../stores/tabKinds'
 import { DRAG_THRESHOLD, dropIndex } from './tabOrder'
 import type { TabRect } from './tabOrder'
 
@@ -203,7 +212,7 @@ export function TabBar({ onCloseTab }: TabBarProps) {
               active ? 'bg-panel text-fg' : 'text-fg3'
             } ${dragging ? 'opacity-60' : ''}`}
           >
-            {tab.dirty ? (
+            {isDirty(tab) ? (
               <span
                 className="w-7px h-7px rounded-full bg-ac shrink-0"
                 aria-label="未保存"
@@ -216,8 +225,13 @@ export function TabBar({ onCloseTab }: TabBarProps) {
             <button
               type="button"
               onClick={() => selectTab(tab.id)}
-              className="bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
+              aria-label={isDefinitionTab(tab) ? `${tab.name} の定義` : undefined}
+              className="flex items-center gap-5px bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
             >
+              {/* 定義タブの目印（ADR 0022）。名前だけでは SQL タブと見分けにくい。 */}
+              {isDefinitionTab(tab) ? (
+                <TableProperties size={12} className="text-fg5 shrink-0" aria-hidden />
+              ) : null}
               {tab.name}
             </button>
             <button

@@ -7,6 +7,9 @@
  * 2. 未接続（デザイン 5g） … 保存した接続を選ぶ画面と、接続を作成する画面
  * 3. 接続中 … エディタと結果ペイン
  *
+ * 接続中の本体は、選ばれているタブの種類で切り替わる（ADR 0022）。SQL タブでは
+ * エディタと結果ペイン、定義タブではテーブル定義ビューが本体をまるごと使う。
+ *
  * キーバインドのうち、エディタの中でしか意味を持たない `⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / `⌘.` は
  * CodeMirror 側に置く。それ以外はウィンドウ全体で効かせる。`⌘K` のコマンドパレットと
  * `⇧⌘S` のクエリ保存もここにある（ADR 0018）。
@@ -74,6 +77,7 @@ import { useSourceSearchStore } from './stores/sourceSearch'
 import type { BindInput } from './stores/tab'
 import {
   fillBindDefaults,
+  selectActiveSqlTab,
   selectActiveTab,
   selectBindValues,
   selectSession,
@@ -84,7 +88,13 @@ import { useUiStore } from './stores/ui'
 import type { PendingWording } from './transaction/pendingChanges'
 import { askPendingChoice, CLOSE_WORDING, DISCONNECT_WORDING } from './transaction/pendingChanges'
 import { currentWindowLabel, onWindowCloseRequested } from './window'
-import type { Bind, ClientStatus, SavedConnection, SchemaFilter } from './types/db'
+import type {
+  Bind,
+  ClientStatus,
+  DefinitionTarget,
+  SavedConnection,
+  SchemaFilter,
+} from './types/db'
 
 /** カーソルの初期位置。エディタから通知が来るまでの値。 */
 const INITIAL_POSITION: EditorPosition = {
@@ -169,6 +179,9 @@ export function App() {
   const updateContent = useTabStore((state) => state.updateContent)
   const closeTab = useTabStore((state) => state.closeTab)
   const openNewTab = useTabStore((state) => state.openNewTab)
+  // 選択中のタブの種類だけを購読する（ADR 0022）。定義タブの間はエディタも
+  // 結果ペインも出さないが、打鍵のたびにここが描き直っては元も子もない。
+  const activeTabKind = useTabStore((state) => selectActiveTab(state)?.kind ?? 'sql')
   const openFile = useTabStore((state) => state.openFile)
   const markSaved = useTabStore((state) => state.markSaved)
   const restoreTabs = useTabStore((state) => state.restore)
@@ -211,7 +224,6 @@ export function App() {
   const clearSessions = useSessionsStore((state) => state.clear)
   const clearSourceSearch = useSourceSearchStore((state) => state.clear)
   const clearDefinition = useDefinitionStore((state) => state.clear)
-  const definitionOpen = useDefinitionStore((state) => state.target !== null)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
@@ -360,7 +372,8 @@ export function App() {
    * 内容も位置もストアと ref から読むため、打鍵のたびに作り直さなくてよい。
    */
   const currentSql = useCallback((selectionOnly: boolean): string | null => {
-    const tab = selectActiveTab(useTabStore.getState())
+    // 定義タブを選んでいるときは SQL が無い（ADR 0022）。
+    const tab = selectActiveSqlTab(useTabStore.getState())
     if (!tab) {
       return null
     }
@@ -394,7 +407,7 @@ export function App() {
    * 実行しない（`executeScript` が判断する）。
    */
   const runScript = useCallback(() => {
-    const tab = selectActiveTab(useTabStore.getState())
+    const tab = selectActiveSqlTab(useTabStore.getState())
     if (!tab) {
       return
     }
@@ -538,6 +551,8 @@ export function App() {
         void releaseTab(connection.id, tabId)
       }
       clearResultColumnWidths(tabId)
+      // 定義タブなら、そのタブが抱えていた定義と DDL も捨てる（ADR 0022）。
+      useDefinitionStore.getState().drop(tabId)
       closeTab(tabId)
     },
     [clearResultColumnWidths, closeTab, connection, releaseTab],
@@ -632,7 +647,7 @@ export function App() {
 
   /** `⌘S`。保存先が決まっていなければ選ばせる。 */
   const saveActiveTab = useCallback(async () => {
-    const tab = selectActiveTab(useTabStore.getState())
+    const tab = selectActiveSqlTab(useTabStore.getState())
     if (!tab) {
       return
     }
@@ -661,15 +676,26 @@ export function App() {
     void getDbApi().openConnectionWindow()
   }, [])
 
-  /** 履歴の SQL をエディタへ入れる。 */
+  /**
+   * 履歴の SQL をエディタへ入れる。
+   *
+   * 定義タブを選んでいるときは入れる先が無いため、新しい SQL タブを開いて
+   * そこへ入れる（ADR 0022）。黙って何も起きないのでは、押した意味が分からない。
+   */
   const useHistorySql = useCallback(
     (sql: string) => {
+      const tab = selectActiveSqlTab(useTabStore.getState())
+      if (tab) {
+        updateContent(tab.id, sql)
+        return
+      }
+      openNewTab()
       const tabId = useTabStore.getState().activeTabId
       if (tabId) {
         updateContent(tabId, sql)
       }
     },
-    [updateContent],
+    [openNewTab, updateContent],
   )
 
   /**
@@ -699,6 +725,22 @@ export function App() {
     },
     [openNewTab, updateContent],
   )
+
+  /**
+   * ツリーから定義タブを開く（ADR 0022）。
+   *
+   * タブ帯へ定義タブを足し（既に同じ対象のタブがあればそこへ移り）、その
+   * タブぶんの定義を読む。取得はプールの結果セットを持たない接続で行われる
+   * ため、利用者が見ている結果セットは壊れない（ADR 0003・0019）。
+   */
+  const openDefinitionTab = useCallback((target: DefinitionTarget) => {
+    const active = useConnectionStore.getState().connection
+    if (!active) {
+      return
+    }
+    const tabId = useTabStore.getState().openDefinitionTab(target)
+    void useDefinitionStore.getState().open(active.id, tabId, target)
+  }, [])
 
   /**
    * `⌘K`。コマンドパレットを開く（ADR 0018）。
@@ -736,7 +778,7 @@ export function App() {
    * `.sql` を落としたものである。
    */
   const promptSaveQuery = useCallback(() => {
-    const tab = selectActiveTab(useTabStore.getState())
+    const tab = selectActiveSqlTab(useTabStore.getState())
     if (!tab) {
       return
     }
@@ -767,7 +809,7 @@ export function App() {
 
   /** CSV の書き出しを始める。保存先を選ばせてから書き出す。 */
   const startCsvExport = useCallback(async () => {
-    const tab = selectActiveTab(useTabStore.getState())
+    const tab = selectActiveSqlTab(useTabStore.getState())
     if (!connection || !tab) {
       return
     }
@@ -1050,7 +1092,6 @@ export function App() {
       {sourceSearchOpen ? (
         <SourceSearchPanel connectionId={connection.id} onClose={closeSourceSearch} />
       ) : null}
-      {definitionOpen ? <TableDefinitionPanel connectionId={connection.id} /> : null}
       {bindPrompt ? (
         <BindPrompt
           names={bindPrompt.names}
@@ -1118,6 +1159,7 @@ export function App() {
         onUseHistory={useHistorySql}
         onInsertIdentifier={insertIntoEditor}
         onOpenSelect={openSqlInNewTab}
+        onOpenDefinition={openDefinitionTab}
         width={sidebarWidth}
       />
       <Splitter
@@ -1131,44 +1173,55 @@ export function App() {
       />
       <div className="flex-1 min-w-0 flex flex-col gap-6px">
         <TabBar onCloseTab={closeTabAndRelease} />
-        <div
-          style={{ height: `${editorHeight}px` }}
-          className="relative shrink-0 bg-panel rounded-10px border border-line overflow-hidden"
-        >
-          <EditorPanel
-            ref={editorRef}
-            onCursorChange={onCursorChange}
-            onRunStatement={runStatement}
-            onRunSelection={runSelection}
-            onRunScript={runScript}
-            onCancel={cancelExecution}
-          />
-          <RunControls
-            tabId={activeTabId}
-            onRun={runStatement}
-            onRunSelection={runSelection}
-            onRunScript={runScript}
-            onExplain={() => void runPlan(false)}
-            onExplainActual={() => void runPlan(true)}
-            onSaveCsv={openCsvDialog}
-            onCancel={cancelExecution}
-          />
-        </div>
-        <Splitter
-          orientation="horizontal"
-          label="エディタの高さ"
-          value={editorHeight}
-          min={EDITOR_HEIGHT_MIN}
-          max={editorHeightMax(window.innerHeight)}
-          defaultValue={EDITOR_HEIGHT_DEFAULT}
-          onChange={(height) => setEditorHeight(height, window.innerHeight)}
-        />
-        <ResultPane
-          tabId={activeTabId}
-          runningLabel={`${connection.name} · ${activeTabName}`}
-          onCancel={cancelExecution}
-          onRequestMore={requestMore}
-        />
+        {/*
+          定義タブを選んでいる間は、エディタも結果ペインも出さずに本体を
+          まるごと定義へ渡す（ADR 0022）。定義は実行の結果ではないため、
+          結果ペインを添えても空のまま場所を取るだけである。
+        */}
+        {activeTabKind === 'definition' && activeTabId !== null ? (
+          <TableDefinitionPanel connectionId={connection.id} tabId={activeTabId} />
+        ) : (
+          <>
+            <div
+              style={{ height: `${editorHeight}px` }}
+              className="relative shrink-0 bg-panel rounded-10px border border-line overflow-hidden"
+            >
+              <EditorPanel
+                ref={editorRef}
+                onCursorChange={onCursorChange}
+                onRunStatement={runStatement}
+                onRunSelection={runSelection}
+                onRunScript={runScript}
+                onCancel={cancelExecution}
+              />
+              <RunControls
+                tabId={activeTabId}
+                onRun={runStatement}
+                onRunSelection={runSelection}
+                onRunScript={runScript}
+                onExplain={() => void runPlan(false)}
+                onExplainActual={() => void runPlan(true)}
+                onSaveCsv={openCsvDialog}
+                onCancel={cancelExecution}
+              />
+            </div>
+            <Splitter
+              orientation="horizontal"
+              label="エディタの高さ"
+              value={editorHeight}
+              min={EDITOR_HEIGHT_MIN}
+              max={editorHeightMax(window.innerHeight)}
+              defaultValue={EDITOR_HEIGHT_DEFAULT}
+              onChange={(height) => setEditorHeight(height, window.innerHeight)}
+            />
+            <ResultPane
+              tabId={activeTabId}
+              runningLabel={`${connection.name} · ${activeTabName}`}
+              onCancel={cancelExecution}
+              onRequestMore={requestMore}
+            />
+          </>
+        )}
       </div>
     </Shell>
   )
