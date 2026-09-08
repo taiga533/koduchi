@@ -140,6 +140,21 @@ describe('StatusBar', () => {
     expect(onOpenSessions).toHaveBeenCalledTimes(1)
   })
 
+  it('ソースを検索を選ぶとパネルを開く手続きが呼ばれる', async () => {
+    // Arrange: セッションとロックと同じ入口に置く（ADR 0021）
+    接続済みにする()
+    const handlers = ハンドラを作る()
+    const onOpenSourceSearch = vi.fn()
+    render(<StatusBar {...handlers} onOpenSourceSearch={onOpenSourceSearch} />)
+    await userEvent.click(screen.getByRole('button', { name: '接続中' }))
+
+    // Act
+    await userEvent.click(screen.getByRole('menuitem', { name: 'ソースを検索…' }))
+
+    // Assert
+    expect(onOpenSourceSearch).toHaveBeenCalledTimes(1)
+  })
+
   it('パネルを開く手続きが無ければセッションの項目は出ない', async () => {
     // Arrange: 接続していない画面では意味を持たない
     接続済みにする()
@@ -151,6 +166,7 @@ describe('StatusBar', () => {
 
     // Assert
     expect(screen.queryByRole('menuitem', { name: 'セッションとロック…' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'ソースを検索…' })).not.toBeInTheDocument()
   })
 
   it('手動コミットの接続で未コミットのときは未コミットと出る', () => {

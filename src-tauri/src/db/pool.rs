@@ -13,6 +13,7 @@ use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
+use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use std::sync::{Arc, Mutex};
 
 /// プールが持つ接続の既定の本数。
@@ -378,6 +379,29 @@ impl ConnectionPool {
         self.background_handle()?.kill_session(sid, serial)
     }
 
+    /// オブジェクトのソースを横断して検索する（ADR 0021）。
+    ///
+    /// セッションの一覧やスキーマ取得と同じく、結果セットを保持していない接続で
+    /// 読む。`ALL_SOURCE` を舐める重い問い合わせであっても、利用者が開いている
+    /// 結果セットは壊れない。
+    ///
+    /// # 引数
+    ///
+    /// * `request` - 検索の求め
+    pub fn search_source(&self, request: SourceSearchRequest) -> DbResult<SourceSearchResult> {
+        self.background_handle()?.search_source(request)
+    }
+
+    /// 当たった行の前後を読む（ADR 0021）。
+    ///
+    /// # 引数
+    ///
+    /// * `target` - 読むオブジェクト
+    /// * `line` - 中心にする行
+    pub fn source_context(&self, target: SourceTarget, line: u32) -> DbResult<Vec<SourceLine>> {
+        self.background_handle()?.source_context(target, line)
+    }
+
     /// 実行中の文を中止する（`⌘.`）。
     ///
     /// # 引数
@@ -426,6 +450,8 @@ mod tests {
         ロールバックした回数: Arc<AtomicUsize>,
         /// セッションの一覧を求められた回数（ADR 0017）。
         一覧を求められた回数: Arc<AtomicUsize>,
+        /// ソース検索を求められた回数（ADR 0021）。
+        検索を求められた回数: Arc<AtomicUsize>,
     }
 
     struct 何もしない中止経路;
@@ -508,13 +534,30 @@ mod tests {
         fn kill_session(&mut self, _sid: u32, _serial: u32) -> DbResult<()> {
             Ok(())
         }
+
+        fn search_source(&mut self, request: &SourceSearchRequest) -> DbResult<SourceSearchResult> {
+            self.検索を求められた回数.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::db::source::group_matches(
+                Vec::new(),
+                request.effective_limit(),
+            ))
+        }
+
+        fn source_context(
+            &mut self,
+            _target: &SourceTarget,
+            _line: u32,
+        ) -> DbResult<Vec<SourceLine>> {
+            Ok(Vec::new())
+        }
     }
 
     /// 数を数えるドライバを `本数` ぶん載せたプールを作る。
     fn 数えるプールを作る(
         本数: usize,
     ) -> (ConnectionPool, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-        let (pool, コミットした回数, ロールバックした回数, _) = 数えるプールを組む(本数);
+        let (pool, コミットした回数, ロールバックした回数, _, _) =
+            数えるプールを組む(本数);
         (pool, コミットした回数, ロールバックした回数)
     }
 
@@ -526,21 +569,25 @@ mod tests {
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
     ) {
         let コミットした回数 = Arc::new(AtomicUsize::new(0));
         let ロールバックした回数 = Arc::new(AtomicUsize::new(0));
         let 一覧を求められた回数 = Arc::new(AtomicUsize::new(0));
+        let 検索を求められた回数 = Arc::new(AtomicUsize::new(0));
 
         let drivers: Vec<_> = (0..本数)
             .map(|_| {
                 let コミット = Arc::clone(&コミットした回数);
                 let ロールバック = Arc::clone(&ロールバックした回数);
                 let 一覧 = Arc::clone(&一覧を求められた回数);
+                let 検索 = Arc::clone(&検索を求められた回数);
                 move || {
                     Ok(数えるドライバ {
                         コミットした回数: コミット,
                         ロールバックした回数: ロールバック,
                         一覧を求められた回数: 一覧,
+                        検索を求められた回数: 検索,
                     })
                 }
             })
@@ -552,6 +599,7 @@ mod tests {
             コミットした回数,
             ロールバックした回数,
             一覧を求められた回数,
+            検索を求められた回数,
         )
     }
 
@@ -571,13 +619,32 @@ mod tests {
     #[test]
     fn セッションの一覧は一本の接続だけで読む() {
         // Arrange: 一覧はコミットと違い、全接続へ配る必要が無い（ADR 0017）
-        let (pool, _, _, 一覧を求められた回数) = 数えるプールを組む(4);
+        let (pool, _, _, 一覧を求められた回数, _) = 数えるプールを組む(4);
 
         // Act
         pool.list_sessions().unwrap();
 
         // Assert
         assert_eq!(一覧を求められた回数.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ソース検索も一本の接続だけで読む() {
+        // Arrange: 重い問い合わせであるほど、全接続へ配らないことが効く（ADR 0021）
+        let (pool, _, _, _, 検索を求められた回数) = 数えるプールを組む(4);
+        let request = SourceSearchRequest {
+            needle: String::from("orders"),
+            owner: None,
+            kinds: crate::db::source::SourceKindFilter::default(),
+            case_sensitive: false,
+            limit: crate::db::source::SOURCE_SEARCH_DEFAULT_LIMIT,
+        };
+
+        // Act
+        pool.search_source(request).unwrap();
+
+        // Assert
+        assert_eq!(検索を求められた回数.load(Ordering::SeqCst), 1);
     }
 
     #[test]

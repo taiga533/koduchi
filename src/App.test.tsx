@@ -473,6 +473,23 @@ describe('App', () => {
     expect(calls.explainPlan[0].binds).toEqual([{ name: 'id', kind: 'number', value: '7' }])
   })
 
+  it('⇧⌘F でソース検索のパネルが開く', async () => {
+    // Arrange: パレット（⌘K）とは別の道具である（ADR 0018・0021）
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await userEvent.keyboard('{Meta>}{Shift>}f{/Shift}{/Meta}')
+
+    // Assert
+    expect(
+      await screen.findByRole('dialog', { name: 'オブジェクトのソース検索' }),
+    ).toBeInTheDocument()
+  })
+
   it('実行に失敗するとメッセージタブが現れる', async () => {
     // Arrange
     const { api } = createFakeDbApi({

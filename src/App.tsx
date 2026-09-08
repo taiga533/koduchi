@@ -44,6 +44,7 @@ import type { EditorPosition } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
 import { ResultPane } from './components/results/ResultPane'
 import { SessionsPanel } from './components/sessions/SessionsPanel'
+import { SourceSearchPanel } from './components/source/SourceSearchPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { StatusBar } from './components/statusbar/StatusBar'
@@ -66,6 +67,7 @@ import { useHistoryStore } from './stores/history'
 import { nodeKey, useSchemaStore } from './stores/schema'
 import { useSavedQueryStore } from './stores/savedQuery'
 import { useSessionsStore } from './stores/sessions'
+import { useSourceSearchStore } from './stores/sourceSearch'
 import type { BindInput } from './stores/tab'
 import {
   fillBindDefaults,
@@ -186,6 +188,9 @@ export function App() {
   const sessionsOpen = useUiStore((state) => state.sessionsOpen)
   const openSessions = useUiStore((state) => state.openSessions)
   const closeSessions = useUiStore((state) => state.closeSessions)
+  const sourceSearchOpen = useUiStore((state) => state.sourceSearchOpen)
+  const openSourceSearch = useUiStore((state) => state.openSourceSearch)
+  const closeSourceSearch = useUiStore((state) => state.closeSourceSearch)
   const loadSettings = useUiStore((state) => state.loadSettings)
   const csvOptions = useUiStore((state) => state.csvOptions)
   const setCsvOptions = useUiStore((state) => state.setCsvOptions)
@@ -199,6 +204,7 @@ export function App() {
 
   const saveQuery = useSavedQueryStore((state) => state.save)
   const clearSessions = useSessionsStore((state) => state.clear)
+  const clearSourceSearch = useSourceSearchStore((state) => state.clear)
 
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
@@ -560,6 +566,9 @@ export function App() {
     // セッションの一覧は接続に属する。切断したら捨てる（ADR 0017）。
     clearSessions()
     closeSessions()
+    // ソース検索の結果も同じく接続に属する（ADR 0021）。
+    clearSourceSearch()
+    closeSourceSearch()
 
     try {
       await disconnect()
@@ -572,7 +581,9 @@ export function App() {
     clearExecutions,
     clearSchemas,
     clearSessions,
+    clearSourceSearch,
     closeSessions,
+    closeSourceSearch,
     disconnect,
     releaseTab,
     resolvePendingTransaction,
@@ -791,6 +802,13 @@ export function App() {
         shortcut: '⌃⌘N',
         run: openNewConnectionWindow,
       },
+      {
+        id: 'source-search',
+        label: 'オブジェクトのソースを検索',
+        shortcut: '⇧⌘F',
+        run: openSourceSearch,
+      },
+      { id: 'sessions', label: 'セッションとロックを開く', shortcut: '', run: openSessions },
       { id: 'settings', label: '設定を開く', shortcut: '', run: openSettings },
     ],
     [
@@ -799,7 +817,9 @@ export function App() {
       openCsvDialog,
       openNewConnectionWindow,
       openNewTab,
+      openSessions,
       openSettings,
+      openSourceSearch,
       openSqlFile,
       promptSaveQuery,
       rollbackTransaction,
@@ -871,6 +891,10 @@ export function App() {
         handled(openNewConnectionWindow)
         return
       }
+      if (key === 'f' && event.shiftKey) {
+        handled(openSourceSearch)
+        return
+      }
       if (key === 'k') {
         handled(openPalette)
       }
@@ -886,6 +910,7 @@ export function App() {
     openNewConnectionWindow,
     openNewTab,
     openPalette,
+    openSourceSearch,
     openSqlFile,
     promptSaveQuery,
     runPlan,
@@ -971,6 +996,9 @@ export function App() {
           onClose={closeSessions}
         />
       ) : null}
+      {sourceSearchOpen ? (
+        <SourceSearchPanel connectionId={connection.id} onClose={closeSourceSearch} />
+      ) : null}
       {bindPrompt ? (
         <BindPrompt
           names={bindPrompt.names}
@@ -1024,6 +1052,7 @@ export function App() {
       onOpenSettings={openSettings}
       onDisconnect={() => void disconnectAndReset()}
       onOpenSessions={openSessions}
+      onOpenSourceSearch={openSourceSearch}
       onCommit={commitTransaction}
       onRollback={rollbackTransaction}
       onOpenPalette={openPalette}
@@ -1167,6 +1196,7 @@ function Shell({
   onOpenSettings,
   onDisconnect,
   onOpenSessions,
+  onOpenSourceSearch,
   onCommit,
   onRollback,
   onOpenPalette,
@@ -1177,6 +1207,11 @@ function Shell({
   onDisconnect: () => void
   /** セッションとロックのパネルを開く（ADR 0017）。接続中の画面だけが渡す。 */
   onOpenSessions?: () => void
+  /**
+   * オブジェクトのソース検索のパネルを開く（`⇧⌘F`、ADR 0021）。
+   * 接続中の画面だけが渡す。
+   */
+  onOpenSourceSearch?: () => void
   /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
   /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
@@ -1195,6 +1230,7 @@ function Shell({
         onDisconnect={onDisconnect}
         onSwitchConnection={onDisconnect}
         onOpenSessions={onOpenSessions}
+        onOpenSourceSearch={onOpenSourceSearch}
         onCommit={onCommit}
         onRollback={onRollback}
       />

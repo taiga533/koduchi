@@ -8,6 +8,7 @@
 //! そのときは `DbErrorKind::Permission` へ写して「空だった」と混同させない。
 
 use crate::db::error::{DbError, DbResult};
+use crate::db::oracle::errors::map_permission_error;
 use crate::db::sessions::{check_kill_allowed, SessionOverview, SessionRow};
 use oracle::Connection;
 
@@ -42,31 +43,9 @@ const SESSIONS_SQL: &str = "select s.sid,
 const IDENTITY_SQL: &str =
     "select sys_context('userenv','sid'), sys_context('userenv','instance') from dual";
 
-/// 権限が足りないことを示す Oracle のエラー番号。
-///
-/// `ORA-00942` は「表またはビューが存在しません」だが、`V$SESSION` に対しては
-/// 実際には参照権限が無いことを意味する。
-const PERMISSION_ERRORS: [&str; 2] = ["ORA-00942", "ORA-01031"];
-
-/// Oracle のエラーを、権限不足なら `Permission` へ写す。
-///
-/// 権限が無いことと「見た結果が空だった」ことを、呼び出し側が区別できるように
-/// するための変換である（ADR 0017）。データベースが返した原文はそのまま残す。
-///
-/// # 引数
-///
-/// * `context` - 何をしようとしていたか
-/// * `error` - Oracle が返したエラー
-/// * `hint` - 権限不足のときに添える案内
-fn 権限を見分ける(context: &str, error: &oracle::Error, hint: &str) -> DbError {
-    let text = error.to_string();
-
-    if PERMISSION_ERRORS.iter().any(|code| text.contains(code)) {
-        return DbError::permission(format!("{context}{hint}（{text}）"));
-    }
-
-    DbError::execute(format!("{context}: {text}"))
-}
+/// `V$SESSION` を参照できないときに添える案内。
+const SESSION_PERMISSION_HINT: &str =
+    "。この接続には参照権限がありません（SELECT_CATALOG_ROLE などが要ります）";
 
 /// `SYS_CONTEXT` の返す文字列を番号として読む。
 ///
@@ -113,10 +92,10 @@ pub fn load_sessions(connection: &Connection) -> DbResult<SessionOverview> {
     let (current_sid, instance) = load_identity(connection)?;
 
     let rows = connection.query(SESSIONS_SQL, &[]).map_err(|error| {
-        権限を見分ける(
+        map_permission_error(
             "V$SESSION を参照できません",
             &error,
-            "。この接続には参照権限がありません（SELECT_CATALOG_ROLE などが要ります）",
+            SESSION_PERMISSION_HINT,
         )
     })?;
 
@@ -124,10 +103,10 @@ pub fn load_sessions(connection: &Connection) -> DbResult<SessionOverview> {
 
     for row in rows {
         let row = row.map_err(|error| {
-            権限を見分ける(
+            map_permission_error(
                 "V$SESSION を参照できません",
                 &error,
-                "。この接続には参照権限がありません（SELECT_CATALOG_ROLE などが要ります）",
+                SESSION_PERMISSION_HINT,
             )
         })?;
 
@@ -220,7 +199,7 @@ pub fn kill_session(
         .execute(&kill_statement(sid, serial), &[])
         .map(|_| ())
         .map_err(|error| {
-            権限を見分ける(
+            map_permission_error(
                 &format!("SID {sid} を終了できません"),
                 &error,
                 "。この接続には ALTER SYSTEM 権限がありません",
