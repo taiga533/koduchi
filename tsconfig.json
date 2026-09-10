@@ -21,6 +21,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "uno.config.ts"],
+  "include": ["src", "scripts", "uno.config.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

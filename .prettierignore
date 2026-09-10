@@ -4,3 +4,7 @@ bun.lock
 src-tauri/target
 src-tauri/gen
 adr
+
+# 生成物と、そのまま載せる条文は整形しない
+THIRD-PARTY-NOTICES.md
+LICENSE

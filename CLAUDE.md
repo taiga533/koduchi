@@ -121,9 +121,16 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 
 **書体**: PlemolJP v3.1.0（等幅版、SIL OFL 1.1）を `src/assets/fonts/` に同梱し、`src/theme/fonts.css` で登録している。半角と全角の幅比が 1:2 なので、日本語を含むデータでも結果テーブルの桁が揃う。データベースの内容は任意の文字を含みうるため**サブセット化はしない**。収録ウェイトは 400 / 500 / 600 / 700 の 4 つ。
 
+**ライセンス**（ADR 0029）: 小槌は **PolyForm Noncommercial License 1.0.0 + 追加許諾**で提供する。**正文は英語の `LICENSE`** で、`LICENSE.ja.md` は効力の無い参考訳である。**PolyForm の条文には手を入れない。**条件を変えるときは追加許諾の側に足す。追加許諾の要は 2 つで、**バージョン 1.0.0 未満は商用・非商用を問わず無償**、ただし**その許諾は実行と使用に限り配布を含まない**（PolyForm の `Use` は配布を含む定義なので、条文で明示的に外している）。**既に公開した 1.0.0 未満のリリースについてこの許諾は撤回しない。**1.0.0 以降の条件はまだ決めていない。
+
+**貢献の受け入れ**（ADR 0029）: PR を受ける。条件は `CONTRIBUTING.md` にあり、要は**ライセンサーへの再ライセンス権**（有償の商用条件を含む任意の条件で配布できる）である。**DCO だけでは足りない**（元のライセンスでの提供を言うだけで、別の条件で提供する権利を与えない）。この条項が無いまま PR を取り込むと、追加許諾第 2 条で予告した道が塞がる。同意の証跡は全コミットの `Signed-off-by`。
+
+**第三者の著作権表示**（ADR 0029）: `THIRD-PARTY-NOTICES.md` は `bun run notices` の**生成物**であり手で編集しない。npm は `package.json` の `dependencies` の閉包、Rust は `cargo tree -e normal` から拾う。書体のように依存関係の外で同梱するものは `scripts/generate-third-party-notices.ts` の `ASSETS` に足す。**全文が拾えなかったものは黙って落とさず、その旨を書く。** `LICENSE` と併せて `tauri.conf.json` の `bundle.resources` で `.app` へ同梱し、指定と実在を `src-tauri/tests/notices.rs` が見張る（外れても手元の `tauri dev` では気づけない）。
+
 ## 制約
 
 - TypeScript は `strict` に加えて `noUnusedLocals` / `noUnusedParameters` が有効。未使用の変数・引数はビルドエラーになる。
 - アプリ識別子は `ninja.taiga533.koduchi`（`tauri.conf.json`）。
 - バージョンの実体は `package.json` と `src-tauri/Cargo.toml` の 2 箇所だけ。`tauri.conf.json` の `version` は `"../package.json"` を参照しているので触らない。タグとの一致は `scripts/check-release-tag.sh` が見張る（ADR 0011）。
+- 準拠法は日本法、第一審の専属的合意管轄は横浜地方裁判所小田原支部（`LICENSE` の追加許諾第 4 条）。
 - Rust の版は `rust-toolchain.toml` で `1.98.0` に固定してある。GitHub Actions は commit SHA でピン留めする（更新は Dependabot が PR を出す）。
