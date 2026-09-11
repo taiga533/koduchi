@@ -419,13 +419,28 @@ export function TabBar({ onCloseTab }: TabBarProps) {
            * `⌥←` / `⌥→` で 1 つずつ動かし（ADR 0023）、`F2` で名前を付け直す
            * （ADR 0032）。どちらもタブ帯の外では意味を持たないため、`App.tsx`
            * ではなくここに置く（`CLAUDE.md` の「キーバインドの置き場所」）。
+           *
+           * **名前を付け直している間は、ここの打鍵を一切効かせない。**入力欄は
+           * この器の中に描かれるため、打った打鍵はそのまま上がってくる。
+           * **macOS では `⌥←` / `⌥→` は入力欄の単語単位のカーソル移動である。**
+           * 名前の途中で単語の頭へ戻ろうとした `⌥←` でタブが左隣と入れ替わっては
+           * ならない。`onPointerDown` の `editing` の関所と 1 対 1 で並ぶ。
            */
           const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
             // 変換中の打鍵は IME のものである（ADR 0025）。
             if (isComposingKey(event)) {
               return
             }
-            if (event.key === 'F2' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+            if (editing) {
+              return
+            }
+            if (
+              event.key === 'F2' &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              !event.shiftKey
+            ) {
               event.preventDefault()
               startRename(tab.id)
               return

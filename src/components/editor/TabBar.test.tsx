@@ -966,6 +966,49 @@ describe('TabBar の名前の付け直し', () => {
     expect(sqlTabAt(0).customName).toBe('売上集計')
   })
 
+  it('名前を打っている最中の ⌥← ではタブが動かない', () => {
+    // Arrange: macOS では `⌥←` は入力欄の単語単位のカーソル移動である。
+    // 入力欄はタブの器の中に描かれるため、打鍵はそのまま器へ上がってくる。
+    タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
+    render(<TabBar onCloseTab={vi.fn()} />)
+    fireEvent.doubleClick(タブの器('t2.sql'))
+
+    // Act
+    fireEvent.keyDown(入力欄(), { key: 'ArrowLeft', altKey: true })
+
+    // Assert
+    expect(並び()).toEqual(['t1.sql', 't2.sql'])
+    expect(編集中()).toBe(true)
+  })
+
+  it('名前を打っている最中の ⌥→ でもタブが動かない', () => {
+    // Arrange
+    タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
+    render(<TabBar onCloseTab={vi.fn()} />)
+    fireEvent.doubleClick(タブの器('t1.sql'))
+
+    // Act
+    fireEvent.keyDown(入力欄(), { key: 'ArrowRight', altKey: true })
+
+    // Assert
+    expect(並び()).toEqual(['t1.sql', 't2.sql'])
+    expect(編集中()).toBe(true)
+  })
+
+  it('編集を終えれば ⌥← の並べ替えはこれまでどおり効く', () => {
+    // Arrange: 編集中の関所が並べ替えを殺していないことを見る
+    タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
+    render(<TabBar onCloseTab={vi.fn()} />)
+    fireEvent.doubleClick(タブの器('t2.sql'))
+    fireEvent.keyDown(入力欄(), { key: 'Escape' })
+
+    // Act
+    fireEvent.keyDown(タブの器('t2.sql'), { key: 'ArrowLeft', altKey: true })
+
+    // Assert
+    expect(並び()).toEqual(['t2.sql', 't1.sql'])
+  })
+
   it('F2 で名前の入力欄が出る', () => {
     // Arrange
     render(<TabBar onCloseTab={vi.fn()} />)
@@ -975,6 +1018,17 @@ describe('TabBar の名前の付け直し', () => {
 
     // Assert
     expect(入力欄().value).toBe('無題-1.sql')
+  })
+
+  it('⇧F2 では編集に入らない', () => {
+    // Arrange: 修飾の付いた `F2` は別の打鍵である（`⌥←` の判定と揃える）
+    render(<TabBar onCloseTab={vi.fn()} />)
+
+    // Act
+    fireEvent.keyDown(タブの器('無題-1.sql'), { key: 'F2', shiftKey: true })
+
+    // Assert
+    expect(編集中()).toBe(false)
   })
 
   it('ダブルクリックしても並びは動かない（ADR 0023 の掴みと食い合わない）', () => {
