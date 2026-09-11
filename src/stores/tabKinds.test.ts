@@ -18,7 +18,7 @@ import {
   sameDefinitionTarget,
   toSessionTabs,
 } from './tabKinds'
-import type { DefinitionTarget } from '../types/db'
+import type { DefinitionTarget, SessionTab } from '../types/db'
 
 const 出荷: DefinitionTarget = { owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' }
 const 注文: DefinitionTarget = { owner: 'KODUCHI', name: 'ORDERS', kind: 'table' }
@@ -34,6 +34,7 @@ function SQLタブ(id: string, overrides: Partial<SqlTab> = {}): SqlTab {
     kind: 'sql',
     id,
     name: `${id}.sql`,
+    customName: null,
     filePath: null,
     content: '',
     dirty: false,
@@ -206,16 +207,49 @@ describe('セッションへの出し入れ', () => {
     expect(session[0]).toEqual({
       id: 't1',
       name: 't1.sql',
+      customName: null,
       filePath: null,
       content: 'select 1',
       dirty: true,
     })
   })
 
+  it('付け直した名前も書き出して読み戻せる（ADR 0032）', () => {
+    // Arrange
+    const tabs = [SQLタブ('t1', { customName: '売上集計' })]
+
+    // Act
+    const 戻り = fromSessionTabs(toSessionTabs(tabs))
+
+    // Assert
+    expect(戻り[0].customName).toBe('売上集計')
+    expect(戻り[0].name).toBe('t1.sql')
+  })
+
+  it('付け直した名前を持たない古いセッションでも null で戻る（ADR 0032）', () => {
+    // Arrange: `customName` の項目そのものが無い、古い形のセッション
+    const session = [
+      { id: 't1', name: '無題-1.sql', filePath: null, content: '', dirty: false },
+    ] as unknown as SessionTab[]
+
+    // Act
+    const tabs = fromSessionTabs(session)
+
+    // Assert
+    expect(tabs[0].customName).toBeNull()
+  })
+
   it('セッションから戻したタブはすべて SQL タブである', () => {
     // Arrange
     const session = [
-      { id: 't1', name: '無題-1.sql', filePath: null, content: 'select 1', dirty: true },
+      {
+        id: 't1',
+        name: '無題-1.sql',
+        customName: null,
+        filePath: null,
+        content: 'select 1',
+        dirty: true,
+      },
     ]
 
     // Act

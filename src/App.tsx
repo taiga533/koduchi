@@ -46,6 +46,7 @@ import { CommandPalette } from './components/palette/CommandPalette'
 import { RunButton } from './components/editor/RunButton'
 import type { EditorPosition, SqlEditorHandle } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
+import { tabBaseName, tabDisplayName, tabFileName } from './components/editor/tabNaming'
 import { ResultPane } from './components/results/ResultPane'
 import { TableDefinitionPanel } from './components/definition/TableDefinitionPanel'
 import { SessionsPanel } from './components/sessions/SessionsPanel'
@@ -176,7 +177,10 @@ export function App() {
   const activeTabId = useTabStore((state) => state.activeTabId)
   // 名前だけを購読する。タブの配列そのものを見ると、打鍵のたびにここが
   // 描き直り、サイドバーと結果ペインまで巻き添えになる。
-  const activeTabName = useTabStore((state) => selectActiveTab(state)?.name ?? '')
+  const activeTabName = useTabStore((state) => {
+    const tab = selectActiveTab(state)
+    return tab ? tabDisplayName(tab) : ''
+  })
   const updateContent = useTabStore((state) => state.updateContent)
   const closeTab = useTabStore((state) => state.closeTab)
   const openNewTab = useTabStore((state) => state.openNewTab)
@@ -605,7 +609,7 @@ export function App() {
       if (!tab) {
         return
       }
-      if (!(await confirmCloseTab(tab, tab.name))) {
+      if (!(await confirmCloseTab(tab, tabDisplayName(tab)))) {
         return
       }
 
@@ -714,7 +718,8 @@ export function App() {
       return
     }
 
-    const path = tab.filePath ?? (await saveDialog({ defaultPath: tab.name, filters: SQL_FILTERS }))
+    const path =
+      tab.filePath ?? (await saveDialog({ defaultPath: tabFileName(tab), filters: SQL_FILTERS }))
     if (typeof path !== 'string') {
       return
     }
@@ -872,7 +877,7 @@ export function App() {
     if (sql.trim() === '') {
       return
     }
-    setSaveQueryPrompt({ name: tab.name.replace(/\.sql$/, ''), sql })
+    setSaveQueryPrompt({ name: tabBaseName(tab), sql })
   }, [])
 
   /** 名前が決まった。保存済みクエリへ積む。 */
@@ -907,7 +912,7 @@ export function App() {
     }
 
     const path = await saveDialog({
-      defaultPath: `${tab.name.replace(/\.sql$/, '')}.csv`,
+      defaultPath: `${tabBaseName(tab)}.csv`,
       filters: [{ name: 'CSV', extensions: ['csv'] }],
     })
     if (typeof path !== 'string') {
