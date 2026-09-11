@@ -21,6 +21,16 @@ jobs:
     # Xcode と SDK が変わり、dmg の対応 OS が動きうるため）。
     runs-on: macos-15
     timeout-minutes: 60
+    # Liquid Glass のアイコン（icons/Koduchi.icon）を Assets.car へ焼くには
+    # actool 26 以上が要る。macos-15 の既定は Xcode 16.4 なので、そのままだと
+    # Tauri は警告だけ出して icon.icns へ落ちる。ランナーは固定したまま、
+    # Xcode の版だけを明示して選ぶ。
+    #
+    # **これで SDK も動く**（16.4 の既定は macOS 15.5、26.3 は macOS 26.2）。
+    # dmg の対応 OS はここで決まるため、Xcode の版もランナーと同じく
+    # 決め打ちにしてある。上げるときは対応 OS への影響を見ること。
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       # タグの検査に main の履歴が要るので、全履歴を取る。
       # actions/checkout@v7.0.1
@@ -32,6 +42,18 @@ jobs:
       # ビルドを始める前にここで止める。
       - name: リリースタグを検査する
         run: ./scripts/check-release-tag.sh "${GITHUB_REF_NAME}"
+
+      # ランナーのイメージが変わって Xcode 26.3 が消えると、actool は既定の
+      # 16.4 のものへ戻り、アイコンは黙って icon.icns へ落ちる。ここで止める。
+      - name: ビルドに使う Xcode を確かめる
+        run: |
+          set -euo pipefail
+          [ -d "${DEVELOPER_DIR}" ] || {
+            echo "::error::${DEVELOPER_DIR} が無い。ランナーの Xcode を見直すこと。" >&2
+            exit 1
+          }
+          xcodebuild -version
+          actool --version --output-format=human-readable-text
 
       # 半端なアセットが混ざった下書きをそのまま公開してしまわないよう、
       # 同じタグの下書きが残っていたら消してから作り直す。
@@ -123,9 +145,9 @@ jobs:
             --wait
           xcrun stapler staple "${DMG_PATH}"
 
-      # 署名と公証は「ビルドが通った」では確かめられない。配る前にここで見る。
-      # 1 つでも欠けたら赤にして、下書きを作らずに落とす。
-      - name: 署名と公証を確かめる
+      # 署名も公証もアイコンも「ビルドが通った」では確かめられない。配る前に
+      # ここで見る。1 つでも欠けたら赤にして、下書きを作らずに落とす。
+      - name: 署名と公証とアイコンを確かめる
         env:
           DMG_PATH: ${{ steps.dmg.outputs.path }}
           EXPECTED_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
@@ -171,6 +193,21 @@ jobs:
           echo "== Gatekeeper の判定 =="
           spctl -a -vvv -t exec "${app}"
           spctl -a -vvv -t open --context context:primary-signature "${DMG_PATH}"
+
+          # actool が無い、または 26 未満だと、Tauri は警告を 1 行出すだけで
+          # icon.icns へ落ちる。ビルドは緑のままなので気づけない。
+          echo "== Liquid Glass のアイコンが焼かれているか =="
+          [ -f "${app}/Contents/Resources/Assets.car" ] || {
+            echo '::error::Assets.car が無い。actool が走っていない。' >&2
+            exit 1
+          }
+          icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' \
+            "${app}/Contents/Info.plist" 2>/dev/null || true)"
+          [ -n "${icon_name}" ] || {
+            echo '::error::Info.plist に CFBundleIconName が無い。' >&2
+            exit 1
+          }
+          echo "CFBundleIconName=${icon_name}"
 
       - name: 下書きリリースを作る
         env:
