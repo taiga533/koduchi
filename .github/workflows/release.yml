@@ -19,17 +19,22 @@ jobs:
     name: dmg を作って下書きリリースに添付する
     # 配布物を作る環境は意図して固定している（ランナーが上がると
     # Xcode と SDK が変わり、dmg の対応 OS が動きうるため）。
-    runs-on: macos-15
-    timeout-minutes: 60
-    # Liquid Glass のアイコン（icons/Koduchi.icon）を Assets.car へ焼くには
-    # actool 26 以上が要る。macos-15 の既定は Xcode 16.4 なので、そのままだと
-    # Tauri は警告だけ出して icon.icns へ落ちる。ランナーは固定したまま、
-    # Xcode の版だけを明示して選ぶ。
     #
-    # **これで SDK も動く**（16.4 の既定は macOS 15.5、26.3 は macOS 26.2）。
-    # 小槌の対応 OS は macOS 26.2 以降と決めてあり（tauri.conf.json の
-    # minimumSystemVersion）、ここで選ぶ Xcode の版はそれと対になっている。
-    # 片方だけを動かさないこと。
+    # **ランナーの OS は macOS 26 でなければならない。**Liquid Glass のアイコン
+    # （icons/Koduchi.icon）を Assets.car へ焼く actool の描画ランタイム
+    # （AssetCatalogAgent-AssetRuntime）は macOS 26 のシステムフレームワークを
+    # 前提にしており、macos-15 では Xcode 26.3 を選んでも CoreMedia のシンボルが
+    # 無くて落ちる（実測: v0.2.0 の 1 回目。Tauri は stderr を握り潰し
+    # 「actool did not generate Assets.car file」とだけ言う）。
+    runs-on: macos-26
+    timeout-minutes: 60
+    # Xcode は 26.3 に固定する（macos-26 の既定は 26.6）。ランナーが上がっても
+    # SDK が勝手に動かないよう、版を明示して選ぶ。
+    #
+    # **これで SDK が決まる**（26.3 の SDK は macOS 26.2）。小槌の対応 OS は
+    # macOS 26.2 以降と決めてあり（tauri.conf.json の minimumSystemVersion）、
+    # ここで選ぶ Xcode の版はそれと対になっている。ランナーの OS・Xcode の版・
+    # 対応 OS の下限の 3 つは組であり、1 つだけを動かさないこと（ADR 0011）。
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
@@ -45,14 +50,22 @@ jobs:
         run: ./scripts/check-release-tag.sh "${GITHUB_REF_NAME}"
 
       # ランナーのイメージが変わって Xcode 26.3 が消えると、actool は既定の
-      # 16.4 のものへ戻り、アイコンは黙って icon.icns へ落ちる。ここで止める。
-      - name: ビルドに使う Xcode を確かめる
+      # ものへ戻り SDK が動く。ランナーの OS が 26 未満へ戻ると、actool は
+      # 走ったうえで Assets.car を作らず、Tauri の出す文言からは原因が読めない。
+      # どちらもここで止める。
+      - name: ビルドに使う OS と Xcode を確かめる
         run: |
           set -euo pipefail
+          os_major="$(sw_vers -productVersion | cut -d. -f1)"
+          [ "${os_major}" -ge 26 ] || {
+            echo "::error::ランナーの macOS が $(sw_vers -productVersion) で 26 未満。Liquid Glass のアイコンを焼けない。runs-on を見直すこと。" >&2
+            exit 1
+          }
           [ -d "${DEVELOPER_DIR}" ] || {
             echo "::error::${DEVELOPER_DIR} が無い。ランナーの Xcode を見直すこと。" >&2
             exit 1
           }
+          sw_vers
           xcodebuild -version
           actool --version --output-format=human-readable-text
 
