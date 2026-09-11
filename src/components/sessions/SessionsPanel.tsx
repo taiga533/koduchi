@@ -22,7 +22,7 @@ import {
   useSessionsStore,
 } from '../../stores/sessions'
 import type { BlockingNode, SessionRow } from '../../types/db'
-import { isComposingKey } from '../../input/ime'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 interface SessionsPanelProps {
   /** 接続の識別子。 */
@@ -69,23 +69,15 @@ export function SessionsPanel({ connectionId, readOnly, onClose }: SessionsPanel
   }, [autoRefresh, connectionId, load])
 
   // 確認の最中の `esc` は確認だけを取り消す。パネルまで閉じると、押し間違いを
-  // 取り消したつもりで一覧まで失う。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // 変換中の `esc` は変換の取り消しである（ADR 0025）。
-      if (event.key !== 'Escape' || isComposingKey(event)) {
-        return
-      }
-      if (useSessionsStore.getState().killTarget) {
-        cancelKill()
-        return
-      }
-      onClose()
+  // 取り消したつもりで一覧まで失う。打鍵を受けるのは `useEscapeKey`
+  // （ADR 0031）であり、重なったオーバーレイのうち手前の 1 つだけが走る。
+  useEscapeKey(() => {
+    if (useSessionsStore.getState().killTarget) {
+      cancelKill()
+      return
     }
-
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [cancelKill, onClose])
+    onClose()
+  })
 
   const sessions = useMemo(
     () => filterSessions(overview?.sessions ?? [], search),

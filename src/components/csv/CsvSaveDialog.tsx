@@ -12,6 +12,7 @@
 import { X } from 'lucide-react'
 import { CLOB_LIMIT_BYTES } from '../../types/db'
 import type { CsvDelimiter, CsvEncoding, CsvNullText, CsvOptions } from '../../types/db'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 /** 区切り文字の選択肢。 */
 const DELIMITERS: { id: CsvDelimiter; label: string }[] = [
@@ -71,6 +72,9 @@ export function CsvSaveDialog({
   onCancel,
   onClose,
 }: CsvSaveDialogProps) {
+  // `esc` で閉じる。打鍵は器ではなく `window` で受ける（ADR 0031）。
+  useEscapeKey(onClose)
+
   const running = progress !== null && !progress.done && progress.error === null
 
   return (

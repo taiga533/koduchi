@@ -26,6 +26,7 @@ import {
   summarizeSql,
 } from './paletteSearch'
 import { isComposingKey } from '../../input/ime'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 /** パレットから呼べる動作 1 つ。 */
 export interface PaletteCommand {
@@ -79,6 +80,10 @@ export function CommandPalette({
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const listRef = useRef<HTMLDivElement>(null)
+
+  // `esc` は器ではなく `window` で受ける（ADR 0031）。暗幕を押した直後のように
+  // 焦点が `<body>` へ戻っていても閉じられなければならない（issue #36）。
+  useEscapeKey(onClose)
 
   const schemas = useSchemaStore((state) => state.schemas)
   const schemaStatus = useSchemaStore((state) => state.status)
@@ -147,16 +152,19 @@ export function CommandPalette({
   return (
     <div
       className="absolute inset-0 z-30 flex items-start justify-center bg-[rgba(24,28,38,.28)] px-24px pt-96px"
-      onKeyDown={(event) => {
-        // 変換中の打鍵は何も起こさない（ADR 0025）。`⏎` は変換の確定、`esc` は
-        // 変換の取り消し、`↑` `↓` は変換候補の選択であり、どれもパレットの
-        // 操作ではない。
-        if (isComposingKey(event)) {
-          return
-        }
-        if (event.key === 'Escape') {
+      onMouseDown={(event) => {
+        // 暗幕を押しても入力欄の焦点を奪わせない（ADR 0031）。`div` は焦点を
+        // 持てないため、既定のままだと押した瞬間に焦点が `<body>` へ戻り、
+        // `↑` `↓` `⏎` が効かなくなる。`esc` の保証は上の `useEscapeKey` が
+        // 別に持っている。
+        if (event.target === event.currentTarget) {
           event.preventDefault()
-          onClose()
+        }
+      }}
+      onKeyDown={(event) => {
+        // 変換中の打鍵は何も起こさない（ADR 0025）。`⏎` は変換の確定、
+        // `↑` `↓` は変換候補の選択であり、どちらもパレットの操作ではない。
+        if (isComposingKey(event)) {
           return
         }
         if (event.key === 'ArrowDown') {

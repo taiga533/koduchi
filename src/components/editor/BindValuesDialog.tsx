@@ -15,7 +15,8 @@ import type { BindInput } from '../../stores/tab'
 import { applyBindText, emptyBindInput } from '../../stores/tab'
 import type { BindKind } from '../../types/db'
 import { bindKindLabels, bindKinds } from '../../types/db'
-import { blockComposingSubmit, isComposingKey } from '../../input/ime'
+import { blockComposingSubmit } from '../../input/ime'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 interface BindValuesDialogProps {
   /** 尋ねる変数の名前。SQL に出てきた順。 */
@@ -37,6 +38,9 @@ export function BindValuesDialog({
   onSubmit,
   onClose,
 }: BindValuesDialogProps) {
+  // `esc` は `window` で受ける（ADR 0031）。焦点が外れていても閉じられる。
+  useEscapeKey(onClose)
+
   /** 変数 1 つぶんの入力を差し替える。 */
   const 差し替える = (name: string, patch: Partial<BindInput>): void => {
     const current = values[name] ?? emptyBindInput
@@ -50,19 +54,7 @@ export function BindValuesDialog({
   }
 
   return (
-    <div
-      className="absolute inset-0 z-20 flex items-center justify-center bg-[rgba(24,28,38,.28)] p-24px"
-      onKeyDown={(event) => {
-        // 変換中の `esc` は変換の取り消しである（ADR 0025）。
-        if (isComposingKey(event)) {
-          return
-        }
-        if (event.key === 'Escape') {
-          event.preventDefault()
-          onClose()
-        }
-      }}
-    >
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-[rgba(24,28,38,.28)] p-24px">
       <form
         className="w-420px bg-panel rounded-10px border border-line p-18px flex flex-col gap-15px"
         onKeyDown={blockComposingSubmit}

@@ -12,6 +12,7 @@ import type { EditorFontSize, RowHeight, ThemePreference } from '../../theme/app
 import { useHistoryStore } from '../../stores/history'
 import { useUiStore } from '../../stores/ui'
 import { getDbApi } from '../../api/db'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 /** テーマの選択肢。 */
 const THEMES: { id: ThemePreference; label: string }[] = [
@@ -47,6 +48,9 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({ clientUnavailable, onClose }: SettingsPanelProps) {
+  // `esc` で閉じる。打鍵は器ではなく `window` で受ける（ADR 0031）。
+  useEscapeKey(onClose)
+
   const appearance = useUiStore((state) => state.appearance)
   const setTheme = useUiStore((state) => state.setTheme)
   const setGridLines = useUiStore((state) => state.setGridLines)
