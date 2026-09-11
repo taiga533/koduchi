@@ -5,5 +5,9 @@ src-tauri/target
 src-tauri/gen
 adr
 
+# 生成物と、そのまま載せる条文は整形しない
+THIRD-PARTY-NOTICES.md
+LICENSE
+
 # Icon Composer が書くファイル。整形すると、あちらで開いて保存し直すたびに差分が出る。
 src-tauri/icons/Koduchi.icon

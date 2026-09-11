@@ -176,7 +176,28 @@ oxlint・prettier）と Rust（fmt・clippy・test）の検査が走る。Tauri 
 
 `⌘C` / `⇧⌘C` / `⌘A` は結果テーブルに焦点があるときだけ効く。
 
+## 貢献
+
+プルリクエストを歓迎する。進め方と貢献のライセンス条件は
+[`CONTRIBUTING.md`](CONTRIBUTING.md) にある。**すべてのコミットに `Signed-off-by`
+を付けること**（`git commit -s`）。
+
 ## ライセンス
 
-同梱している書体 PlemolJP v3.1.0 は SIL Open Font License 1.1 で配布されている。
-ライセンス全文は [`src/assets/fonts/LICENSE.txt`](src/assets/fonts/LICENSE.txt) にある。
+小槌は **PolyForm Noncommercial License 1.0.0** と追加許諾の下で提供する。
+条文は [`LICENSE`](LICENSE)、日本語の参考訳は [`LICENSE.ja.md`](LICENSE.ja.md) にある
+（[ADR 0029](adr/0029-ライセンスと商用利用の扱い.md)）。
+
+**バージョン 1.0.0 未満のリリースは、商用・非商用を問わず無償で実行・使用してよい。**
+この追加許諾は実行と使用に限られ、配布は含まない。1.0.0 以降は有償の商用条件を
+含む別の条件になる場合があるが、**既に公開した 1.0.0 未満のリリースについて
+この許諾が撤回されることはない**。
+
+同梱している第三者のソフトウェアは [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)
+に一覧してあり、それぞれのライセンスに従う。書体 PlemolJP v3.1.0 は SIL Open Font
+License 1.1 で、全文は [`src/assets/fonts/LICENSE.txt`](src/assets/fonts/LICENSE.txt)
+にもある。
+
+```bash
+bun run notices   # THIRD-PARTY-NOTICES.md を作り直す（手で編集しない）
+```

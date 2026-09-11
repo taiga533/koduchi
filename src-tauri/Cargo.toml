@@ -3,6 +3,7 @@ name = "koduchi"
 version = "0.1.0"
 description = "Oracle / PostgreSQL 対応の GUI データベースクライアント"
 authors = ["Taiga Kawasaki"]
+license-file = "../LICENSE"
 edition = "2021"
 
 [lib]
