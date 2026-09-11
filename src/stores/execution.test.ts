@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
-import { createFakeDbApi, emptyResponse, queryResponse } from '../test/fakeDbApi'
+import { createFakeDbApi, emptyResponse, queryResponse, statementResponse } from '../test/fakeDbApi'
 import {
   discardOpenCursors,
   emptyExecution,
   formatResultSummary,
+  formatStatementOutcome,
   selectExecution,
   selectResultTabs,
   useExecutionStore,
@@ -226,6 +227,47 @@ describe('fetchMore', () => {
     // Assert
     expect(selectExecution(useExecutionStore.getState(), TAB).status).toBe('discarded')
   })
+
+  it('行数の概念が無い文では影響行数を持たない', async () => {
+    // Arrange: DDL は影響行数が `null` で届く（ADR 0034）
+    const { api } = createFakeDbApi({ onExecute: () => statementResponse(null) })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'create table t (id number)', '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.status).toBe('succeeded')
+    expect(execution.affectedRows).toBeNull()
+    expect(execution.isStatement).toBe(true)
+  })
+
+  it('行数の概念が無い文は履歴にも行数を残さない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => statementResponse(null) })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'create table t (id number)', '開発', [])
+
+    // Assert
+    expect(calls.recordHistory[0].rowCount).toBeNull()
+    expect(useExecutionStore.getState().log[0].rowCount).toBeNull()
+  })
+
+  it('1 行も当たらなかった dml は履歴に 0 行として残る', async () => {
+    // Arrange: 空振りした DML と DDL を履歴の上でも取り違えない（ADR 0034）
+    const { api, calls } = createFakeDbApi({ onExecute: () => statementResponse(0) })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'delete from t', '開発', [])
+
+    // Assert
+    expect(calls.recordHistory[0].rowCount).toBe(0)
+    expect(useExecutionStore.getState().log[0].rowCount).toBe(0)
+  })
 })
 
 describe('executeScript（スクリプト実行）', () => {
@@ -398,6 +440,36 @@ describe('executeScript（スクリプト実行）', () => {
     expect(execution.elapsedMs).toBe(30)
   })
 
+  it('行数の概念が無い文だけのスクリプトでは影響行数を持たない', async () => {
+    // Arrange: DDL を並べたスクリプトに「0 行」と出さない（ADR 0034）
+    const { api } = createFakeDbApi({ onExecute: () => statementResponse(null) })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2'], '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.affectedRows).toBeNull()
+    expect(execution.isStatement).toBe(true)
+    expect(formatResultSummary(execution)).toBe('完了しました · 24 ms')
+  })
+
+  it('dml と ddl が混ざったスクリプトでは dml の行数だけを足し上げる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => (sql === 'ddl' ? statementResponse(null) : statementResponse(3)),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['ddl', 'dml', 'dml'], '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.affectedRows).toBe(6)
+  })
+
   it('実行中は何文目かを進み具合として持つ', async () => {
     // Arrange
     const 二文目 = 保留の応答()
@@ -540,6 +612,7 @@ describe('formatResultSummary', () => {
       ...emptyExecution,
       status: 'succeeded' as const,
       affectedRows: 3,
+      isStatement: true,
       elapsedMs: 12,
     }
 
@@ -548,6 +621,40 @@ describe('formatResultSummary', () => {
 
     // Assert
     expect(summary).toBe('3 行 · 12 ms')
+  })
+
+  it('1 行も当たらなかった dml は 0 行と出す', () => {
+    // Arrange
+    const execution = {
+      ...emptyExecution,
+      status: 'succeeded' as const,
+      affectedRows: 0,
+      isStatement: true,
+      elapsedMs: 12,
+    }
+
+    // Act
+    const summary = formatResultSummary(execution)
+
+    // Assert
+    expect(summary).toBe('0 行 · 12 ms')
+  })
+
+  it('行数の概念が無い文では完了しましたと出す', () => {
+    // Arrange: DDL や PL/SQL ブロックがこれに当たる（ADR 0034）
+    const execution = {
+      ...emptyExecution,
+      status: 'succeeded' as const,
+      affectedRows: null,
+      isStatement: true,
+      elapsedMs: 12,
+    }
+
+    // Act
+    const summary = formatResultSummary(execution)
+
+    // Assert
+    expect(summary).toBe('完了しました · 12 ms')
   })
 
   it('実行中は実行中と出す', () => {
@@ -1166,5 +1273,40 @@ describe('接続が切れたときの記録（ADR 0026）', () => {
 
     // Assert
     expect(useExecutionStore.getState().byTab[TAB].status).toBe('discarded')
+  })
+})
+
+describe('formatStatementOutcome（結果ペインの本文）', () => {
+  it('dml では影響行数を出す', () => {
+    // Arrange
+    const affectedRows = 1234
+
+    // Act
+    const text = formatStatementOutcome(affectedRows)
+
+    // Assert
+    expect(text).toBe('1,234 行に影響しました')
+  })
+
+  it('1 行も当たらなかった dml では 0 行と出す', () => {
+    // Arrange
+    const affectedRows = 0
+
+    // Act
+    const text = formatStatementOutcome(affectedRows)
+
+    // Assert
+    expect(text).toBe('0 行に影響しました')
+  })
+
+  it('行数の概念が無い文では完了しましたと出す', () => {
+    // Arrange: DDL や PL/SQL ブロックがこれに当たる（ADR 0034）
+    const affectedRows = null
+
+    // Act
+    const text = formatStatementOutcome(affectedRows)
+
+    // Assert
+    expect(text).toBe('完了しました')
   })
 })

@@ -78,7 +78,15 @@ export type ExecuteOutcome =
     }
   | {
       kind: 'statement'
-      affectedRows: number
+      /**
+       * 影響した行数。行数の概念が無い文では `null`（ADR 0034）。
+       *
+       * 数を持つのは `INSERT` / `UPDATE` / `DELETE` / `MERGE` だけである。
+       * DDL や PL/SQL ブロックで `0` と出すと、1 行も当たらなかった DML と
+       * 見分けが付かない。区別は Oracle が持つ文の種別から来ており、小槌が
+       * SQL を読んで決めたものではない。
+       */
+      affectedRows: number | null
       elapsedMs: number
       notices: string[]
       /** 未コミットのトランザクションが残っているか（ADR 0012）。 */

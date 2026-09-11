@@ -110,6 +110,83 @@ describe('useSchemaStore', () => {
     })
   })
 
+  it('再読み込みすると取得し直す', async () => {
+    // Arrange
+    await useSchemaStore.getState().load('c1')
+
+    // Act
+    await useSchemaStore.getState().reload('c1')
+
+    // Assert
+    expect(calls.schemaOverview).toHaveLength(2)
+    expect(useSchemaStore.getState().schemas).toHaveLength(2)
+  })
+
+  it('再読み込みしても開閉と絞り込み語は残る', async () => {
+    // Arrange: 更新のたびに全部畳まれるのでは使いものにならない
+    await useSchemaStore.getState().load('c1')
+    useSchemaStore.getState().toggle(nodeKey('KODUCHI'), true)
+    useSchemaStore.getState().setSearch('USERS')
+
+    // Act
+    await useSchemaStore.getState().reload('c1')
+
+    // Assert
+    const state = useSchemaStore.getState()
+    expect(state.expanded[nodeKey('KODUCHI')]).toBe(true)
+    expect(state.search).toBe('USERS')
+  })
+
+  it('再読み込みしても絞り込みの条件は変わらない', async () => {
+    // Arrange
+    await useSchemaStore
+      .getState()
+      .setFilter('c1', { ...defaultSchemaFilter, excludeSystem: false })
+
+    // Act
+    await useSchemaStore.getState().reload('c1')
+
+    // Assert
+    expect(calls.schemaOverview[1].filter.excludeSystem).toBe(false)
+  })
+
+  it('段階 2 の途中で再読み込みしても古い列は流れ込まない', async () => {
+    // Arrange: 先に始めた取得の列が、後から新しいスキーマへ書き込まれてはならない
+    let 古い列を返す!: (columns: TableColumn[]) => void
+    const 古い列 = new Promise<TableColumn[]>((resolve) => {
+      古い列を返す = resolve
+    })
+    let 古い取得が始まった!: () => void
+    const 古い取得の開始 = new Promise<void>((resolve) => {
+      古い取得が始まった = resolve
+    })
+    let 何回目 = 0
+    setDbApi({
+      ...createFakeDbApi().api,
+      schemaOverview: async () => [スキーマ('KODUCHI', ['USERS'])],
+      schemaColumns: async () => {
+        何回目 += 1
+        if (何回目 === 1) {
+          古い取得が始まった()
+          return 古い列
+        }
+        return [列('USERS', '新しい列')]
+      },
+    })
+    const 途中の取得 = useSchemaStore.getState().load('c1')
+    await 古い取得の開始
+
+    // Act
+    await useSchemaStore.getState().reload('c1')
+    古い列を返す([列('USERS', '古い列')])
+    await 途中の取得
+
+    // Assert
+    expect(useSchemaStore.getState().columns.KODUCHI?.map((column) => column.name)).toEqual([
+      '新しい列',
+    ])
+  })
+
   it('列の取得に失敗しても残りのスキーマは読み込む', async () => {
     // Arrange
     setDbApi({

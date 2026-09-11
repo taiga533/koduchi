@@ -275,6 +275,27 @@ export function queryResponse(
 }
 
 /**
+ * 問い合わせ以外の応答を組み立てる（ADR 0034）。
+ *
+ * @param affectedRows 影響した行数。行数の概念が無い文（DDL・PL/SQL ブロック
+ *   など）では `null`
+ * @param options 巻き添えで閉じられたタブ、未コミットかどうか
+ */
+export function statementResponse(
+  affectedRows: number | null,
+  options: { discardedTab?: string | null; inTransaction?: boolean } = {},
+): ExecuteResponse {
+  return {
+    kind: 'statement',
+    affectedRows,
+    elapsedMs: 12,
+    notices: [],
+    inTransaction: options.inTransaction ?? false,
+    discardedTab: options.discardedTab ?? null,
+  }
+}
+
+/**
  * テスト用の窓口を作る。
  *
  * @param options 応答の差し替え

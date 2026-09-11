@@ -196,7 +196,14 @@ pub enum ExecuteOutcome {
     /// 問い合わせ以外（DML・DDL・PL/SQL ブロック）。
     #[serde(rename_all = "camelCase")]
     Statement {
-        affected_rows: u64,
+        /// 影響した行数。行数の概念が無い文では `None`（ADR 0034）。
+        ///
+        /// `INSERT` / `UPDATE` / `DELETE` / `MERGE` だけが数を持つ。DDL や
+        /// PL/SQL ブロック、`GRANT` のような文で `0` を返すと、利用者には
+        /// 「1 行も当たらなかった DML」と見分けが付かない。区別の出どころは
+        /// Oracle が文を準備した時点で持っている種別であり、クライアント側の
+        /// SQL 解析ではない。
+        affected_rows: Option<u64>,
         elapsed_ms: u64,
         notices: Vec<String>,
         /// 未コミットのトランザクションが残っているか（ADR 0012）。
@@ -518,7 +525,7 @@ mod tests {
 
         // Act
         let outcome = ExecuteOutcome::Statement {
-            affected_rows: 3,
+            affected_rows: Some(3),
             elapsed_ms: 12,
             notices: notices.clone(),
             in_transaction: true,
@@ -532,7 +539,7 @@ mod tests {
                 in_transaction,
                 ..
             } => {
-                assert_eq!(affected_rows, 3);
+                assert_eq!(affected_rows, Some(3));
                 assert_eq!(got, notices);
                 assert!(in_transaction);
             }
@@ -544,7 +551,7 @@ mod tests {
     fn 実行結果は種別つきでシリアライズされる() {
         // Arrange
         let outcome = ExecuteOutcome::Statement {
-            affected_rows: 3,
+            affected_rows: Some(3),
             elapsed_ms: 12,
             notices: Vec::new(),
             in_transaction: false,
@@ -557,6 +564,26 @@ mod tests {
         assert_eq!(
             json,
             r#"{"kind":"statement","affectedRows":3,"elapsedMs":12,"notices":[],"inTransaction":false}"#
+        );
+    }
+
+    #[test]
+    fn 行数の概念が無い文の結果は影響行数がnullになる() {
+        // Arrange: DDL や PL/SQL ブロックがこれに当たる（ADR 0034）
+        let outcome = ExecuteOutcome::Statement {
+            affected_rows: None,
+            elapsed_ms: 12,
+            notices: Vec::new(),
+            in_transaction: false,
+        };
+
+        // Act
+        let json = serde_json::to_string(&outcome).unwrap();
+
+        // Assert
+        assert_eq!(
+            json,
+            r#"{"kind":"statement","affectedRows":null,"elapsedMs":12,"notices":[],"inTransaction":false}"#
         );
     }
 }
