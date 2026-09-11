@@ -134,3 +134,4 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 - バージョンの実体は `package.json` と `src-tauri/Cargo.toml` の 2 箇所だけ。`tauri.conf.json` の `version` は `"../package.json"` を参照しているので触らない。タグとの一致は `scripts/check-release-tag.sh` が見張る（ADR 0011）。
 - 準拠法は日本法、第一審の専属的合意管轄は横浜地方裁判所小田原支部（`LICENSE` の追加許諾第 4 条）。
 - Rust の版は `rust-toolchain.toml` で `1.98.0` に固定してある。GitHub Actions は commit SHA でピン留めする（更新は Dependabot が PR を出す）。
+- 対応 OS は macOS 26.2 以降（`tauri.conf.json` の `minimumSystemVersion`）。リリースの dmg は Xcode 26.3 で作る（`release.yml` の `DEVELOPER_DIR`）。**この 2 つは対であり、片方だけを動かさない**（ADR 0011）。
