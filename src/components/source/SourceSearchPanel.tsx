@@ -17,7 +17,6 @@
  * 絞る速い道具、ここはデータベースへ投げて待つ道具である。
  */
 
-import { useEffect } from 'react'
 import { FileCode2, Search, X } from 'lucide-react'
 import { useSchemaStore } from '../../stores/schema'
 import {
@@ -28,7 +27,8 @@ import {
 } from '../../stores/sourceSearch'
 import type { SourceKind, SourceLine, SourceObjectMatches } from '../../types/db'
 import { SOURCE_KIND_LABELS, SOURCE_KIND_ORDER } from '../../types/db'
-import { blockComposingSubmit, isComposingKey } from '../../input/ime'
+import { blockComposingSubmit } from '../../input/ime'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 interface SourceSearchPanelProps {
   /** 接続の識別子。 */
@@ -59,22 +59,15 @@ export function SourceSearchPanel({ connectionId, onClose }: SourceSearchPanelPr
 
   // 前後を見ている最中の `esc` は選択だけを解く。パネルまで閉じると、
   // 1 件を覗いたつもりで検索の結果ごと失う（セッションのパネルと同じ考え方）。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // 変換中の `esc` は変換の取り消しである（ADR 0025）。
-      if (event.key !== 'Escape' || isComposingKey(event)) {
-        return
-      }
-      if (useSourceSearchStore.getState().selected) {
-        clearSelection()
-        return
-      }
-      onClose()
+  // 打鍵を受けるのは `useEscapeKey`（ADR 0031）であり、重なったオーバーレイの
+  // うちいちばん手前の 1 つだけが走る。
+  useEscapeKey(() => {
+    if (useSourceSearchStore.getState().selected) {
+      clearSelection()
+      return
     }
-
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [clearSelection, onClose])
+    onClose()
+  })
 
   const 探せる = canSearch(needle)
 

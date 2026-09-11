@@ -8,6 +8,32 @@ body,
   height: 100%;
 }
 
+/*
+ * document そのものはスクロールさせない（ADR 0031）。
+ *
+ * 小槌はデスクトップアプリであり、スクロールするのは結果テーブル・スキーマ
+ * ツリー・エディタといった**器の中**だけである。上の `height: 100%` で本体は
+ * ちょうどウィンドウの高さに収まっており、実測でも
+ * `documentElement.scrollHeight` は `clientHeight` と等しい（余りは 0px）。
+ * それでも WKWebView は主フレームを弾ませる（ラバーバンド）ため、器の中の
+ * スクロールが端に達したところで document ごと持ち上がり、下端に地の色
+ * （`--bg`）の帯が現れる。これが issue #37 の「謎の余白」であり、その高さは
+ * 何かの部品の寸法ではなく指の勢いで決まる。
+ *
+ *   - `overscroll-behavior: none` … 弾みを止め、器の中から document への
+ *     スクロールの伝播も断つ。器の中のスクロールそのものには影響しない。
+ *   - `overflow: hidden`          … 将来どこかが溢れても document を
+ *     スクロールさせない。溢れを引き受けるのは常にその場の器である。
+ *
+ * どちらも `html` と `body` の両方へ書く。ビューポートのスクロールの持ち主は
+ * 実装によって `html` にも `body` にもなる。
+ */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background: var(--bg);
