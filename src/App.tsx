@@ -232,6 +232,7 @@ export function App() {
   const loadSchemas = useSchemaStore((state) => state.load)
   const setSchemaFilter = useSchemaStore((state) => state.setFilter)
   const clearSchemas = useSchemaStore((state) => state.clear)
+  const reloadSchemas = useSchemaStore((state) => state.reload)
 
   // 起動時に Instant Client を初期化する。接続を試す前に判定できるため、
   // 意味の分からないエラーで落ちる事態を避けられる（ADR 0001）。
@@ -991,10 +992,23 @@ export function App() {
         run: openSourceSearch,
       },
       { id: 'sessions', label: 'セッションとロックを開く', shortcut: '', run: openSessions },
+      {
+        // サイドバーの再読み込みボタンと同じ動き。DDL を流した直後に、
+        // サイドバーへ手を伸ばさずに取り直すための入口である。
+        id: 'reload-schemas',
+        label: 'スキーマを再読み込み',
+        shortcut: '',
+        run: () => {
+          if (connection) {
+            void reloadSchemas(connection.id)
+          }
+        },
+      },
       { id: 'settings', label: '設定を開く', shortcut: '', run: openSettings },
     ],
     [
       cancelExecution,
+      connection,
       commitTransaction,
       formatEditor,
       openCsvDialog,
@@ -1005,6 +1019,7 @@ export function App() {
       openSourceSearch,
       openSqlFile,
       promptSaveQuery,
+      reloadSchemas,
       rollbackTransaction,
       runPlan,
       runScript,

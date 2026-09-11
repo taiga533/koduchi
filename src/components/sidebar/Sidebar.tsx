@@ -17,6 +17,7 @@ import { useUiStore } from '../../stores/ui'
 import { HistoryList } from './HistoryList'
 import { SavedQueryList } from './SavedQueryList'
 import { SchemaFilterMenu } from './SchemaFilterMenu'
+import { SchemaReloadButton } from './SchemaReloadButton'
 import { SchemaTree } from './SchemaTree'
 
 /** セグメントの並びと表示名。 */
@@ -152,11 +153,10 @@ export function Sidebar({
             />
           </div>
           {segment === 'schema' ? (
-            <SchemaFilterMenu
-              connectionId={connectionId}
-              savedConnectionId={savedConnectionId}
-              onReload={reloadSchemas}
-            />
+            <>
+              <SchemaReloadButton connectionId={connectionId} onReload={reloadSchemas} />
+              <SchemaFilterMenu connectionId={connectionId} savedConnectionId={savedConnectionId} />
+            </>
           ) : null}
         </div>
       </div>
