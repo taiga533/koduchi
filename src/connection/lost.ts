@@ -57,6 +57,31 @@ export function onConnectionLost(listener: Listener): () => void {
 }
 
 /**
+ * 往復を起こさずに覗いて断が分かったときの文言（ADR 0030）。
+ *
+ * データベースからエラーが返ってきたわけではないため、原文が無い。何が起きて
+ * いるかをこちらの言葉で言う。
+ */
+export const PROBE_LOST_MESSAGE = 'サーバ側から接続が切られています'
+
+/**
+ * 接続が切れたことを見張りへ報せる（ADR 0030）。
+ *
+ * 例外を経由しない経路のための入口である。往復を起こさない覗き（ADR 0030）で
+ * 断が分かったときは、拒まれた約束が無いため `noteConnectionLost` を通せない。
+ *
+ * **報せを数えないのは受け手の仕事である。**ここは届いた事実をそのまま配り、
+ * 2 度目かどうかは `connection` ストアの段階が決める（ADR 0026）。
+ *
+ * @param message 断の内容
+ */
+export function reportConnectionLost(message: string): void {
+  for (const listener of listeners) {
+    listener(message)
+  }
+}
+
+/**
  * 例外が接続断であれば見張りへ報せる。
  *
  * 例外そのものは握り潰さない。断であることは呼び出し元にとってもエラーであり、
@@ -70,10 +95,7 @@ export function noteConnectionLost(value: unknown): boolean {
     return false
   }
 
-  const message = toErrorMessage(value)
-  for (const listener of listeners) {
-    listener(message)
-  }
+  reportConnectionLost(toErrorMessage(value))
   return true
 }
 

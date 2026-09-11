@@ -213,6 +213,45 @@ pub trait Canceller: Send + Sync + 'static {
     fn cancel(&self) -> DbResult<()>;
 }
 
+/// 往復を起こさずに覗いた接続の様子（ADR 0030）。
+///
+/// **`Unknown` は「生きている」ではない。**分かるのは「切られていることが
+/// 見えたか」だけであり、見えなかったことは生存の証明にならない。回線が
+/// 落ちただけの断ではクライアントへ何も届かないため、同じ `Unknown` が返る。
+/// 区分を 2 つに留めてあるのは、言えないことを型の上で言わせないためである。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// サーバ側から切られていることが分かった。
+    Disconnected,
+    /// 切られたとは分からなかった。生きている証明ではない。
+    Unknown,
+}
+
+/// 往復を起こさずに接続の様子を覗く手綱（ADR 0030）。
+///
+/// 中止（`Canceller`）と同じく、アクタースレッドの外から呼ばれる。実行で
+/// アクタースレッドが塞がっている最中にも覗けるようにするためであり、そのため
+/// `Send + Sync` を要求する。
+///
+/// **データベースへ往復してはならない。**往復すればアイドル時間が戻り、
+/// サーバ側が設定した `IDLE_TIME` を骨抜きにする（ADR 0026）。
+pub trait Prober: Send + Sync + 'static {
+    /// 往復を起こさずに接続の様子を覗く。
+    fn probe(&self) -> Liveness;
+}
+
+/// 何も答えられない覗き手（ADR 0030）。
+///
+/// 往復なしで断を見分ける術を持たないドライバの既定である。`Unknown` を
+/// 返し続けるため、分からないことを分かると言わない。
+pub struct UnknownProber;
+
+impl Prober for UnknownProber {
+    fn probe(&self) -> Liveness {
+        Liveness::Unknown
+    }
+}
+
 /// データベース接続 1 本ぶんの操作。
 ///
 /// 実装はアクタースレッド上でのみ触られる。接続の確立自体もそのスレッド上で
@@ -222,6 +261,15 @@ pub trait Driver: 'static {
     ///
     /// 返された値は実行中の別スレッドから使われる。
     fn canceller(&self) -> Box<dyn Canceller>;
+
+    /// 往復を起こさずに接続の様子を覗く手綱を取り出す（ADR 0030）。
+    ///
+    /// 既定では何も答えられない覗き手を返す。往復なしで断を見分ける術は
+    /// クライアントライブラリに依るため、持たないドライバは「分からない」と
+    /// 答え続けるのが正しい。
+    fn prober(&self) -> Box<dyn Prober> {
+        Box::new(UnknownProber)
+    }
 
     /// SQL を 1 文実行する。
     ///
@@ -382,6 +430,18 @@ pub trait Driver: 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 何も答えられない覗き手は生きているとは言わない() {
+        // Arrange: 往復なしで断を見分ける術を持たないドライバの既定（ADR 0030）
+        let 覗き手 = UnknownProber;
+
+        // Act
+        let 様子 = 覗き手.probe();
+
+        // Assert
+        assert_eq!(様子, Liveness::Unknown);
+    }
 
     #[test]
     fn ezconnectの接続文字列はホストとポートとサービス名を繋いだ形になる() {

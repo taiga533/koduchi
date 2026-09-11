@@ -13,6 +13,7 @@ import type {
   Chunk,
   ClientStatus,
   Column,
+  ConnectionHealth,
   ConnectionParams,
   CsvOptions,
   ExecuteResponse,
@@ -50,6 +51,7 @@ export interface FakeCalls {
   cancel: { id: string; tabId: string }[]
   commit: string[]
   rollback: string[]
+  connectionHealth: string[]
   disconnect: string[]
   recordHistory: NewHistoryEntry[]
   listHistory: HistoryQuery[]
@@ -91,6 +93,13 @@ export interface FakeDbApiOptions {
   onFetchMore?: (tabId: string) => Chunk | Promise<Chunk>
   /** 接続時に投げるエラー。 */
   connectError?: unknown
+  /**
+   * 接続の様子（ADR 0030）。
+   *
+   * 渡さないと「切られているとは分からない」「たった今往復できた」を返す。
+   * 関数を渡すと呼ばれるたびに答えを変えられる。
+   */
+  health?: ConnectionHealth | (() => ConnectionHealth)
   /** テスト接続が返すバージョン。 */
   testVersion?: string
   /** テスト接続で投げるエラー。 */
@@ -105,6 +114,12 @@ export interface FakeDbApiOptions {
   savedQueries?: SavedQuery[]
   /** スキーマツリーの段階 1 の応答。 */
   schemas?: SchemaNode[]
+  /**
+   * スキーマツリーの段階 1 の応答を呼び出しごとに決める。
+   *
+   * `schemas` より優先する。断の前後で答えを変える、といった使い方をする。
+   */
+  onSchemaOverview?: () => SchemaNode[] | Promise<SchemaNode[]>
   /** スキーマごとの列情報。 */
   columns?: Record<string, TableColumn[]>
   /** テーブル定義ビューの応答（ADR 0019）。 */
@@ -294,6 +309,7 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     cancel: [],
     commit: [],
     rollback: [],
+    connectionHealth: [],
     disconnect: [],
     recordHistory: [],
     listHistory: [],
@@ -380,6 +396,12 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       if (options.rollbackError !== undefined) {
         throw options.rollbackError
       }
+    },
+
+    connectionHealth: async (id) => {
+      calls.connectionHealth.push(id)
+      const health = typeof options.health === 'function' ? options.health() : options.health
+      return health ?? { disconnected: false, lastRoundTripMs: Date.now() }
     },
 
     disconnect: async (id) => {
@@ -476,7 +498,7 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
 
     schemaOverview: async (id, filter) => {
       calls.schemaOverview.push({ id, filter })
-      return options.schemas ?? []
+      return options.onSchemaOverview ? options.onSchemaOverview() : (options.schemas ?? [])
     },
 
     schemaColumns: async (id, owner) => {

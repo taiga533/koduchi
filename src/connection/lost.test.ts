@@ -6,7 +6,14 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isConnectionLost, noteConnectionLost, onConnectionLost, watchConnection } from './lost'
+import {
+  isConnectionLost,
+  noteConnectionLost,
+  onConnectionLost,
+  PROBE_LOST_MESSAGE,
+  reportConnectionLost,
+  watchConnection,
+} from './lost'
 import type { DbError } from '../types/db'
 
 /**
@@ -185,5 +192,48 @@ describe('watchConnection', () => {
     return 窓口.execute().catch(() => {
       expect(listener).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('reportConnectionLost', () => {
+  it('例外を経由しない断も同じ見張りへ届く', () => {
+    // Arrange: 往復を起こさない覗きには、拒まれた約束が無い（ADR 0030）
+    const listener = vi.fn()
+    見張る(listener)
+
+    // Act
+    reportConnectionLost(PROBE_LOST_MESSAGE)
+
+    // Assert
+    expect(listener).toHaveBeenCalledWith(PROBE_LOST_MESSAGE)
+  })
+
+  it('見張りが複数居ればすべてに届く', () => {
+    // Arrange
+    const 一人目 = vi.fn()
+    const 二人目 = vi.fn()
+    見張る(一人目)
+    見張る(二人目)
+
+    // Act
+    reportConnectionLost(PROBE_LOST_MESSAGE)
+
+    // Assert
+    expect(一人目).toHaveBeenCalledTimes(1)
+    expect(二人目).toHaveBeenCalledTimes(1)
+  })
+
+  it('報せの数え落としはここでは行わない', () => {
+    // Arrange: 2 度目かどうかを決めるのは `connection` ストアの段階である
+    // （ADR 0026）。ここは届いた事実をそのまま配る
+    const listener = vi.fn()
+    見張る(listener)
+
+    // Act
+    reportConnectionLost(PROBE_LOST_MESSAGE)
+    reportConnectionLost(PROBE_LOST_MESSAGE)
+
+    // Assert
+    expect(listener).toHaveBeenCalledTimes(2)
   })
 })

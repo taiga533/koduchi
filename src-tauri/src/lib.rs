@@ -45,6 +45,7 @@ pub fn run() {
             commands::connection::cancel,
             commands::connection::commit,
             commands::connection::rollback,
+            commands::connection::connection_health,
             commands::connection::disconnect,
             commands::config::list_saved_connections,
             commands::config::save_connection,

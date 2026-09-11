@@ -9,7 +9,7 @@
 //! 呼び出し元のスレッドから直接叩ける。
 
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
-use crate::db::driver::{Bind, Canceller, Chunk, Driver, ExecuteOutcome};
+use crate::db::driver::{Bind, Canceller, Chunk, Driver, ExecuteOutcome, Liveness, Prober};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
@@ -98,6 +98,14 @@ enum Command {
     Close,
 }
 
+/// アクタースレッドの外から使う手綱の組。
+///
+/// 接続を確立したアクタースレッドが、命令の処理へ移る前に 1 度だけ返す。
+struct ActorHandles {
+    canceller: Box<dyn Canceller>,
+    prober: Box<dyn Prober>,
+}
+
 /// 接続 1 本を表す手綱。
 ///
 /// 実体はアクタースレッドの上にあり、この構造体は命令を送る口と中止の経路だけを
@@ -105,6 +113,12 @@ enum Command {
 pub struct ConnectionHandle {
     commands: Sender<Command>,
     canceller: Box<dyn Canceller>,
+    /// 往復を起こさずに接続の様子を覗く手綱（ADR 0030）。
+    ///
+    /// 中止と同じくアクタースレッドの外から呼ぶ。命令のチャネルに載せると、
+    /// 長い問い合わせの後ろに並んで待たされ、「今どうなっているか」を
+    /// 覗きたいときにこそ答えが返らなくなる。
+    prober: Box<dyn Prober>,
     /// `Drop` で join するため `Option` にしてある。
     thread: Option<JoinHandle<()>>,
 }
@@ -128,7 +142,7 @@ impl ConnectionHandle {
         F: FnOnce() -> DbResult<D> + Send + 'static,
     {
         let (command_sender, command_receiver) = mpsc::channel::<Command>();
-        let (ready_sender, ready_receiver) = mpsc::channel::<DbResult<Box<dyn Canceller>>>();
+        let (ready_sender, ready_receiver) = mpsc::channel::<DbResult<ActorHandles>>();
 
         let thread = thread::Builder::new()
             .name(String::from("koduchi-db-connection"))
@@ -139,15 +153,24 @@ impl ConnectionHandle {
 
         // アクタースレッドが接続を終えるまで待つ。スレッドが応答を返さずに
         // 終わった場合は、接続処理が panic したことを意味する。
-        let canceller = ready_receiver
+        let ActorHandles { canceller, prober } = ready_receiver
             .recv()
             .map_err(|_| DbError::connect("接続処理が異常終了しました"))??;
 
         Ok(ConnectionHandle {
             commands: command_sender,
             canceller,
+            prober,
             thread: Some(thread),
         })
+    }
+
+    /// 往復を起こさずに接続の様子を覗く（ADR 0030）。
+    ///
+    /// アクタースレッドを介さないため、実行で塞がっている最中でも答えが返る。
+    /// **`Unknown` は生きている証明ではない。**
+    pub fn probe(&self) -> Liveness {
+        self.prober.probe()
     }
 
     /// SQL を 1 文実行する。
@@ -458,11 +481,8 @@ impl Drop for ConnectionHandle {
 ///
 /// 接続を確立して手綱を返信したあと、命令を 1 つずつ処理する。命令のチャネルが
 /// 閉じられるか `Close` を受け取ると終了する。
-fn run_actor<D, F>(
-    connect: F,
-    ready: Sender<DbResult<Box<dyn Canceller>>>,
-    commands: Receiver<Command>,
-) where
+fn run_actor<D, F>(connect: F, ready: Sender<DbResult<ActorHandles>>, commands: Receiver<Command>)
+where
     D: Driver,
     F: FnOnce() -> DbResult<D>,
 {
@@ -474,7 +494,12 @@ fn run_actor<D, F>(
         }
     };
 
-    if ready.send(Ok(driver.canceller())).is_err() {
+    let handles = ActorHandles {
+        canceller: driver.canceller(),
+        prober: driver.prober(),
+    };
+
+    if ready.send(Ok(handles)).is_err() {
         // 呼び出し元が既に諦めている。接続を開いたままにしないよう終了する。
         return;
     }

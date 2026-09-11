@@ -17,13 +17,15 @@
 
 use crate::db::actor::ConnectionHandle;
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
-use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome};
+use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome, Liveness};
 use crate::db::error::{DbError, DbErrorKind, DbResult};
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// プールが持つ接続の既定の本数。
 ///
@@ -38,6 +40,36 @@ pub const DEFAULT_CHUNK_SIZE: usize = 1_000;
 /// 往復せずにその場で返す。切れていると分かっている接続へ投げ直しても、
 /// 待たされたうえで同じ番号が返るだけである。
 pub const CONNECTION_LOST_MESSAGE: &str = "接続が切れています。再接続してください";
+
+/// ステータスバーへ返す接続の様子（ADR 0030）。
+///
+/// **どちらの項目もデータベースへ往復せずに作る。**生存確認の問い合わせを
+/// 投げればアイドル時間が戻り、サーバ側が設定した `IDLE_TIME` を骨抜きに
+/// してしまう（ADR 0026）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionHealth {
+    /// サーバ側から切られていることが分かったか。
+    ///
+    /// **偽は「繋がっている」ではない。**回線が落ちただけの断はクライアントに
+    /// 見えないため、切れていても偽のままになる。
+    pub disconnected: bool,
+    /// 最後にデータベースと往復できた時刻（UNIX ミリ秒）。
+    ///
+    /// 「いつまで確かだったか」を利用者へ正直に見せるための値である。接続を
+    /// 確立した時刻が初期値になる。
+    pub last_round_trip_ms: u64,
+}
+
+/// 現在時刻を UNIX ミリ秒で返す。
+///
+/// 表示のためだけに使う値であるため、時計が巻き戻っていても落とさず 0 を返す。
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|経過| 経過.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// タブへの接続の割り当て。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +101,11 @@ pub struct ConnectionPool {
     /// **1 本でも切れたらプールごと切れたものとして扱う。**立った後は往復せず、
     /// その場で `ConnectionLost` を返す。
     lost: AtomicBool,
+    /// 最後にデータベースと往復できた時刻（UNIX ミリ秒、ADR 0030）。
+    ///
+    /// `見張る` が成功したときにだけ進める。往復していない操作で進めると、
+    /// 「いつまで確かだったか」の表示が実際より新しくなる。
+    last_round_trip: AtomicU64,
 }
 
 impl ConnectionPool {
@@ -97,6 +134,8 @@ impl ConnectionPool {
             leases: Mutex::new(Vec::new()),
             chunk_size,
             lost: AtomicBool::new(false),
+            // 接続の確立そのものが往復である。
+            last_round_trip: AtomicU64::new(now_ms()),
         })
     }
 
@@ -114,6 +153,7 @@ impl ConnectionPool {
             leases: Mutex::new(Vec::new()),
             chunk_size,
             lost: AtomicBool::new(false),
+            last_round_trip: AtomicU64::new(now_ms()),
         }
     }
 
@@ -148,13 +188,50 @@ impl ConnectionPool {
 
         let result = 往復();
 
-        if let Err(error) = &result {
-            if error.kind == DbErrorKind::ConnectionLost {
-                self.mark_lost();
+        match &result {
+            Ok(_) => {
+                // 往復できた時刻はここでしか進めない（ADR 0030）。
+                self.last_round_trip.store(now_ms(), Ordering::SeqCst);
+            }
+            Err(error) => {
+                if error.kind == DbErrorKind::ConnectionLost {
+                    self.mark_lost();
+                }
             }
         }
 
         result
+    }
+
+    /// 往復を起こさずに接続の様子を覗く（ADR 0030）。
+    ///
+    /// **問い合わせは投げない。**OCI がクライアント側に持っている状態を
+    /// 読むだけであり、アイドル時間は戻らない（ADR 0026 の「定期的な生存確認は
+    /// しない」を守る）。
+    ///
+    /// 1 本でも切られていると分かればプールごと切れたものとして印を立てる
+    /// （ADR 0026）。断の原因は接続を選ばないためである。
+    pub fn probe(&self) -> Liveness {
+        if self.is_lost() {
+            return Liveness::Disconnected;
+        }
+
+        for handle in &self.handles {
+            if handle.probe() == Liveness::Disconnected {
+                self.mark_lost();
+                return Liveness::Disconnected;
+            }
+        }
+
+        Liveness::Unknown
+    }
+
+    /// ステータスバーへ返す接続の様子を作る（ADR 0030）。
+    pub fn health(&self) -> ConnectionHealth {
+        ConnectionHealth {
+            disconnected: self.probe() == Liveness::Disconnected,
+            last_round_trip_ms: self.last_round_trip.load(Ordering::SeqCst),
+        }
     }
 
     /// プールが持つ接続の本数。
@@ -261,7 +338,9 @@ impl ConnectionPool {
             Arc::clone(&self.handles[lease.slot])
         };
 
-        handle.close_cursor()
+        // 割り当てがあるときだけカーソルを閉じに行く。往復するのはここからで
+        // あるため、`見張る` を通すのもここだけでよい（ADR 0026・0030）。
+        self.見張る(|| handle.close_cursor())
     }
 
     /// SQL を 1 文実行する。
@@ -517,7 +596,9 @@ impl ConnectionPool {
         let Some(handle) = self.leased(tab_id) else {
             return Ok(());
         };
-        handle.cancel()
+        // 中止もデータベースへの往復である。断に気付く経路から外さない
+        // （ADR 0026）。
+        self.見張る(|| handle.cancel())
     }
 }
 
@@ -544,7 +625,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::driver::{Bind, Canceller, Column};
+    use crate::db::driver::{Bind, Canceller, Column, Prober};
     use crate::db::value::CellKind;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -666,9 +747,28 @@ mod tests {
         検索を求められた回数: Arc<AtomicUsize>,
         /// DDL を求められた回数（ADR 0019）。
         定義を求められた回数: Arc<AtomicUsize>,
+        /// 往復なしの覗きに「切られている」と答えるか（ADR 0030）。
+        切られている: Arc<AtomicBool>,
     }
 
     struct 何もしない中止経路;
+
+    /// 印を読むだけの覗き手（ADR 0030）。
+    ///
+    /// 実データベース抜きで、往復しない覗きがプールへどう効くかを確かめる。
+    struct 印を見る覗き手 {
+        切られている: Arc<AtomicBool>,
+    }
+
+    impl Prober for 印を見る覗き手 {
+        fn probe(&self) -> Liveness {
+            if self.切られている.load(Ordering::SeqCst) {
+                Liveness::Disconnected
+            } else {
+                Liveness::Unknown
+            }
+        }
+    }
 
     impl Canceller for 何もしない中止経路 {
         fn cancel(&self) -> DbResult<()> {
@@ -679,6 +779,12 @@ mod tests {
     impl Driver for 数えるドライバ {
         fn canceller(&self) -> Box<dyn Canceller> {
             Box::new(何もしない中止経路)
+        }
+
+        fn prober(&self) -> Box<dyn Prober> {
+            Box::new(印を見る覗き手 {
+                切られている: Arc::clone(&self.切られている),
+            })
         }
 
         fn execute(
@@ -814,11 +920,28 @@ mod tests {
     ///
     /// * `本数` - プールに載せる接続の本数
     fn 数えるプールを組む(本数: usize) -> (ConnectionPool, 数えた回数) {
+        let (pool, 回数, _) = 覗けるプールを組む(本数);
+        (pool, 回数)
+    }
+
+    /// 数を数えるプールを、往復なしの覗きの答えを差し替えられる形で組む。
+    ///
+    /// 返す印を真にすると、以後の覗きが「サーバ側から切られている」と答える
+    /// （ADR 0030）。
+    ///
+    /// # 引数
+    ///
+    /// * `本数` - プールに載せる接続の本数
+    fn 覗けるプールを組む(
+        本数: usize,
+    ) -> (ConnectionPool, 数えた回数, Arc<AtomicBool>) {
         let 回数 = 数えた回数::default();
+        let 切られている = Arc::new(AtomicBool::new(false));
 
         let drivers: Vec<_> = (0..本数)
             .map(|_| {
                 let 回数 = 回数.clone();
+                let 切られている = Arc::clone(&切られている);
                 move || {
                     Ok(数えるドライバ {
                         コミットした回数: 回数.コミット,
@@ -826,13 +949,14 @@ mod tests {
                         一覧を求められた回数: 回数.一覧,
                         検索を求められた回数: 回数.検索,
                         定義を求められた回数: 回数.定義,
+                        切られている,
                     })
                 }
             })
             .collect();
 
         let pool = pool_from_drivers(drivers, DEFAULT_CHUNK_SIZE).unwrap();
-        (pool, 回数)
+        (pool, 回数, 切られている)
     }
 
     #[test]
@@ -890,6 +1014,104 @@ mod tests {
 
         // Assert
         assert_eq!(回数.定義.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn 往復なしの覗きで切られていると分かればプールごと切れたものとして扱う() {
+        // Arrange: 断の原因は接続を選ばない（ADR 0026）。往復しない覗きで
+        // 分かったときも同じ扱いにする（ADR 0030）
+        let (pool, _, 切られている) = 覗けるプールを組む(4);
+        切られている.store(true, Ordering::SeqCst);
+
+        // Act
+        let 様子 = pool.probe();
+
+        // Assert
+        assert_eq!(様子, Liveness::Disconnected);
+        assert!(pool.is_lost());
+    }
+
+    #[test]
+    fn 覗いて切られていると分からなければ接続断の印は立たない() {
+        // Arrange: 分からないことを切れていると言わない（ADR 0030）
+        let (pool, _, _) = 覗けるプールを組む(4);
+
+        // Act
+        let 様子 = pool.probe();
+
+        // Assert
+        assert_eq!(様子, Liveness::Unknown);
+        assert!(!pool.is_lost());
+    }
+
+    #[test]
+    fn 覗いて切られていると分かった後は問い合わせも往復せずに断を返す() {
+        // Arrange: 印が立った後は往復しない（ADR 0026）
+        let (pool, 回数, 切られている) = 覗けるプールを組む(4);
+        切られている.store(true, Ordering::SeqCst);
+        pool.probe();
+
+        // Act
+        let 一覧 = pool.list_sessions();
+
+        // Assert
+        assert_eq!(一覧.unwrap_err().kind, DbErrorKind::ConnectionLost);
+        assert_eq!(回数.一覧.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn 往復に成功すると最後に往復できた時刻が進む() {
+        // Arrange: 「いつまで確かだったか」を出すための値である（ADR 0030）
+        let (pool, _, _) = 覗けるプールを組む(4);
+        pool.last_round_trip.store(0, Ordering::SeqCst);
+
+        // Act
+        pool.list_sessions().unwrap();
+
+        // Assert
+        assert!(pool.health().last_round_trip_ms > 0);
+    }
+
+    #[test]
+    fn 往復に失敗したときは最後に往復できた時刻を進めない() {
+        // Arrange: 届かなかった往復を「確かめられた」と数えない（ADR 0030）
+        let pool = 切れているプールを組む();
+        pool.last_round_trip.store(0, Ordering::SeqCst);
+
+        // Act
+        pool.list_sessions().unwrap_err();
+
+        // Assert
+        assert_eq!(pool.health().last_round_trip_ms, 0);
+    }
+
+    #[test]
+    fn 割り当ての無いタブを手放しても最後に往復できた時刻は進まない() {
+        // Arrange: カーソルを持たないタブを閉じてもデータベースへは行かない。
+        // 行かなかった操作で時刻を進めると、表示が実際より新しくなる（ADR 0030）
+        let (pool, _, _) = 覗けるプールを組む(4);
+        pool.last_round_trip.store(0, Ordering::SeqCst);
+
+        // Act
+        pool.release("結果を持たないタブ").unwrap();
+
+        // Assert
+        assert_eq!(pool.health().last_round_trip_ms, 0);
+    }
+
+    #[test]
+    fn 接続の様子は切れていることと最後に往復できた時刻の両方を持つ() {
+        // Arrange: ステータスバーはこの 2 つで「接続中」を出してよいかを決める
+        let (pool, _, 切られている) = 覗けるプールを組む(4);
+        pool.list_sessions().unwrap();
+        切られている.store(true, Ordering::SeqCst);
+
+        // Act
+        let 様子 = pool.health();
+
+        // Assert
+        assert!(様子.disconnected);
+        assert!(様子.last_round_trip_ms > 0);
     }
 
     #[test]
