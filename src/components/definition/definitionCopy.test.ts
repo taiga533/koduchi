@@ -104,10 +104,18 @@ const 索引: TableIndex[] = [
   },
 ]
 
+/** コメントの付いた列。`TRACKING_NO` にだけ付けていない（ADR 0033）。 */
+const コメント付きの列: TableColumn[] = [
+  { ...列[0], comment: '出荷番号' },
+  { ...列[1], comment: '受注番号' },
+  { ...列[2] },
+]
+
 const 定義: ObjectDefinition = {
   owner: 'KODUCHI',
   name: 'SHIPMENTS',
   kind: 'table',
+  comment: null,
   columns: 列,
   constraints: 制約,
   indexes: 索引,
@@ -123,6 +131,47 @@ describe('buildColumnsCopyText', () => {
     expect(lines[0]).toBe('#\t列\t型\tNULL')
     expect(lines[1]).toBe('1\tSHIPMENT_ID\tNUMBER(12)\tNOT NULL')
     expect(lines[3]).toBe('3\tTRACKING_NO\tVARCHAR2(64)\t可')
+  })
+
+  it('コメントの付いた列が 1 つでもあればコメントの欄を出す', () => {
+    // Arrange & Act
+    const text = buildColumnsCopyText(コメント付きの列, コメント付きの列)
+
+    // Assert
+    const lines = text.split('\n')
+    expect(lines[0]).toBe('#\t列\t型\tNULL\tコメント')
+    expect(lines[1]).toBe('1\tSHIPMENT_ID\tNUMBER(12)\tNOT NULL\t出荷番号')
+  })
+
+  it('コメントの無い列は空欄の印で写す', () => {
+    // Arrange & Act: 欄そのものは出ているため、列がずれないように埋める
+    const text = buildColumnsCopyText(コメント付きの列, コメント付きの列)
+
+    // Assert
+    const lines = text.split('\n')
+    expect(lines[3]).toBe('3\tTRACKING_NO\tVARCHAR2(64)\t可\t—')
+  })
+
+  it('コメントが 1 つも無ければコメントの欄を出さない', () => {
+    // Arrange & Act: 画面に出ていないものは写さない（ADR 0033）
+    const text = buildColumnsCopyText(列, 列)
+
+    // Assert
+    for (const line of text.split('\n')) {
+      expect(line.split('\t')).toHaveLength(4)
+    }
+  })
+
+  it('絞り込んでコメントの付いた列だけになってもコメントの欄は出る', () => {
+    // Arrange: 欄の有無は絞り込む前の全列で決める。語の打鍵ごとに表の形が
+    // 変わってはいけない（ADR 0033）
+    const 絞り込み済み = [コメント付きの列[2]]
+
+    // Act
+    const text = buildColumnsCopyText(絞り込み済み, コメント付きの列)
+
+    // Assert
+    expect(text.split('\n')[0]).toBe('#\t列\t型\tNULL\tコメント')
   })
 
   it('絞り込んだ後でも番号は絞り込む前の並び順を出す', () => {

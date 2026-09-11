@@ -339,6 +339,16 @@ export interface TableColumn {
   typeName: string
   nullable: boolean
   kind: CellKind
+  /**
+   * 列に付いたコメント（`ALL_COL_COMMENTS`。ADR 0033）。
+   *
+   * **埋まるのは定義タブ（`objectDefinition`）から届いた列だけである。**
+   * 段階 2（ADR 0007）はスキーマ 1 つぶんの列をまとめて読むため、ここへ
+   * コメントを載せると数万行ぶんの `VARCHAR2(4000)` が IPC に乗る。ツリーも
+   * 補完もコメントを出さない以上、払う値打ちが無い。コメントが無いときと
+   * 段階 2 から来たときのどちらも `undefined` である。
+   */
+  comment?: string
 }
 
 /**
@@ -663,6 +673,14 @@ export interface ObjectDefinition {
   owner: string
   name: string
   kind: ObjectKind
+  /**
+   * オブジェクトそのものに付いたコメント（`ALL_TAB_COMMENTS`。ADR 0033）。
+   *
+   * 4 つの内訳のどれにも属さないため、パネルの見出しに出す。コメントを
+   * 持ちうるのは表・ビュー・マテリアライズドビューだけで、それ以外の種別では
+   * 常に `null` である。
+   */
+  comment: string | null
   /** 列。列を持たない種別では空。 */
   columns: TableColumn[]
   /** 制約。テーブルとマテリアライズドビュー以外では空。 */

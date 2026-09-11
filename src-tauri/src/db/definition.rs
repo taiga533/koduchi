@@ -111,6 +111,12 @@ pub struct ObjectDefinition {
     pub owner: String,
     pub name: String,
     pub kind: ObjectKind,
+    /// オブジェクトそのものに付いたコメント（`ALL_TAB_COMMENTS`。ADR 0033）。
+    ///
+    /// 4 つの内訳のどれにも属さないため、パネルの見出しに出す。コメントを
+    /// 持ちうるのは表・ビュー・マテリアライズドビューだけで、それ以外の種別では
+    /// 問い合わせにも行かないため常に `None` である。
+    pub comment: Option<String>,
     /// 列。列を持たない種別では空になる。
     pub columns: Vec<TableColumn>,
     /// 制約。テーブルとマテリアライズドビュー以外では空になる。
@@ -181,6 +187,29 @@ pub struct IndexColumnRow {
     pub column_name: String,
     pub position: i64,
     pub descending: bool,
+}
+
+/// コメントを「無い」と「ある」に畳む（ADR 0033）。
+///
+/// **Oracle は空文字列と `NULL` を区別しない。** `COMMENT ON COLUMN … IS ''` は
+/// `NULL` として保存され、コメントを消す操作と同じである。区別できないものを
+/// 画面で区別して見せる意味が無いため、空白だけのコメントも「無い」へ畳む。
+///
+/// 中身のあるコメントは前後の空白だけを落とし、**切り詰めない。**
+/// `ALL_TAB_COMMENTS.COMMENTS` / `ALL_COL_COMMENTS.COMMENTS` は
+/// `VARCHAR2(4000)` であり、`oracle` crate はそのまま読める。
+///
+/// # 引数
+///
+/// * `raw` - `COMMENTS` 列の値
+pub fn normalize_comment(raw: Option<String>) -> Option<String> {
+    let trimmed = raw?.trim().to_string();
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 /// 検査制約の条件が `NOT NULL` を言っているだけかを判定する（ADR 0019）。
@@ -415,6 +444,36 @@ mod tests {
         // Arrange & Act & Assert: `V` は WITH CHECK OPTION、`O` は読み取り専用
         assert_eq!(ConstraintKind::from_constraint_type("V"), None);
         assert_eq!(ConstraintKind::from_constraint_type("O"), None);
+    }
+
+    #[test]
+    fn コメントは前後の空白を落として返る() {
+        // Arrange & Act & Assert
+        assert_eq!(
+            normalize_comment(Some(String::from("  受注明細  "))),
+            Some(String::from("受注明細"))
+        );
+    }
+
+    #[test]
+    fn 中身のあるコメントは切り詰めずに返る() {
+        // Arrange: `VARCHAR2(4000)` まで入りうる（ADR 0033）
+        let 長いコメント = "あ".repeat(4000);
+
+        // Act
+        let normalized = normalize_comment(Some(長いコメント.clone()));
+
+        // Assert
+        assert_eq!(normalized, Some(長いコメント));
+    }
+
+    #[test]
+    fn 空のコメントは無いものとして畳む() {
+        // Arrange & Act & Assert: Oracle は空文字列と NULL を区別しない
+        assert_eq!(normalize_comment(None), None);
+        assert_eq!(normalize_comment(Some(String::new())), None);
+        assert_eq!(normalize_comment(Some(String::from("   "))), None);
+        assert_eq!(normalize_comment(Some(String::from("\n\t"))), None);
     }
 
     #[test]

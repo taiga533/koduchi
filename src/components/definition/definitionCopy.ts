@@ -15,9 +15,14 @@
  *    矩形選択が相手なので見出しの有無を選ばせるが、ここで写すのは常に内訳
  *    まるごとである。表計算やチケットへ貼るときに見出しの無い 4 列は読めない。
  *    区切りはタブ、行区切りは `\n` で結果テーブルに揃える。
- * 3. **画面の 4 列をそのまま写す。**画面が札（`無効` / `自動生成` / `UNUSABLE`）で
+ * 3. **画面の欄をそのまま写す。**画面が札（`無効` / `自動生成` / `UNUSABLE`）で
  *    添えているものは、その札が乗っているセルへ括弧付きで入れる。矢印のような
- *    飾りだけは落とす。
+ *    飾りだけは落とす。列のコメントの欄は画面と同じく、コメントの付いた列が
+ *    1 つでもあるときだけ出す（ADR 0033）。
+ *
+ * **オブジェクトそのもののコメントは写さない（ADR 0033）。**それはパネルの
+ * 見出しに出ているものであって、内訳の中身ではない。見出しの 1 行を混ぜると、
+ * 表計算へ貼ったときに桁がずれる。
  *
  * DDL は `DBMS_METADATA.GET_DDL` の出力をそのまま渡す。**見出しも註釈も足さない。**
  * 貼り先は別の環境の SQL であり、小槌が付けた日本語の見出しが紛れ込んでよい場所
@@ -44,6 +49,7 @@ import {
   filterIndexes,
   formatIndexColumns,
   formatReference,
+  hasColumnComments,
   normalizeNeedle,
 } from './definitionSearch'
 
@@ -87,21 +93,32 @@ function 札を添える(本体: string, 札: string | null): string {
  * `#` は絞り込む前の並び順を出す。画面と同じ番号を写すためであり、絞り込んだ
  * 一覧を貼ったときに「元の表の何番目の列か」が残る。
  *
+ * **コメントの欄は、画面に出ているときだけ写す（ADR 0033）。**判定は画面と
+ * 同じ `hasColumnComments` を絞り込む前の全列に当てて行う。写すのは画面に
+ * 出ているものだという決まりに、欄の数も従う。
+ *
  * @param shown 写す列（絞り込み済み）
- * @param all 絞り込む前の全列。`#` を数えるのに使う
+ * @param all 絞り込む前の全列。`#` を数えるのと、コメントの欄を出すかの判定に使う
  */
 export function buildColumnsCopyText(shown: TableColumn[], all: TableColumn[]): string {
-  const lines = [行にする(['#', '列', '型', 'NULL'])]
+  const コメントを出す = hasColumnComments(all)
+  const 見出し = ['#', '列', '型', 'NULL']
+  if (コメントを出す) {
+    見出し.push('コメント')
+  }
+  const lines = [行にする(見出し)]
 
   for (const column of shown) {
-    lines.push(
-      行にする([
-        String(all.indexOf(column) + 1),
-        column.name,
-        column.typeName,
-        column.nullable ? '可' : 'NOT NULL',
-      ]),
-    )
+    const cells = [
+      String(all.indexOf(column) + 1),
+      column.name,
+      column.typeName,
+      column.nullable ? '可' : 'NOT NULL',
+    ]
+    if (コメントを出す) {
+      cells.push(column.comment ?? 空欄)
+    }
+    lines.push(行にする(cells))
   }
 
   return lines.join('\n')
