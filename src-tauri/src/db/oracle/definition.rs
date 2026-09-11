@@ -29,8 +29,8 @@ use crate::db::definition::{
     assemble_constraints, assemble_indexes, ConstraintColumnRow, ConstraintKind, ConstraintRow,
     DdlPart, IndexColumnRow, IndexRow, ObjectDdl, ObjectDefinition,
 };
-use crate::db::error::{DbError, DbResult};
-use crate::db::oracle::errors::{map_oracle_error, DDL_PERMISSION_ERRORS};
+use crate::db::error::DbResult;
+use crate::db::oracle::errors::{self, map_oracle_error, DDL_PERMISSION_ERRORS};
 use crate::db::oracle::schema::{format_column_type, kind_of_type_name};
 use crate::db::schema::{ObjectKind, TableColumn};
 use oracle::Connection;
@@ -198,13 +198,13 @@ fn load_columns(connection: &Connection, owner: &str, name: &str) -> DbResult<Ve
             COLUMNS_SQL,
             &[&owner, &name],
         )
-        .map_err(|error| DbError::execute(format!("列情報を取得できませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
     let mut columns = Vec::new();
 
     for row in rows {
-        let (column_name, data_type, char_length, precision, scale, nullable) = row
-            .map_err(|error| DbError::execute(format!("列情報を取得できませんでした: {error}")))?;
+        let (column_name, data_type, char_length, precision, scale, nullable) =
+            row.map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
         columns.push(TableColumn {
             object_name: name.to_string(),
@@ -242,7 +242,7 @@ fn load_constraint_rows(
 
     let rows = connection
         .query_as::<Row>(CONSTRAINTS_SQL, &[&owner, &name])
-        .map_err(|error| DbError::execute(format!("制約を取得できませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("制約を取得できませんでした", &error))?;
 
     let mut constraints = Vec::new();
 
@@ -255,8 +255,7 @@ fn load_constraint_rows(
             delete_rule,
             referenced_owner,
             referenced_table,
-        ) =
-            row.map_err(|error| DbError::execute(format!("制約を取得できませんでした: {error}")))?;
+        ) = row.map_err(|error| errors::map_execute_error("制約を取得できませんでした", &error))?;
 
         let Some(kind) = ConstraintKind::from_constraint_type(&constraint_type) else {
             continue;
@@ -337,13 +336,16 @@ fn 読み取る(
 ) -> DbResult<Vec<ConstraintColumnRow>> {
     let rows = connection
         .query_as::<(String, String, Option<i64>)>(sql, &[&owner, &name])
-        .map_err(|error| DbError::execute(format!("{何を}を取得できませんでした: {error}")))?;
+        .map_err(|error| {
+            errors::map_execute_error(&format!("{何を}を取得できませんでした"), &error)
+        })?;
 
     let mut columns = Vec::new();
 
     for row in rows {
-        let (constraint_name, column_name, position) = row
-            .map_err(|error| DbError::execute(format!("{何を}を取得できませんでした: {error}")))?;
+        let (constraint_name, column_name, position) = row.map_err(|error| {
+            errors::map_execute_error(&format!("{何を}を取得できませんでした"), &error)
+        })?;
 
         columns.push(ConstraintColumnRow {
             constraint_name,
@@ -367,13 +369,13 @@ fn load_index_rows(connection: &Connection, owner: &str, name: &str) -> DbResult
 
     let rows = connection
         .query_as::<Row>(INDEXES_SQL, &[&owner, &name])
-        .map_err(|error| DbError::execute(format!("索引を取得できませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("索引を取得できませんでした", &error))?;
 
     let mut indexes = Vec::new();
 
     for row in rows {
         let (index_name, index_owner, uniqueness, index_type, status, generated) =
-            row.map_err(|error| DbError::execute(format!("索引を取得できませんでした: {error}")))?;
+            row.map_err(|error| errors::map_execute_error("索引を取得できませんでした", &error))?;
 
         indexes.push(IndexRow {
             name: index_name,
@@ -402,14 +404,13 @@ fn load_index_columns(
 ) -> DbResult<Vec<IndexColumnRow>> {
     let rows = connection
         .query_as::<(String, String, i64, Option<String>)>(INDEX_COLUMNS_SQL, &[&owner, &name])
-        .map_err(|error| DbError::execute(format!("索引の列を取得できませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("索引の列を取得できませんでした", &error))?;
 
     let mut columns = Vec::new();
 
     for row in rows {
-        let (index_name, column_name, position, descend) = row.map_err(|error| {
-            DbError::execute(format!("索引の列を取得できませんでした: {error}"))
-        })?;
+        let (index_name, column_name, position, descend) = row
+            .map_err(|error| errors::map_execute_error("索引の列を取得できませんでした", &error))?;
 
         columns.push(IndexColumnRow {
             index_name,

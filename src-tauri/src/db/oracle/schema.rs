@@ -18,7 +18,8 @@
 //! 所有者が `PUBLIC` のオブジェクトは列挙しない。`PUBLIC` は `ALL_USERS` に
 //! 載らない擬似的な所有者であり、そこに数万件の公開シノニムがぶら下がる。
 
-use crate::db::error::{DbError, DbResult};
+use crate::db::error::DbResult;
+use crate::db::oracle::errors;
 use crate::db::schema::{
     ObjectKind, ObjectKindFilter, SchemaFilter, SchemaNode, SchemaObject, TableColumn,
 };
@@ -191,12 +192,11 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
 
     let users = connection
         .query_as::<String>("select username from all_users order by username", &[])
-        .map_err(|error| DbError::execute(format!("スキーマを取得できませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("スキーマを取得できませんでした", &error))?;
 
     for user in users {
-        let name = user.map_err(|error| {
-            DbError::execute(format!("スキーマを取得できませんでした: {error}"))
-        })?;
+        let name = user
+            .map_err(|error| errors::map_execute_error("スキーマを取得できませんでした", &error))?;
         schemas.insert(
             name.clone(),
             SchemaNode {
@@ -218,12 +218,12 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
         let objects = connection
             .query_as::<(String, String, String)>(&sql, &[])
             .map_err(|error| {
-                DbError::execute(format!("オブジェクトを取得できませんでした: {error}"))
+                errors::map_execute_error("オブジェクトを取得できませんでした", &error)
             })?;
 
         for object in objects {
             let (owner, object_name, object_type) = object.map_err(|error| {
-                DbError::execute(format!("オブジェクトを取得できませんでした: {error}"))
+                errors::map_execute_error("オブジェクトを取得できませんでした", &error)
             })?;
 
             let Some(kind) = ObjectKind::from_object_type(&object_type) else {
@@ -243,12 +243,11 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
 
         let indexes = connection
             .query_as::<(String, String)>(sql, &[])
-            .map_err(|error| DbError::execute(format!("索引を取得できませんでした: {error}")))?;
+            .map_err(|error| errors::map_execute_error("索引を取得できませんでした", &error))?;
 
         for index in indexes {
-            let (owner, index_name) = index.map_err(|error| {
-                DbError::execute(format!("索引を取得できませんでした: {error}"))
-            })?;
+            let (owner, index_name) = index
+                .map_err(|error| errors::map_execute_error("索引を取得できませんでした", &error))?;
             push_object(&mut schemas, owner, index_name, ObjectKind::Index);
         }
     }
@@ -260,13 +259,11 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
 
         let links = connection
             .query_as::<(String, String)>(sql, &[])
-            .map_err(|error| {
-                DbError::execute(format!("DB link を取得できませんでした: {error}"))
-            })?;
+            .map_err(|error| errors::map_execute_error("DB link を取得できませんでした", &error))?;
 
         for link in links {
             let (owner, db_link) = link.map_err(|error| {
-                DbError::execute(format!("DB link を取得できませんでした: {error}"))
+                errors::map_execute_error("DB link を取得できませんでした", &error)
             })?;
             push_object(&mut schemas, owner, db_link, ObjectKind::DatabaseLink);
         }
@@ -362,13 +359,13 @@ pub fn load_columns(connection: &Connection, owner: &str) -> DbResult<Vec<TableC
             Option<i64>,
             String,
         )>(sql, &[&owner])
-        .map_err(|error| DbError::execute(format!("列情報を取得できませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
     let mut columns = Vec::new();
 
     for row in rows {
-        let (object_name, name, data_type, char_length, precision, scale, nullable) = row
-            .map_err(|error| DbError::execute(format!("列情報を取得できませんでした: {error}")))?;
+        let (object_name, name, data_type, char_length, precision, scale, nullable) =
+            row.map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
         columns.push(TableColumn {
             object_name,

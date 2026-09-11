@@ -7,8 +7,8 @@
 //! `V$SESSION` の参照は権限を要する。持っていない接続では `ORA-00942` になるため、
 //! そのときは `DbErrorKind::Permission` へ写して「空だった」と混同させない。
 
-use crate::db::error::{DbError, DbResult};
-use crate::db::oracle::errors::map_permission_error;
+use crate::db::error::DbResult;
+use crate::db::oracle::errors::{self, map_permission_error};
 use crate::db::sessions::{check_kill_allowed, SessionOverview, SessionRow};
 use oracle::Connection;
 
@@ -73,9 +73,7 @@ pub fn load_identity(connection: &Connection) -> DbResult<(u32, u32)> {
     let (sid, instance) = connection
         .query_row_as::<(Option<String>, Option<String>)>(IDENTITY_SQL, &[])
         .map_err(|error| {
-            DbError::execute(format!(
-                "自分自身のセッションを特定できませんでした: {error}"
-            ))
+            errors::map_execute_error("自分自身のセッションを特定できませんでした", &error)
         })?;
 
     Ok((番号として読む(sid), 番号として読む(instance)))
@@ -111,7 +109,7 @@ pub fn load_sessions(connection: &Connection) -> DbResult<SessionOverview> {
         })?;
 
         let 読めない = |error: oracle::Error| {
-            DbError::execute(format!("セッションを読み取れませんでした: {error}"))
+            errors::map_execute_error("セッションを読み取れませんでした", &error)
         };
 
         sessions.push(SessionRow {
