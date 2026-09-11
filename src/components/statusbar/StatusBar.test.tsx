@@ -8,12 +8,16 @@
  * ここで見たいのは「押せるか」「何が出るか」「何を呼ぶか」だけである。
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StatusBar } from './StatusBar'
 import { useConnectionStore } from '../../stores/connection'
 import { useExecutionStore } from '../../stores/execution'
+import { resetDbApi, setDbApi } from '../../api/db'
+import { createFakeDbApi } from '../../test/fakeDbApi'
+import { onConnectionLost, PROBE_LOST_MESSAGE } from '../../connection/lost'
+import { FRESH_WINDOW_MS } from '../../connection/freshness'
 import type { ConnectionColor, ConnectionParams } from '../../types/db'
 
 /**
@@ -77,6 +81,10 @@ function ハンドラを作る() {
 beforeEach(() => {
   useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
   useExecutionStore.getState().clear()
+})
+
+afterEach(() => {
+  resetDbApi()
 })
 
 describe('StatusBar', () => {
@@ -394,6 +402,91 @@ describe('StatusBar', () => {
 
     // Assert
     expect(screen.queryByText('未コミット')).not.toBeInTheDocument()
+  })
+
+  it('最後の往復が古くなったら最終応答の時刻を添える', async () => {
+    // Arrange: 往復したときにしか断に気付けない以上、いつまで確かだったかを
+    // 正直に見せる（ADR 0030）
+    const { api } = createFakeDbApi({
+      health: () => ({ disconnected: false, lastRoundTripMs: Date.now() - 12 * 60 * 1000 }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+
+    // Assert
+    expect(await screen.findByText('最終応答 12 分前')).toBeInTheDocument()
+  })
+
+  it('最後の往復が新しいうちは何も添えない', async () => {
+    // Arrange: 言わないのが正しい場面で言うと、注記そのものが読まれなくなる
+    const { api, calls } = createFakeDbApi({
+      health: () => ({
+        disconnected: false,
+        lastRoundTripMs: Date.now() - (FRESH_WINDOW_MS - 1000),
+      }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+    await waitFor(() => expect(calls.connectionHealth.length).toBeGreaterThan(0))
+
+    // Assert
+    expect(screen.queryByTestId('connection-staleness')).not.toBeInTheDocument()
+  })
+
+  it('往復なしの覗きで切られていると分かったら断として配る', async () => {
+    // Arrange: 問い合わせを走らせる前に気付ける唯一の道である（ADR 0030）
+    const { api } = createFakeDbApi({
+      health: () => ({ disconnected: true, lastRoundTripMs: Date.now() }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    const 届いた: string[] = []
+    const 外す = onConnectionLost((message) => 届いた.push(message))
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+
+    // Assert
+    await waitFor(() => expect(届いた).toEqual([PROBE_LOST_MESSAGE]))
+    外す()
+  })
+
+  it('繋がっていないときは接続の様子を覗きに行かない', async () => {
+    // Arrange: 覗く相手が無い
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} />)
+    await waitFor(() => expect(screen.getByText('未接続')).toBeInTheDocument())
+
+    // Assert
+    expect(calls.connectionHealth).toEqual([])
+  })
+
+  it('接続が切れた後は接続の様子を覗きに行かない', async () => {
+    // Arrange: 印が立った後は往復も覗きも要らない（ADR 0026）
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続が切れた状態にする()
+    const handlers = ハンドラを作る()
+
+    // Act
+    render(<StatusBar {...handlers} onReconnect={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('接続が切れました')).toBeInTheDocument())
+
+    // Assert
+    expect(calls.connectionHealth).toEqual([])
   })
 
   it('再接続の手続きを渡さないとボタンは出ない', () => {

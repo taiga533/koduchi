@@ -315,6 +315,94 @@ describe('接続断からの回復（ADR 0026）', () => {
     expect(state.error).toBe('ORA-12541')
   })
 
+  it('繋ぎ直しは古い接続の後片付けを待たない', async () => {
+    // Arrange: 切れている接続のログオフは TCP が諦めるまで返らないことがある。
+    // 待つと「再接続」を押しても何十秒も画面が動かない（ADR 0030）
+    const { api } = createFakeDbApi()
+    const 手放した: string[] = []
+    setDbApi({
+      ...api,
+      disconnect: (id) => {
+        手放した.push(id)
+        return new Promise<void>(() => {})
+      },
+    })
+    await useConnectionStore.getState().connect('dev', params)
+    const 前の識別子 = useConnectionStore.getState().connection?.id
+    useConnectionStore.getState().markLost('ORA-03113')
+
+    // Act
+    await useConnectionStore.getState().reconnect()
+
+    // Assert
+    expect(useConnectionStore.getState().status).toBe('connected')
+    expect(useConnectionStore.getState().connection?.id).not.toBe(前の識別子)
+    expect(手放した).toEqual([前の識別子])
+  })
+
+  it('繋ぎ直しを頼んだ時点で段階が接続中になる', async () => {
+    // Arrange: 待ってから動かすと、その間ボタンが押せるまま残る（ADR 0030）
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+    useConnectionStore.getState().markLost('ORA-02396')
+
+    // Act
+    const 繋ぎ直し = useConnectionStore.getState().reconnect()
+
+    // Assert
+    expect(useConnectionStore.getState().status).toBe('connecting')
+    await 繋ぎ直し
+  })
+
+  it('繋ぎに行っている最中にもう一度頼んでも接続は増えない', async () => {
+    // Arrange: 押した回数だけプールが増えると、Rust 側に迷子のプールが残る
+    // （ADR 0030）
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+    useConnectionStore.getState().markLost('ORA-02396')
+
+    // Act
+    const 一度目 = useConnectionStore.getState().reconnect()
+    const 二度目 = useConnectionStore.getState().reconnect()
+    await Promise.all([一度目, 二度目])
+
+    // Assert: 最初の接続と繋ぎ直しの 1 回だけ
+    expect(calls.connect).toHaveLength(2)
+    expect(useConnectionStore.getState().status).toBe('connected')
+  })
+
+  it('切断は後片付けを待たずに未接続へ戻す', async () => {
+    // Arrange: 切れている相手の後片付けを待つと、接続を選ぶ画面へ戻れなくなる
+    // （ADR 0030）
+    const { api } = createFakeDbApi()
+    setDbApi({ ...api, disconnect: () => new Promise<void>(() => {}) })
+    await useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    await useConnectionStore.getState().disconnect()
+
+    // Assert
+    expect(useConnectionStore.getState().status).toBe('disconnected')
+    expect(useConnectionStore.getState().connection).toBeNull()
+  })
+
+  it('接続の切り替えも古い接続の後片付けを待たない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi({ ...api, disconnect: () => new Promise<void>(() => {}) })
+    await useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    await useConnectionStore.getState().connect('prod', params)
+
+    // Assert
+    expect(useConnectionStore.getState().status).toBe('connected')
+    expect(useConnectionStore.getState().connection?.name).toBe('prod')
+    expect(calls.connect).toHaveLength(2)
+  })
+
   it('接続していないときに繋ぎ直しても何も起きない', async () => {
     // Arrange
     const { api, calls } = createFakeDbApi()

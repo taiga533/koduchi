@@ -99,6 +99,12 @@ interface ConnectionState {
    *
    * 接続の識別子は採番し直す。Rust 側のプールは切れた印を持ったままであり、
    * 使い回すと繋ぎ直しても切れたままに見える。
+   *
+   * **繋ぎ始めたことを、待つ前に段階へ出す**（ADR 0030）。切れた接続の後片付けは
+   * TCP のタイムアウトぶん待たされることがあり、その間「再接続」のボタンが
+   * 押せる形で残っていると、押した回数だけプールが増えて迷子になる。
+   *
+   * 既に繋ぎに行っている最中は何もしない。
    */
   reconnect: () => Promise<void>
 }
@@ -110,6 +116,31 @@ interface ConnectionState {
  */
 function createConnectionId(): string {
   return crypto.randomUUID()
+}
+
+/**
+ * 前の接続を手放す。**終わるのを待たない**（ADR 0030）。
+ *
+ * Rust 側の `disconnect` は接続表から外してからプールを捨てる。表から外れるのは
+ * 呼んだ時点であり、以後その識別子では何も引けない。待たされるのは後片付け
+ * （ODPI-C のログオフ）のほうである。
+ *
+ * **切れている接続のログオフは往復を試みる。**回線が落ちている相手では TCP が
+ * 諦めるまで返らず、数十秒かかることがある。それを待ってから繋ぎ直すと、
+ * 「再接続」を押しても何十秒も画面が動かない。利用者が待っているのは新しい
+ * 接続であって、古い接続の後始末ではない。
+ *
+ * 失敗も無視する。既に切れている接続は閉じられなくてよく、後片付けの失敗で
+ * 次の一手を止めない。
+ *
+ * @param id 手放す接続の識別子
+ */
+function 手放す(id: string): void {
+  void getDbApi()
+    .disconnect(id)
+    .catch(() => {
+      // 閉じられなくてよい。
+    })
 }
 
 /**
@@ -149,17 +180,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       group = null,
     } = profile
     const previous = get().connection
-    if (previous) {
-      try {
-        await getDbApi().disconnect(previous.id)
-      } catch {
-        // 既に切れている接続は閉じられなくてよい（ADR 0026）。繋ぎ直しを
-        // 後片付けの失敗で止めない。
-      }
-    }
-
     const id = createConnectionId()
     set({ status: 'connecting', error: null })
+
+    if (previous) {
+      手放す(previous.id)
+    }
 
     try {
       await getDbApi().connect(id, params)
@@ -179,8 +205,11 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       return
     }
 
-    await getDbApi().disconnect(current.id)
+    // 切断も後片付けを待たない（ADR 0030）。Rust 側の接続表からは呼んだ時点で
+    // 外れるため、待たされるのは後片付けだけである。切れている相手ではそれが
+    // 数十秒かかることがあり、待つと接続を選ぶ画面へ戻れなくなる。
     set({ status: 'disconnected', connection: null, error: null })
+    手放す(current.id)
   },
 
   markLost: (message) => {
@@ -192,19 +221,18 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   },
 
   reconnect: async () => {
-    const current = get().connection
-    if (!current) {
+    const { connection: current, status } = get()
+    if (!current || status === 'connecting') {
       return
     }
 
-    try {
-      await getDbApi().disconnect(current.id)
-    } catch {
-      // 切れた接続は閉じられなくてよい。繋ぎ直しを後片付けの失敗で止めない。
-    }
-
+    // 押した瞬間に段階を動かす。待ってから動かすと、切れた接続の後片付けに
+    // 手間取っている間ボタンが押せるまま残り、押した回数だけプールが増える
+    // （ADR 0030）。
     const id = createConnectionId()
     set({ status: 'connecting', error: null })
+
+    手放す(current.id)
 
     try {
       await getDbApi().connect(id, current.params)

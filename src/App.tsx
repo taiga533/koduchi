@@ -521,6 +521,12 @@ export function App() {
    * 捨てない。エディタのタブと内容も残す。スキーマツリーは同じデータベースの
    * ものであり、繋ぎ直しても中身は変わらない。
    *
+   * **繋ぎ直せたらスキーマだけ取り直す**（ADR 0030）。ツリーは接続の識別子で
+   * 引くため、新しい接続では取り直さないと古い識別子のまま残る。断がスキーマの
+   * 読み込み中に起きていれば、取り直さないかぎりツリーは空のままである。
+   * 取り直しは同期的に始まるため、接続が変わったことで走る取得（`load`）は
+   * 読み込み中を見て素通りする。
+   *
    * **繋ぎ直せなかったときはメッセージタブへ残す。**押した結果が分からないと、
    * 押したのかどうかすら見分けられない。繋ぎ直しの失敗は断そのものではなく
    * `Connect` のエラーであり、断の見張り（`onConnectionLost`）には乗らない。
@@ -528,11 +534,16 @@ export function App() {
   const reconnectConnection = useCallback(async () => {
     await useConnectionStore.getState().reconnect()
 
-    const { status, error } = useConnectionStore.getState()
+    const { status, error, connection: active } = useConnectionStore.getState()
     if (status === 'lost') {
       noteReconnectFailure(error ?? '接続を確立できませんでした')
+      return
     }
-  }, [noteReconnectFailure])
+
+    if (status === 'connected' && active) {
+      void reloadSchemas(active.id)
+    }
+  }, [noteReconnectFailure, reloadSchemas])
 
   /**
    * 未コミットの変更を片付けてから進めてよいかを決める（ADR 0012）。

@@ -9,8 +9,9 @@
 //! パースは行わない。
 
 use crate::db::driver::Bind;
-use crate::db::error::{DbError, DbResult};
+use crate::db::error::DbResult;
 use crate::db::oracle::bind;
+use crate::db::oracle::errors;
 use oracle::Connection;
 
 /// 実測を集めるためのヒント。
@@ -148,13 +149,12 @@ pub fn inject_gather_plan_statistics(sql: &str) -> String {
 fn fetch_plan_text(connection: &Connection, sql: &str) -> DbResult<String> {
     let rows = connection
         .query_as::<Option<String>>(sql, &[])
-        .map_err(|error| DbError::execute(format!("実行計画を取得できませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("実行計画を取得できませんでした", &error))?;
 
     let mut lines = Vec::new();
     for row in rows {
-        let line = row.map_err(|error| {
-            DbError::execute(format!("実行計画を取得できませんでした: {error}"))
-        })?;
+        let line = row
+            .map_err(|error| errors::map_execute_error("実行計画を取得できませんでした", &error))?;
         lines.push(line.unwrap_or_default());
     }
 
@@ -178,13 +178,13 @@ pub fn explain(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<S
     let mut statement = connection
         .statement(&format!("explain plan for {sql}"))
         .build()
-        .map_err(|error| DbError::execute(format!("実行計画を作れませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("実行計画を作れませんでした", &error))?;
 
     let bound = bind::bound_values(&statement, binds)?;
 
     statement
         .execute_named(&bind::params(&bound))
-        .map_err(|error| DbError::execute(format!("実行計画を作れませんでした: {error}")))?;
+        .map_err(|error| errors::map_execute_error("実行計画を作れませんでした", &error))?;
 
     fetch_plan_text(
         connection,
@@ -208,7 +208,7 @@ pub fn actual(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<St
     let mut statement = connection
         .statement(&hinted)
         .build()
-        .map_err(|error| DbError::execute(error.to_string()))?;
+        .map_err(|error| errors::map_execute_error("", &error))?;
 
     let bound = bind::bound_values(&statement, binds)?;
 
@@ -216,14 +216,14 @@ pub fn actual(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<St
         // 実測は最後まで実行しないと揃わない。行そのものは使わないので捨てる。
         let rows = statement
             .into_result_set_named::<oracle::Row>(&bind::params(&bound))
-            .map_err(|error| DbError::execute(error.to_string()))?;
+            .map_err(|error| errors::map_execute_error("", &error))?;
         for row in rows {
-            row.map_err(|error| DbError::execute(error.to_string()))?;
+            row.map_err(|error| errors::map_execute_error("", &error))?;
         }
     } else {
         statement
             .execute_named(&bind::params(&bound))
-            .map_err(|error| DbError::execute(error.to_string()))?;
+            .map_err(|error| errors::map_execute_error("", &error))?;
     }
 
     fetch_plan_text(

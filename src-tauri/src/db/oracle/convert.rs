@@ -8,7 +8,8 @@
 //!    残す（ADR 0021 の「黙って切り詰めない」）。
 //! 3. `BLOB` / `RAW` は内容を送らず `[BLOB 1.2 KB]` のような要約だけを送る。
 
-use crate::db::error::{DbError, DbResult};
+use crate::db::error::DbResult;
+use crate::db::oracle::errors;
 use crate::db::value::{
     format_binary_summary, truncate_at_char_boundary, Cell, CellKind, CLOB_LIMIT_BYTES,
 };
@@ -75,21 +76,21 @@ pub fn binary_label(oracle_type: &OracleType) -> &'static str {
 pub fn to_cell(value: &SqlValue) -> DbResult<Cell> {
     let is_null = value
         .is_null()
-        .map_err(|error| DbError::execute(error.to_string()))?;
+        .map_err(|error| errors::map_execute_error("", &error))?;
     if is_null {
         return Ok(Cell::null());
     }
 
     let oracle_type = value
         .oracle_type()
-        .map_err(|error| DbError::execute(error.to_string()))?
+        .map_err(|error| errors::map_execute_error("", &error))?
         .clone();
     let kind = kind_of(&oracle_type);
 
     if kind == CellKind::Binary {
         let bytes: Vec<u8> = value
             .get()
-            .map_err(|error| DbError::execute(error.to_string()))?;
+            .map_err(|error| errors::map_execute_error("", &error))?;
         let summary = format_binary_summary(binary_label(&oracle_type), bytes.len() as u64);
         return Ok(Cell::new(CellKind::Binary, summary));
     }
@@ -98,7 +99,7 @@ pub fn to_cell(value: &SqlValue) -> DbResult<Cell> {
     // 38 桁の精度を保つ唯一の方法である。
     let text: String = value
         .get()
-        .map_err(|error| DbError::execute(error.to_string()))?;
+        .map_err(|error| errors::map_execute_error("", &error))?;
 
     Ok(text_cell(&oracle_type, kind, text))
 }

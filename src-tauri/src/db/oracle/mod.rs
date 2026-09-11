@@ -14,13 +14,15 @@ pub mod sessions;
 pub mod source;
 
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
-use crate::db::driver::{Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome};
+use crate::db::driver::{
+    Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome, Liveness, Prober,
+};
 use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use oracle::sql_type::OracleType;
-use oracle::{Connection, ResultSet, Row, StatementType};
+use oracle::{ConnStatus, Connection, ResultSet, Row, StatementType};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -91,6 +93,34 @@ impl Canceller for OracleCanceller {
         self.connection
             .break_execution()
             .map_err(|error| errors::map_execute_error("", &error))
+    }
+}
+
+/// 往復を起こさずに接続の様子を覗く経路（ADR 0030）。
+///
+/// 中止と同じく `Arc<Connection>` の複製を別のスレッドが持つ。
+///
+/// `Connection::status()` が読むのは OCI がクライアント側に持っている
+/// `OCI_ATTR_SERVER_STATUS` であり、**サーバへは何も送らない。**Instant Client
+/// 12.2 以降はこの値を読むときに TCP ソケットが相手から閉じられていないかを
+/// 見るため、データベースの停止やセッションの強制終了（`ALTER SYSTEM KILL
+/// SESSION`）で FIN / RST が届いていれば、問い合わせを投げる前に分かる。
+///
+/// **回線そのものが落ちた断は見えない。**VPN の切断やサーバ機の異常停止では
+/// パケットが 1 つも届かないため `Normal` のままである。そのときは `Unknown` を
+/// 返し、「分からない」を「生きている」に読み替えさせない。
+struct OracleProber {
+    connection: Arc<Connection>,
+}
+
+impl Prober for OracleProber {
+    fn probe(&self) -> Liveness {
+        match self.connection.status() {
+            Ok(ConnStatus::NotConnected) | Ok(ConnStatus::Closed) => Liveness::Disconnected,
+            // 状態そのものを読めなかったときは、断だと決めつけない。読めない
+            // 理由は接続とは限らない（ADR 0030）。
+            Ok(ConnStatus::Normal) | Err(_) => Liveness::Unknown,
+        }
     }
 }
 
@@ -307,6 +337,12 @@ fn take_chunk(cursor: &mut OpenCursor, chunk_size: usize) -> DbResult<Chunk> {
 impl Driver for OracleDriver {
     fn canceller(&self) -> Box<dyn Canceller> {
         Box::new(OracleCanceller {
+            connection: Arc::clone(&self.connection),
+        })
+    }
+
+    fn prober(&self) -> Box<dyn Prober> {
+        Box::new(OracleProber {
             connection: Arc::clone(&self.connection),
         })
     }

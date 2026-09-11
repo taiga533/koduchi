@@ -14,8 +14,8 @@
 //! 3 のために `order by` を付けない。付けると全件を拾ってから並べることになり、
 //! 上限が効かなくなる。並べ直しは `crate::db::source::group_matches` が行う。
 
-use crate::db::error::{DbError, DbResult};
-use crate::db::oracle::errors::map_permission_error;
+use crate::db::error::DbResult;
+use crate::db::oracle::errors::{self, map_permission_error};
 use crate::db::oracle::schema::SYSTEM_SCHEMAS;
 use crate::db::source::{
     context_range, group_matches, RawSourceMatch, SourceKind, SourceKindFilter, SourceLine,
@@ -193,7 +193,7 @@ pub fn search_source(
         let row = row.map_err(読めない)?;
 
         let 読み取れない = |error: oracle::Error| {
-            DbError::execute(format!("ソースの行を読み取れませんでした: {error}"))
+            errors::map_execute_error("ソースの行を読み取れませんでした", &error)
         };
 
         let source_type = row.get::<usize, String>(2).map_err(読み取れない)?;
@@ -254,11 +254,11 @@ pub fn source_context(
 
     for row in rows {
         let row = row.map_err(|error| {
-            DbError::execute(format!("ソースの行を読み取れませんでした: {error}"))
+            errors::map_execute_error("ソースの行を読み取れませんでした", &error)
         })?;
 
         let 読み取れない = |error: oracle::Error| {
-            DbError::execute(format!("ソースの行を読み取れませんでした: {error}"))
+            errors::map_execute_error("ソースの行を読み取れませんでした", &error)
         };
 
         lines.push(SourceLine {

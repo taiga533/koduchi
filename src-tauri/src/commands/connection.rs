@@ -6,7 +6,7 @@
 use crate::commands::{run_blocking, AppState, ConnectionId};
 use crate::db::driver::{Bind, Chunk, ConnectionParams, ExecuteOutcome};
 use crate::db::error::{DbError, DbResult};
-use crate::db::pool::{ConnectionPool, DEFAULT_CHUNK_SIZE, DEFAULT_POOL_SIZE};
+use crate::db::pool::{ConnectionHealth, ConnectionPool, DEFAULT_CHUNK_SIZE, DEFAULT_POOL_SIZE};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
@@ -170,6 +170,29 @@ pub async fn rollback(state: State<'_, AppState>, id: ConnectionId) -> DbResult<
     let pool = state.get(&id).ok_or_else(DbError::closed)?;
 
     run_blocking(move || pool.rollback()).await
+}
+
+/// 接続の様子を返す（ADR 0030）。
+///
+/// **データベースへは往復しない。**OCI がクライアント側に持っている状態を
+/// 読むだけであり、アイドル時間は戻らない。定期的な生存確認をしないという
+/// ADR 0026 の決定はそのまま生きている。
+///
+/// ステータスバーが「接続中」を出し続けてよいかを決めるために呼ぶ。
+///
+/// # 引数
+///
+/// * `id` - 接続の識別子
+#[tauri::command]
+pub async fn connection_health(
+    state: State<'_, AppState>,
+    id: ConnectionId,
+) -> DbResult<ConnectionHealth> {
+    let pool = state.get(&id).ok_or_else(DbError::closed)?;
+
+    // OCI の状態を読むだけだが、実行中の接続では OCI 側の待ちが入りうる。
+    // tokio のワーカーを塞がないようブロッキング側で読む。
+    run_blocking(move || Ok(pool.health())).await
 }
 
 /// 接続を閉じる。

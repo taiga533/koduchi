@@ -43,6 +43,8 @@ import {
 } from 'lucide-react'
 import { canReachDatabase, isManualCommit, useConnectionStore } from '../../stores/connection'
 import { CONNECTION_LOST_LABEL } from '../../connection/lost'
+import { describeStaleness } from '../../connection/freshness'
+import { useConnectionHealth } from '../../connection/useConnectionHealth'
 import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { connectionColorVar } from '../../theme/connectionColors'
@@ -106,6 +108,11 @@ export function StatusBar({
   const connection = useConnectionStore((state) => state.connection)
   const cursor = useUiStore((state) => state.cursor)
   const inTransaction = useExecutionStore((state) => state.inTransaction)
+  // 往復を起こさずに接続の様子を覗き続ける（ADR 0030）。サーバ側から切られて
+  // いれば、問い合わせを走らせる前にここから断が配られる。
+  const freshness = useConnectionHealth()
+  const staleness =
+    freshness === null ? null : describeStaleness(freshness.lastRoundTripMs, freshness.checkedAtMs)
 
   // 読み取り専用と自動コミットの接続では、コミットすべき変更がそもそも生じない。
   // 切れている間は往復そのものが届かないため、同じく出さない（ADR 0026）。
@@ -119,6 +126,11 @@ export function StatusBar({
       <span>UTF-8</span>
       {connection ? <span>Oracle</span> : null}
       <span className="flex-1" />
+      {status === 'connected' && staleness ? (
+        <span data-testid="connection-staleness" title={staleness.title} className="text-fg5">
+          {staleness.label}
+        </span>
+      ) : null}
       {status === 'connected' ? (
         <ConnectionMenu
           onDisconnect={onDisconnect}

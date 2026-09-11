@@ -19,6 +19,7 @@ import type {
   Chunk,
   ClientStatus,
   Column,
+  ConnectionHealth,
   ConnectionParams,
   CsvOptions,
   ExecuteResponse,
@@ -72,6 +73,14 @@ export interface DbApi {
   commit(id: string): Promise<void>
   /** トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。 */
   rollback(id: string): Promise<void>
+  /**
+   * 接続の様子を返す（ADR 0030）。
+   *
+   * **データベースへは往復しない。**定期的な生存確認をしないという ADR 0026 の
+   * 決定はそのまま生きている。ステータスバーが「接続中」を出し続けてよいかを
+   * 決めるために呼ぶ。
+   */
+  connectionHealth(id: string): Promise<ConnectionHealth>
   /** 接続を閉じる。 */
   disconnect(id: string): Promise<void>
 
@@ -202,6 +211,7 @@ const tauriDbApi: DbApi = {
   cancel: (id, tabId) => invoke('cancel', { id, tabId }),
   commit: (id) => invoke('commit', { id }),
   rollback: (id) => invoke('rollback', { id }),
+  connectionHealth: (id) => invoke('connection_health', { id }),
   disconnect: (id) => invoke('disconnect', { id }),
 
   listSavedConnections: () => invoke('list_saved_connections'),

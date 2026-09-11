@@ -865,3 +865,22 @@ export interface SourceTarget {
   name: string
   kind: SourceKind
 }
+
+/**
+ * 接続の様子（ADR 0030）。
+ *
+ * **どちらの項目もデータベースへ往復せずに作る。**生存確認の問い合わせを
+ * 投げればアイドル時間が戻り、サーバ側が設定した `IDLE_TIME` を骨抜きに
+ * してしまう（ADR 0026）。
+ */
+export interface ConnectionHealth {
+  /**
+   * サーバ側から切られていることが分かったか。
+   *
+   * **偽は「繋がっている」ではない。**回線が落ちただけの断はクライアントに
+   * 見えないため、切れていても偽のままになる。
+   */
+  disconnected: boolean
+  /** 最後にデータベースと往復できた時刻（UNIX ミリ秒）。 */
+  lastRoundTripMs: number
+}
