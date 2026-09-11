@@ -1557,6 +1557,122 @@ fn 主キーの索引は自動生成でも定義ビューに並ぶ() {
 
 #[test]
 #[serial]
+fn 表と列のコメントが定義に載る() {
+    // Arrange: コメントは `ALL_TAB_COMMENTS` / `ALL_COL_COMMENTS` から取る
+    // （ADR 0033。見本は `dev/oracle/initdb/008_comments.sql`）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    assert_eq!(
+        definition.comment.as_deref(),
+        Some("出荷。受注 1 件に対して 1 行が立つ")
+    );
+    let 出荷番号 = definition
+        .columns
+        .iter()
+        .find(|column| column.name == "SHIPMENT_ID")
+        .unwrap();
+    assert_eq!(出荷番号.comment.as_deref(), Some("出荷番号"));
+}
+
+#[test]
+#[serial]
+fn コメントの無い列も定義から落ちない() {
+    // Arrange: 外部結合が内部結合になっていれば `TRACKING_NO` が消える
+    // （ADR 0033）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let 追跡番号 = definition
+        .columns
+        .iter()
+        .find(|column| column.name == "TRACKING_NO")
+        .unwrap();
+    assert_eq!(追跡番号.comment, None);
+}
+
+#[test]
+#[serial]
+fn コメントを一つも持たない表でも列は揃う() {
+    // Arrange: `SHIPMENT_LEGS` にはコメントを付けていない（ADR 0033）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENT_LEGS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    assert_eq!(definition.comment, None);
+    assert!(!definition.columns.is_empty());
+    assert!(definition
+        .columns
+        .iter()
+        .all(|column| column.comment.is_none()));
+}
+
+#[test]
+#[serial]
+fn 列のコメントで列が重複しない() {
+    // Arrange: `ALL_COL_COMMENTS` の主キーで結合しているため 1 列 1 行になる
+    // （ADR 0033）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "SHIPMENTS", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let mut 名前: Vec<&str> = definition
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect();
+    let 総数 = 名前.len();
+    名前.sort_unstable();
+    名前.dedup();
+    assert_eq!(名前.len(), 総数);
+}
+
+#[test]
+#[serial]
+fn コメントを持たない種別ではコメントを引かない() {
+    // Arrange: シノニムは `ALL_TAB_COMMENTS` に載らない（ADR 0033）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let definition = pool
+        .object_definition("KODUCHI", "DAILY_GMV", ObjectKind::Synonym)
+        .unwrap();
+
+    // Assert
+    assert_eq!(definition.comment, None);
+    assert!(definition.columns.is_empty());
+}
+
+#[test]
+#[serial]
 fn ビューは列だけを持ち制約も索引も持たない() {
     // Arrange: 問い合わせにも行かない（ADR 0019）
     let Some(pool) = 接続を開く() else {

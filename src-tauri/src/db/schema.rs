@@ -296,6 +296,17 @@ pub struct TableColumn {
     pub nullable: bool,
     /// 右寄せ判定と補完の並べ替えに使う種類。
     pub kind: CellKind,
+    /// 列に付いたコメント（`ALL_COL_COMMENTS.COMMENTS`。ADR 0033）。
+    ///
+    /// **埋めるのはテーブル定義タブ（ADR 0019）の取得だけである。**段階 2
+    /// （ADR 0007）はスキーマ 1 つぶんの列をまとめて読むため、ここへコメントを
+    /// 載せると数万行ぶんの `VARCHAR2(4000)` が IPC に乗る。ツリーも補完も
+    /// コメントを出さない以上、払う値打ちが無い。
+    ///
+    /// 無いときは `None` であり、JSON には現れない。Oracle は空文字列と `NULL` を
+    /// 区別しないため、空白だけのコメントも `None` へ畳む（`normalize_comment`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 #[cfg(test)]

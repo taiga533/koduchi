@@ -9,6 +9,8 @@
 //! | ビュー              | 取るもの                                     |
 //! | ------------------- | -------------------------------------------- |
 //! | `ALL_TAB_COLUMNS`   | 列。オブジェクト 1 つに絞って引き直す        |
+//! | `ALL_COL_COMMENTS`  | 列のコメント。列の問い合わせへ外部結合で混ぜる |
+//! | `ALL_TAB_COMMENTS`  | オブジェクトそのもののコメント（1 行）       |
 //! | `ALL_CONSTRAINTS`   | 主キー・一意・外部キー・検査制約             |
 //! | `ALL_CONS_COLUMNS`  | 制約が掛かっている列と、外部キーの参照先の列 |
 //! | `ALL_INDEXES`       | 索引。**自動生成のものも落とさない**         |
@@ -26,8 +28,8 @@
 //! 占め、読むための DDL にならない。`SET_TRANSFORM_PARAM` で 4 つを調整する。
 
 use crate::db::definition::{
-    assemble_constraints, assemble_indexes, ConstraintColumnRow, ConstraintKind, ConstraintRow,
-    DdlPart, IndexColumnRow, IndexRow, ObjectDdl, ObjectDefinition,
+    assemble_constraints, assemble_indexes, normalize_comment, ConstraintColumnRow, ConstraintKind,
+    ConstraintRow, DdlPart, IndexColumnRow, IndexRow, ObjectDdl, ObjectDefinition,
 };
 use crate::db::error::{DbError, DbResult};
 use crate::db::oracle::errors::{map_oracle_error, DDL_PERMISSION_ERRORS};
@@ -35,14 +37,34 @@ use crate::db::oracle::schema::{format_column_type, kind_of_type_name};
 use crate::db::schema::{ObjectKind, TableColumn};
 use oracle::Connection;
 
-/// オブジェクト 1 つぶんの列を取る問い合わせ。
+/// オブジェクト 1 つぶんの列を、コメントごと取る問い合わせ（ADR 0007・0033）。
 ///
-/// 段階 2（ADR 0007）と同じ列を、テーブル 1 つに絞って読む。
-const COLUMNS_SQL: &str = "select column_name, data_type, char_length,
-                                  data_precision, data_scale, nullable
-                             from all_tab_columns
-                            where owner = :owner and table_name = :name
-                            order by column_id";
+/// 段階 2（ADR 0007）と同じ列を、テーブル 1 つに絞って読む。**コメントは
+/// 別の往復にせず `ALL_COL_COMMENTS` を外部結合して同じ 1 本で取る。**
+///
+/// 外部結合の鍵 `(OWNER, TABLE_NAME, COLUMN_NAME)` は `ALL_COL_COMMENTS` の
+/// 主キーそのものであるため、**列が重複しない。**そして外部結合であるため、
+/// **コメントの無い列も落ちない。**内部結合にすると、コメントを 1 つも付けて
+/// いない表で列が丸ごと消える。
+const COLUMNS_SQL: &str = "select c.column_name, c.data_type, c.char_length,
+       c.data_precision, c.data_scale, c.nullable,
+       cc.comments
+  from all_tab_columns c
+  left join all_col_comments cc
+    on cc.owner = c.owner
+   and cc.table_name = c.table_name
+   and cc.column_name = c.column_name
+ where c.owner = :owner and c.table_name = :name
+ order by c.column_id";
+
+/// オブジェクトそのもののコメントを取る問い合わせ（ADR 0033）。
+///
+/// 返るのは高々 1 行である。`ALL_TAB_COMMENTS` は表・ビュー・マテリアライズド
+/// ビューを載せており、`OWNER` と `TABLE_NAME` が主キーである。コメントを
+/// 付けていないオブジェクトも 1 行は載り、`COMMENTS` が `NULL` になる。
+const TABLE_COMMENT_SQL: &str = "select comments
+  from all_tab_comments
+ where owner = :owner and table_name = :name";
 
 /// 制約を取る問い合わせ。
 ///
@@ -154,10 +176,16 @@ pub fn load_definition(
     name: &str,
     kind: ObjectKind,
 ) -> DbResult<ObjectDefinition> {
-    let columns = if kind.has_columns() {
-        load_columns(connection, owner, name)?
+    // コメントを持ちうるのは `ALL_TAB_COMMENTS` に載る 3 種別、すなわち列を
+    // 持つ種別と同じである（ADR 0033）。シーケンスにもシノニムにも索引にも
+    // コメントは無く、問い合わせにも行かない。
+    let (columns, comment) = if kind.has_columns() {
+        (
+            load_columns(connection, owner, name)?,
+            load_table_comment(connection, owner, name)?,
+        )
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
 
     let (constraints, indexes) = if kind.has_table_details() {
@@ -179,10 +207,53 @@ pub fn load_definition(
         owner: owner.to_string(),
         name: name.to_string(),
         kind,
+        comment,
         columns,
         constraints,
         indexes,
     })
+}
+
+/// オブジェクトそのもののコメントを取る（ADR 0033）。
+///
+/// 行が 1 つも無い（`ALL_TAB_COMMENTS` に載らない種別を渡した）ときは `None` を
+/// 返す。コメントを付けていないときも `None` である。どちらも画面では
+/// 「コメントが無い」として同じ扱いになる。
+///
+/// **読めなかったときは列と同じく失敗させる。** `ALL_TAB_COMMENTS` は
+/// `ALL_TAB_COLUMNS` と同じく PUBLIC へ与えられた辞書ビューであり、見え方は
+/// 対象オブジェクトへの権限で決まる。列が読めてコメントだけが読めない状況は
+/// 無い。`DBMS_METADATA.GET_DDL`（ADR 0019）がロールを要求するのとは事情が
+/// 違うため、別のコマンドには分けていない。
+///
+/// # 引数
+///
+/// * `connection` - 使う接続
+/// * `owner` - 所有者のスキーマ名
+/// * `name` - オブジェクト名
+fn load_table_comment(
+    connection: &Connection,
+    owner: &str,
+    name: &str,
+) -> DbResult<Option<String>> {
+    let mut rows = connection
+        .query_as::<Option<String>>(TABLE_COMMENT_SQL, &[&owner, &name])
+        .map_err(|error| {
+            DbError::execute(format!(
+                "オブジェクトのコメントを取得できませんでした: {error}"
+            ))
+        })?;
+
+    let Some(row) = rows.next() else {
+        return Ok(None);
+    };
+    let comments = row.map_err(|error| {
+        DbError::execute(format!(
+            "オブジェクトのコメントを取得できませんでした: {error}"
+        ))
+    })?;
+
+    Ok(normalize_comment(comments))
 }
 
 /// オブジェクト 1 つぶんの列を取る。
@@ -193,17 +264,24 @@ pub fn load_definition(
 /// * `owner` - 所有者のスキーマ名
 /// * `name` - オブジェクト名
 fn load_columns(connection: &Connection, owner: &str, name: &str) -> DbResult<Vec<TableColumn>> {
+    type Row = (
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        String,
+        Option<String>,
+    );
+
     let rows = connection
-        .query_as::<(String, String, i64, Option<i64>, Option<i64>, String)>(
-            COLUMNS_SQL,
-            &[&owner, &name],
-        )
+        .query_as::<Row>(COLUMNS_SQL, &[&owner, &name])
         .map_err(|error| DbError::execute(format!("列情報を取得できませんでした: {error}")))?;
 
     let mut columns = Vec::new();
 
     for row in rows {
-        let (column_name, data_type, char_length, precision, scale, nullable) = row
+        let (column_name, data_type, char_length, precision, scale, nullable, comments) = row
             .map_err(|error| DbError::execute(format!("列情報を取得できませんでした: {error}")))?;
 
         columns.push(TableColumn {
@@ -212,6 +290,7 @@ fn load_columns(connection: &Connection, owner: &str, name: &str) -> DbResult<Ve
             type_name: format_column_type(&data_type, char_length, precision, scale),
             nullable: nullable == "Y",
             kind: kind_of_type_name(&data_type),
+            comment: normalize_comment(comments),
         });
     }
 
@@ -534,6 +613,37 @@ mod tests {
         // Arrange & Act & Assert: ツリー（ADR 0014）とは扱いが違う
         assert!(!INDEXES_SQL.contains("generated = 'N'"));
         assert!(INDEXES_SQL.contains("i.generated"));
+    }
+
+    #[test]
+    fn 列のコメントは外部結合で取るためコメントの無い列も落ちない() {
+        // Arrange & Act & Assert: 内部結合にすると、コメントを 1 つも付けて
+        // いない表で列が丸ごと消える（ADR 0033）
+        assert!(COLUMNS_SQL.contains("left join all_col_comments"));
+        assert!(COLUMNS_SQL.contains("cc.comments"));
+    }
+
+    #[test]
+    fn 列のコメントの結合は主キーの三つ組で当てる() {
+        // Arrange & Act & Assert: 鍵が欠けると列が重複する（ADR 0033）
+        assert!(COLUMNS_SQL.contains("cc.owner = c.owner"));
+        assert!(COLUMNS_SQL.contains("cc.table_name = c.table_name"));
+        assert!(COLUMNS_SQL.contains("cc.column_name = c.column_name"));
+    }
+
+    #[test]
+    fn 列のコメントは往復を増やさずに取る() {
+        // Arrange & Act & Assert: 定義タブを開くたびの往復は 1 本だけ増える
+        // （オブジェクトのコメントぶん）。列のコメントは列と同じ 1 本で取る
+        assert_eq!(COLUMNS_SQL.matches("from all_tab_columns").count(), 1);
+    }
+
+    #[test]
+    fn オブジェクトのコメントは名前を束縛変数で渡す() {
+        // Arrange & Act & Assert: 名前を文字列で埋め込まない
+        assert!(TABLE_COMMENT_SQL.contains("owner = :owner"));
+        assert!(TABLE_COMMENT_SQL.contains("table_name = :name"));
+        assert!(TABLE_COMMENT_SQL.contains("all_tab_comments"));
     }
 
     #[test]

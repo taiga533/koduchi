@@ -376,6 +376,8 @@ pub fn load_columns(connection: &Connection, owner: &str) -> DbResult<Vec<TableC
             type_name: format_column_type(&data_type, char_length, precision, scale),
             nullable: nullable == "Y",
             kind: kind_of_type_name(&data_type),
+            // 段階 2 はコメントを読まない（ADR 0033）。定義タブだけが埋める。
+            comment: None,
         });
     }
 

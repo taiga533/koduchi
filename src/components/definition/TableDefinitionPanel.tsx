@@ -7,7 +7,12 @@
  * ここが使う。オーバーレイに出す作り（ADR 0019）は 0022 で覆した。
  *
  * 絞り込みは 4 つの内訳のうち列・制約・索引に効く。列が数百ある表は珍しくない
- * ため、開いてからスクロールで探させるのでは用を成さない。
+ * ため、開いてからスクロールで探させるのでは用を成さない。**列は論理名
+ * （コメント）でも引ける**（ADR 0033）。
+ *
+ * **コメントは 2 か所に出る**（ADR 0033）。オブジェクトそのもののコメントは
+ * 見出しの下に、列のコメントは列の内訳の 5 つめの欄に出す。内訳を 5 つめに
+ * 増やしてはいない（ADR 0019 の「内訳は 4 つで並びは固定」はそのままである）。
  *
  * DDL は DDL の内訳を開いたときに初めて取る（ADR 0019）。
  * `DBMS_METADATA.GET_DDL` の権限が無いというだけで、列も制約も索引も
@@ -37,6 +42,7 @@ import {
   filterIndexes,
   formatIndexColumns,
   formatReference,
+  hasColumnComments,
 } from './definitionSearch'
 import {
   buildDdlCopyText,
@@ -72,11 +78,16 @@ export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPan
       aria-label="テーブル定義"
       className="flex-1 min-h-0 overflow-hidden bg-panel rounded-10px border border-line p-18px flex flex-col gap-12px"
     >
-      <div className="flex items-center gap-10px">
-        <h2 className="text-14px font-600 text-fg m-0 truncate">
-          {target.owner}.{target.name}
-        </h2>
-        <span className="text-10.5px text-fg5 shrink-0">{OBJECT_KIND_LABELS[target.kind]}</span>
+      <div className="flex flex-col gap-3px">
+        <div className="flex items-center gap-10px">
+          <h2 className="text-14px font-600 text-fg m-0 truncate">
+            {target.owner}.{target.name}
+          </h2>
+          <span className="text-10.5px text-fg5 shrink-0">{OBJECT_KIND_LABELS[target.kind]}</span>
+        </div>
+        {definition?.comment ? (
+          <p className="m-0 text-11.5px text-fg3 leading-[1.6] break-all">{definition.comment}</p>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-10px">
@@ -114,7 +125,7 @@ export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPan
           <input
             value={search}
             onChange={(event) => setSearch(tabId, event.target.value)}
-            placeholder="列名・制約名・索引名で絞り込む"
+            placeholder="列名・コメント・制約名・索引名で絞り込む"
             aria-label="定義を絞り込む"
             className="flex-1 min-w-0 bg-transparent border-none outline-none text-12px text-fg font-inherit placeholder:text-fg4"
           />
@@ -328,9 +339,23 @@ function PanelBody({
   )
 }
 
-/** 列の一覧。 */
+/**
+ * 列の一覧（ADR 0019・0033）。
+ *
+ * **コメントの欄は、コメントの付いた列が 1 つでもあるときだけ出す。**日本語の
+ * 業務システムでは物理名が `T_JUCHU_MEISAI` で論理名がコメントに入っている
+ * ことが珍しくなく、コメントが見えないとその表が何なのかが分からない。一方で
+ * コメントを使っていないデータベースでは `—` だけが並ぶ欄になり、名前と型から
+ * 幅を奪う。判定は絞り込む前の全列に当てるため、語を打つたびに表の形が
+ * 変わることはない。
+ *
+ * コメントは**折り返して全文を出す。**制約の「参照先 / 条件」が同じく
+ * `VARCHAR2(4000)` を折り返しているのと揃えてある。`…` で省くと、読みにくる
+ * ために開いた欄が読めなくなる（ADR 0021 の「黙って切り詰めない」）。
+ */
 function ColumnTable({ columns, search }: { columns: TableColumn[]; search: string }) {
   const 絞り込み済み = useMemo(() => filterColumns(columns, search), [columns, search])
+  const コメントを出す = useMemo(() => hasColumnComments(columns), [columns])
 
   if (絞り込み済み.length === 0) {
     return <Empty>{columns.length === 0 ? '列がありません' : '当てはまる列がありません'}</Empty>
@@ -343,18 +368,22 @@ function ColumnTable({ columns, search }: { columns: TableColumn[]; search: stri
           <th className="font-500 py-5px pr-8px w-40px">#</th>
           <th className="font-500 py-5px pr-8px">列</th>
           <th className="font-500 py-5px pr-8px">型</th>
-          <th className="font-500 py-5px">NULL</th>
+          <th className="font-500 py-5px pr-8px">NULL</th>
+          {コメントを出す ? <th className="font-500 py-5px">コメント</th> : null}
         </tr>
       </thead>
       <tbody>
         {絞り込み済み.map((column) => (
-          <tr key={column.name} className="border-t border-line2 text-fg2">
+          <tr key={column.name} className="border-t border-line2 text-fg2 align-top">
             <td className="py-6px pr-8px text-fg5 tabular-nums">{columns.indexOf(column) + 1}</td>
             <td className="py-6px pr-8px break-all">{column.name}</td>
             <td className="py-6px pr-8px whitespace-nowrap text-fg3">{column.typeName}</td>
-            <td className="py-6px whitespace-nowrap text-fg4">
+            <td className="py-6px pr-8px whitespace-nowrap text-fg4">
               {column.nullable ? '可' : 'NOT NULL'}
             </td>
+            {コメントを出す ? (
+              <td className="py-6px break-all text-fg3 leading-[1.6]">{column.comment ?? '—'}</td>
+            ) : null}
           </tr>
         ))}
       </tbody>

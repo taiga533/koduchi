@@ -225,7 +225,7 @@ export function sourceSearchRequest(
  * @param kind オブジェクトの種類
  */
 function emptyDefinition(owner: string, name: string, kind: ObjectKind): ObjectDefinition {
-  return { owner, name, kind, columns: [], constraints: [], indexes: [] }
+  return { owner, name, kind, comment: null, columns: [], constraints: [], indexes: [] }
 }
 
 /**
