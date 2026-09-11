@@ -4,6 +4,9 @@
  * 検索入力の横のアイコンから開く。スキーマを隠す条件が 2 つと、ツリーに載せる
  * オブジェクト種別の可否が 12 個ある。どれも既定で有効である。変更すると
  * 取得し直す。設定は接続ごとに保存される（ADR 0004）。
+ *
+ * 条件を変えずに取り直す入口はここではなく、隣の `SchemaReloadButton` である。
+ * このメニューの持ち物は条件だけにしてある。
  */
 
 import { useState } from 'react'
@@ -22,8 +25,6 @@ interface SchemaFilterMenuProps {
    * 設定はこの接続のエントリへ書き戻す（ADR 0004・0007）。
    */
   savedConnectionId: string | null
-  /** ツリーを取得し直す。 */
-  onReload: (connectionId: string) => Promise<void>
 }
 
 /**
@@ -53,11 +54,7 @@ async function persist(savedConnectionId: string | null, filter: SchemaFilter): 
   }
 }
 
-export function SchemaFilterMenu({
-  connectionId,
-  savedConnectionId,
-  onReload,
-}: SchemaFilterMenuProps) {
+export function SchemaFilterMenu({ connectionId, savedConnectionId }: SchemaFilterMenuProps) {
   const [open, setOpen] = useState(false)
   const filter = useSchemaStore((state) => state.filter)
   const setFilter = useSchemaStore((state) => state.setFilter)
@@ -130,20 +127,6 @@ export function SchemaFilterMenu({
               </label>
             ))}
           </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (connectionId) {
-                void onReload(connectionId)
-              }
-              setOpen(false)
-            }}
-            disabled={connectionId === null}
-            className="mt-2px px-10px py-5px rounded-7px bg-fill border-none text-11.5px text-fg cursor-pointer font-inherit disabled:opacity-50"
-          >
-            再読み込み
-          </button>
         </div>
       ) : null}
     </div>

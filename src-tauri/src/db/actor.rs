@@ -734,6 +734,7 @@ mod tests {
                 type_name: String::from("NUMBER(10)"),
                 nullable: false,
                 kind: CellKind::Number,
+                comment: None,
             }])
         }
 
@@ -768,6 +769,7 @@ mod tests {
                 owner: owner.to_string(),
                 name: name.to_string(),
                 kind,
+                comment: None,
                 columns: Vec::new(),
                 constraints: Vec::new(),
                 indexes: Vec::new(),

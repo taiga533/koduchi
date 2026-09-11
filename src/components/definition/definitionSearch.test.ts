@@ -5,6 +5,7 @@ import {
   filterIndexes,
   formatIndexColumns,
   formatReference,
+  hasColumnComments,
   normalizeNeedle,
 } from './definitionSearch'
 import type { TableColumn, TableConstraint, TableIndex } from '../../types/db'
@@ -15,8 +16,8 @@ import type { TableColumn, TableConstraint, TableIndex } from '../../types/db'
  * @param name 列名
  * @param typeName 型名
  */
-function 列(name: string, typeName = 'NUMBER(12)'): TableColumn {
-  return { objectName: 'SHIPMENTS', name, typeName, nullable: true, kind: 'number' }
+function 列(name: string, typeName = 'NUMBER(12)', comment?: string): TableColumn {
+  return { objectName: 'SHIPMENTS', name, typeName, nullable: true, kind: 'number', comment }
 }
 
 /**
@@ -112,6 +113,75 @@ describe('filterColumns', () => {
 
     // Assert
     expect(絞り込み済み.map((column) => column.name)).toEqual(['SHIPPED_AT'])
+  })
+
+  it('コメントの論理名でも絞り込める', () => {
+    // Arrange: 物理名が読めない表では、利用者が知っているのは論理名である
+    // （ADR 0033）
+    const columns = [
+      列('JUCHU_NO', 'NUMBER(12)', '受注番号'),
+      列('SHUKKA_NO', 'NUMBER(12)', '出荷番号'),
+    ]
+
+    // Act
+    const 絞り込み済み = filterColumns(columns, '出荷')
+
+    // Assert
+    expect(絞り込み済み.map((column) => column.name)).toEqual(['SHUKKA_NO'])
+  })
+
+  it('コメントを持たない列が混ざっていても落ちない', () => {
+    // Arrange: 段階 2 から来た列にはコメントが無い（ADR 0033）
+    const columns = [列('ORDER_ID'), 列('STATUS', 'VARCHAR2(16)', '出荷状態')]
+
+    // Act
+    const 絞り込み済み = filterColumns(columns, '状態')
+
+    // Assert
+    expect(絞り込み済み.map((column) => column.name)).toEqual(['STATUS'])
+  })
+})
+
+describe('hasColumnComments', () => {
+  it('コメントの付いた列が 1 つでもあれば真を返す', () => {
+    // Arrange
+    const columns = [列('ORDER_ID'), 列('STATUS', 'VARCHAR2(16)', '出荷状態')]
+
+    // Act
+    const ある = hasColumnComments(columns)
+
+    // Assert
+    expect(ある).toBe(true)
+  })
+
+  it('コメントが 1 つも無ければ偽を返す', () => {
+    // Arrange
+    const columns = [列('ORDER_ID'), 列('STATUS')]
+
+    // Act
+    const ある = hasColumnComments(columns)
+
+    // Assert
+    expect(ある).toBe(false)
+  })
+
+  it('空文字列のコメントは無いものとして数える', () => {
+    // Arrange: Oracle は空文字列と NULL を区別しない（ADR 0033）
+    const columns = [列('ORDER_ID', 'NUMBER(12)', '')]
+
+    // Act
+    const ある = hasColumnComments(columns)
+
+    // Assert
+    expect(ある).toBe(false)
+  })
+
+  it('列が 1 つも無ければ偽を返す', () => {
+    // Arrange & Act
+    const ある = hasColumnComments([])
+
+    // Assert
+    expect(ある).toBe(false)
   })
 })
 

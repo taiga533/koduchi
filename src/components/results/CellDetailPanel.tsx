@@ -10,12 +10,12 @@
  * 欠けた値を黙って出すと、利用者はそれが値の全部だと信じてしまう。
  */
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { WrapText, X } from 'lucide-react'
 import { CLOB_LIMIT_BYTES } from '../../types/db'
 import type { Cell, Column } from '../../types/db'
 import { detailBody, formatJson, isOpaque, isTruncated, sizeLabel } from './cellDetail'
-import { isComposingKey } from '../../input/ime'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 interface CellDetailPanelProps {
   column: Column
@@ -29,19 +29,10 @@ export function CellDetailPanel({ column, cell, rowNumber, onClose }: CellDetail
   const [wrap, setWrap] = useState(true)
   const [formatted, setFormatted] = useState(true)
 
-  // `esc` で閉じる。パネルは focus を奪わないため、ウィンドウ側で受ける。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // 変換中の `esc` は変換の取り消しである（ADR 0025）。この listener は
-      // `window` に付いているため、サイドバーの絞り込みなど別の欄で変換して
-      // いるときの `esc` も届く。
-      if (event.key === 'Escape' && !isComposingKey(event)) {
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
+  // `esc` で閉じる。パネルは焦点を奪わないため、打鍵は `window` で受ける
+  // （`useEscapeKey`、ADR 0031）。パレットのようなオーバーレイが上に重なって
+  // いるあいだは、そちらが先に `esc` を取る。
+  useEscapeKey(onClose)
 
   const body = detailBody(cell, formatted)
   // 整形の切替を出すのは、実際に JSON として読めた値だけにする。

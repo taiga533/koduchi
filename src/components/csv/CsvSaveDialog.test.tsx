@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { CsvOptions } from '../../types/db'
 import { defaultCsvOptions } from '../../types/db'
@@ -21,6 +21,19 @@ function 描く(overrides: Partial<React.ComponentProps<typeof CsvSaveDialog>> =
 }
 
 describe('CsvSaveDialog', () => {
+  it('焦点がどこにも当たっていなくても esc で閉じる（ADR 0031）', () => {
+    // Arrange
+    let 閉じた = false
+    描く({ onClose: () => (閉じた = true) })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+
+    // Act
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    // Assert
+    expect(閉じた).toBe(true)
+  })
+
   it('既定はカンマと bom 付き utf-8 と空欄である', () => {
     // Arrange
     描く()

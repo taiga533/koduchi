@@ -6,6 +6,7 @@
  */
 
 import { Columns3, Copy, TableProperties } from 'lucide-react'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 interface ResultContextMenuProps {
   /** 画面上の表示位置（`clientX` / `clientY`）。 */
@@ -29,6 +30,9 @@ export function ResultContextMenu({
   onCopyColumn,
   onClose,
 }: ResultContextMenuProps) {
+  // `esc` で閉じる。打鍵は器ではなく `window` で受ける（ADR 0031）。
+  useEscapeKey(onClose)
+
   return (
     <>
       {/* メニューの外を押したら閉じる。右クリックでも閉じる。 */}

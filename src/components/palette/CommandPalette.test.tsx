@@ -234,6 +234,47 @@ describe('CommandPalette', () => {
     expect(閉じた).toBe(true)
   })
 
+  it('焦点がどこにも当たっていなくても esc で閉じる（issue #36）', async () => {
+    // Arrange
+    let 閉じた = false
+    パレットを描く({ onClose: () => (閉じた = true) })
+    await screen.findByRole('option', { name: /注文の一覧/ })
+    // 暗幕を押した後と同じ状態を作る。焦点は `<body>` に戻っている。
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).toBe(document.body)
+
+    // Act
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    // Assert
+    expect(閉じた).toBe(true)
+  })
+
+  it('暗幕を押しても入力欄の焦点を奪わない（issue #36 の原因）', async () => {
+    // Arrange
+    パレットを描く()
+    const 入力 = await screen.findByRole('textbox', { name: /検索/ })
+    const 暗幕 = 入力.closest('.absolute') as HTMLElement
+
+    // Act
+    const 止まった = !fireEvent.mouseDown(暗幕)
+
+    // Assert
+    expect(止まった).toBe(true)
+  })
+
+  it('暗幕の中の部品を押したときは焦点の移動を妨げない', async () => {
+    // Arrange
+    パレットを描く()
+    const 候補 = await screen.findByRole('option', { name: /注文の一覧/ })
+
+    // Act
+    const 止まった = !fireEvent.mouseDown(候補)
+
+    // Assert
+    expect(止まった).toBe(false)
+  })
+
   it('履歴は現ウィンドウの接続に絞り保存済みクエリは全接続から探す', async () => {
     // Arrange
     const fake = createFakeDbApi({ savedQueries: 保存済み一覧, history: 履歴一覧 })

@@ -39,8 +39,13 @@ function 当たる(values: (string | null | undefined)[], needle: string): boole
 /**
  * 語に当てはまる列だけを返す。
  *
- * 列名と型名に当てる。型名にも当てるのは、`CLOB` の列や `TIMESTAMP` の列を
- * まとめて見たい場面があるためである。
+ * 列名と型名とコメントに当てる。型名にも当てるのは、`CLOB` の列や
+ * `TIMESTAMP` の列をまとめて見たい場面があるためである。
+ *
+ * **コメントにも当てるのがこの絞り込みの要である（ADR 0033）。**日本語の
+ * 業務システムでは物理名が `T_JUCHU_MEISAI` で論理名がコメントに入っている
+ * ことが珍しくなく、利用者が知っているのは論理名のほうである。物理名でしか
+ * 引けない絞り込みは、その利用者にとって無いのと変わらない。
  *
  * @param columns 対象の列
  * @param search 絞り込み語
@@ -51,7 +56,24 @@ export function filterColumns(columns: TableColumn[], search: string): TableColu
     return columns
   }
 
-  return columns.filter((column) => 当たる([column.name, column.typeName], needle))
+  return columns.filter((column) => 当たる([column.name, column.typeName, column.comment], needle))
+}
+
+/**
+ * コメントの付いた列が 1 つでもあるか（ADR 0033）。
+ *
+ * 1 つも無いときは、列の内訳にコメントの欄そのものを出さない。コメントを
+ * 使っていないデータベースで、`—` だけが並ぶ欄に幅を取られ続けないためである。
+ * **判定は絞り込む前の全列で行う。**絞り込むたびに欄が現れたり消えたりすると、
+ * 表の形が語の打鍵ごとに変わる。
+ *
+ * コピー（`definitionCopy.ts`）も同じ判定を通す。写すのは画面に出ているもの
+ * だからである。
+ *
+ * @param columns 絞り込む前の全列
+ */
+export function hasColumnComments(columns: TableColumn[]): boolean {
+  return columns.some((column) => (column.comment ?? '') !== '')
 }
 
 /**

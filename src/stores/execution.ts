@@ -36,8 +36,21 @@ export interface TabExecution {
   exhausted: boolean
   /** 所要ミリ秒。実行前は `null`。 */
   elapsedMs: number | null
-  /** 影響した行数。問い合わせでは `null`。 */
+  /**
+   * 影響した行数（ADR 0034）。
+   *
+   * 問い合わせでは `null`。問い合わせ以外でも、行数の概念が無い文（DDL・
+   * PL/SQL ブロック・`GRANT` など）では `null` になる。`isStatement` と
+   * 併せて読むこと。
+   */
   affectedRows: number | null
+  /**
+   * 問い合わせ以外の文を実行した結果か（ADR 0034）。
+   *
+   * `affectedRows` が `null` のとき、問い合わせなのか行数の概念が無い文なのかを
+   * これで分ける。前者は結果テーブルを、後者は「完了しました」を出す。
+   */
+  isStatement: boolean
   error: string | null
   /** 続きを取り出している最中か。二重に取りにいかないための見張り。 */
   loadingMore: boolean
@@ -81,6 +94,7 @@ export const emptyExecution: TabExecution = {
   exhausted: true,
   elapsedMs: null,
   affectedRows: null,
+  isStatement: false,
   error: null,
   loadingMore: false,
   progress: null,
@@ -382,9 +396,12 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
               status: 'succeeded',
               elapsedMs: response.elapsedMs,
               affectedRows: response.affectedRows,
+              isStatement: true,
             }
 
-      const rowCount = execution.affectedRows ?? execution.rows.length
+      // 行数の概念が無い文では履歴にも行数を残さない。`0 行` と書いてしまうと、
+      // 後から履歴を読み返したときに空振りした DML と区別が付かない（ADR 0034）。
+      const rowCount = execution.isStatement ? execution.affectedRows : execution.rows.length
 
       set((state) => ({
         inTransaction: response.inTransaction,
@@ -505,7 +522,13 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
 
       /** 最後に結果セットを返した文の結果。無ければ影響行数を足し上げる。 */
       let lastQuery: TabExecution | null = null
-      let affectedRows = 0
+      /**
+       * 行数を持つ文の影響行数の合計。
+       *
+       * 行数の概念が無い文だけを流したときは `null` のまま残す。DDL を並べた
+       * スクリプトに「0 行」と出さないためである（ADR 0034）。
+       */
+      let affectedRows: number | null = null
       let elapsedMs = 0
       let discardedTab: string | null = null
 
@@ -560,8 +583,8 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         elapsedMs += outcome.execution.elapsedMs ?? 0
         if (outcome.execution.columns.length > 0) {
           lastQuery = outcome.execution
-        } else {
-          affectedRows += outcome.execution.affectedRows ?? 0
+        } else if (outcome.execution.affectedRows !== null) {
+          affectedRows = (affectedRows ?? 0) + outcome.execution.affectedRows
         }
         if (outcome.discardedTab && outcome.discardedTab !== tabId) {
           discardedTab = outcome.discardedTab
@@ -574,7 +597,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       // 影響行数の合計を出す。所要時間はどちらも全体の合計とする。
       const execution: TabExecution = lastQuery
         ? { ...lastQuery, elapsedMs }
-        : { ...emptyExecution, status: 'succeeded', elapsedMs, affectedRows }
+        : { ...emptyExecution, status: 'succeeded', elapsedMs, affectedRows, isStatement: true }
 
       set((state) => {
         let byTab = patchTab(state.byTab, tabId, execution)
@@ -832,8 +855,11 @@ export function formatResultSummary(execution: TabExecution): string {
       break
   }
 
-  if (execution.affectedRows !== null) {
-    return `${execution.affectedRows.toLocaleString('ja-JP')} 行 · ${execution.elapsedMs} ms`
+  if (execution.isStatement) {
+    // 行数の概念が無い文に「0 行」と出さない（ADR 0034）。
+    return execution.affectedRows === null
+      ? `完了しました · ${execution.elapsedMs} ms`
+      : `${execution.affectedRows.toLocaleString('ja-JP')} 行 · ${execution.elapsedMs} ms`
   }
 
   const count = execution.rows.length.toLocaleString('ja-JP')
@@ -842,6 +868,21 @@ export function formatResultSummary(execution: TabExecution): string {
   return execution.exhausted
     ? `${count} 行 · ${execution.elapsedMs} ms`
     : `${count} 行 読み込み済み`
+}
+
+/**
+ * 結果ペインの本文に出す、問い合わせ以外の結末を文言にする（ADR 0034）。
+ *
+ * 行数の概念が無い文（DDL・PL/SQL ブロック・`GRANT` など）では行数を出さない。
+ * 「0 行に影響しました」と書くと、1 行も当たらなかった `UPDATE` と見分けが
+ * 付かなくなる。
+ *
+ * @param affectedRows 影響した行数。行数の概念が無い文では `null`
+ */
+export function formatStatementOutcome(affectedRows: number | null): string {
+  return affectedRows === null
+    ? '完了しました'
+    : `${affectedRows.toLocaleString('ja-JP')} 行に影響しました`
 }
 
 /**

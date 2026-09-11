@@ -116,7 +116,13 @@ pub struct SavedQueryQuery {
 #[serde(rename_all = "camelCase")]
 pub struct SessionTab {
     pub id: String,
+    /// 小槌が付ける自動の名前（`無題-1.sql` やファイル名）。
     pub name: String,
+    /// 利用者が付け直した名前（ADR 0032）。付け直していなければ `None`。
+    ///
+    /// この項目を持たない古いセッションを読んでも落ちないよう、省略できる。
+    #[serde(default)]
+    pub custom_name: Option<String>,
     /// 保存先のファイル。未保存のバッファでは `None`。
     pub file_path: Option<String>,
     /// 未保存のバッファも含めて丸ごと保存する。タブの `●` 印が前提とする挙動である。
@@ -167,6 +173,7 @@ create table if not exists session_tab (
     position integer not null,
     id text not null,
     name text not null,
+    custom_name text,
     file_path text,
     content text not null,
     dirty integer not null,
@@ -197,6 +204,12 @@ create index if not exists idx_saved_query_updated_at
 /// 導入する前に作られたファイルでも動くよう、無ければ足す。
 const SESSION_STATE_ADDED_COLUMNS: &[(&str, &str)] =
     &[("sidebar_width", "real"), ("editor_height", "real")];
+
+/// `session_tab` に後から足した列。
+///
+/// 利用者が付け直したタブの名前（ADR 0032）である。理由は
+/// `SESSION_STATE_ADDED_COLUMNS` と同じで、古いファイルをそのまま開くためである。
+const SESSION_TAB_ADDED_COLUMNS: &[(&str, &str)] = &[("custom_name", "text")];
 
 /// SQLite のエラーをアプリのエラーへ変換する。
 fn to_db_error(context: &str, error: rusqlite::Error) -> DbError {
@@ -244,7 +257,8 @@ impl HistoryStore {
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| to_db_error("履歴のテーブルを作れませんでした", error))?;
-        migrate_session_state(&connection)?;
+        add_missing_columns(&connection, "session_state", SESSION_STATE_ADDED_COLUMNS)?;
+        add_missing_columns(&connection, "session_tab", SESSION_TAB_ADDED_COLUMNS)?;
         Ok(HistoryStore {
             connection: Mutex::new(connection),
         })
@@ -492,13 +506,14 @@ impl HistoryStore {
             transaction
                 .execute(
                     "insert into session_tab
-                         (window_label, position, id, name, file_path, content, dirty)
-                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                         (window_label, position, id, name, custom_name, file_path, content, dirty)
+                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         window_label,
                         position as i64,
                         tab.id,
                         tab.name,
+                        tab.custom_name,
                         tab.file_path,
                         tab.content,
                         tab.dirty,
@@ -544,7 +559,7 @@ impl HistoryStore {
 
         let mut statement = connection
             .prepare(
-                "select id, name, file_path, content, dirty
+                "select id, name, custom_name, file_path, content, dirty
                  from session_tab where window_label = ?1 order by position",
             )
             .map_err(|error| to_db_error("セッションを読み出せませんでした", error))?;
@@ -554,9 +569,10 @@ impl HistoryStore {
                 Ok(SessionTab {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    file_path: row.get(2)?,
-                    content: row.get(3)?,
-                    dirty: row.get(4)?,
+                    custom_name: row.get(2)?,
+                    file_path: row.get(3)?,
+                    content: row.get(4)?,
+                    dirty: row.get(5)?,
                 })
             })
             .map_err(|error| to_db_error("セッションを読み出せませんでした", error))?
@@ -587,17 +603,24 @@ impl HistoryStore {
     }
 }
 
-/// `session_state` に後から足した列を、無ければ足す。
+/// 後から足した列を、無ければ足す。
 ///
 /// 古いファイルをそのまま開けるようにするための移行である。列を消すことはしない。
+/// `create table if not exists` は既にあるテーブルへ列を足さないため、ここで補う。
 ///
 /// # 引数
 ///
 /// * `connection` - 対象の接続
-fn migrate_session_state(connection: &Connection) -> Result<(), DbError> {
+/// * `table` - 対象のテーブル名
+/// * `columns` - 足すべき列の名前と型
+fn add_missing_columns(
+    connection: &Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> Result<(), DbError> {
     let existing: Vec<String> = {
         let mut statement = connection
-            .prepare("select name from pragma_table_info('session_state')")
+            .prepare(&format!("select name from pragma_table_info('{table}')"))
             .map_err(|error| to_db_error("セッションの列を調べられませんでした", error))?;
         let names = statement
             .query_map([], |row| row.get::<_, String>(0))
@@ -607,14 +630,12 @@ fn migrate_session_state(connection: &Connection) -> Result<(), DbError> {
             .map_err(|error| to_db_error("セッションの列を調べられませんでした", error))?
     };
 
-    for (name, kind) in SESSION_STATE_ADDED_COLUMNS {
+    for (name, kind) in columns {
         if existing.iter().any(|column| column == name) {
             continue;
         }
         connection
-            .execute_batch(&format!(
-                "alter table session_state add column {name} {kind}"
-            ))
+            .execute_batch(&format!("alter table {table} add column {name} {kind}"))
             .map_err(|error| to_db_error("セッションの列を足せませんでした", error))?;
     }
 
@@ -1159,6 +1180,7 @@ mod tests {
                 SessionTab {
                     id: String::from("t1"),
                     name: String::from("無題-1.sql"),
+                    custom_name: None,
                     file_path: None,
                     content: String::from("select 1"),
                     dirty: true,
@@ -1166,6 +1188,7 @@ mod tests {
                 SessionTab {
                     id: String::from("t2"),
                     name: String::from("users.sql"),
+                    custom_name: None,
                     file_path: Some(String::from("/tmp/users.sql")),
                     content: String::from("select * from users"),
                     dirty: false,
@@ -1194,6 +1217,7 @@ mod tests {
                 SessionTab {
                     id: String::from("t1"),
                     name: String::from("a.sql"),
+                    custom_name: None,
                     file_path: None,
                     content: String::new(),
                     dirty: false,
@@ -1201,6 +1225,7 @@ mod tests {
                 SessionTab {
                     id: String::from("t2"),
                     name: String::from("b.sql"),
+                    custom_name: None,
                     file_path: None,
                     content: String::new(),
                     dirty: false,
@@ -1238,6 +1263,7 @@ mod tests {
         SessionTab {
             id: String::from(id),
             name: format!("{id}.sql"),
+            custom_name: None,
             file_path: None,
             content: String::new(),
             dirty: false,
@@ -1278,6 +1304,7 @@ mod tests {
             tabs: vec![SessionTab {
                 id: String::from("t1"),
                 name: String::from("a.sql"),
+                custom_name: None,
                 file_path: None,
                 content: String::new(),
                 dirty: false,
@@ -1344,6 +1371,101 @@ mod tests {
         // Assert
         assert_eq!(restored.sidebar_width, None);
         assert_eq!(restored.editor_height, None);
+    }
+
+    #[test]
+    fn 付け直したタブの名前は保存して読み戻せる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let mut tab = 試験用のタブ("t1");
+        tab.custom_name = Some(String::from("売上集計"));
+        let state = SessionState {
+            tabs: vec![tab],
+            active_tab_id: Some(String::from("t1")),
+            sidebar_segment: None,
+            sidebar_width: None,
+            editor_height: None,
+        };
+
+        // Act
+        store.save_session("main", &state).unwrap();
+        let restored = store.load_session("main").unwrap();
+
+        // Assert
+        assert_eq!(restored.tabs.len(), 1);
+        assert_eq!(restored.tabs[0].custom_name, Some(String::from("売上集計")));
+        // 自動の名前は付け直しても残る（ADR 0032）。
+        assert_eq!(restored.tabs[0].name, String::from("t1.sql"));
+    }
+
+    #[test]
+    fn 名前を付け直していないタブは空のまま読み戻せる() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let state = SessionState {
+            tabs: vec![試験用のタブ("t1")],
+            active_tab_id: Some(String::from("t1")),
+            sidebar_segment: None,
+            sidebar_width: None,
+            editor_height: None,
+        };
+
+        // Act
+        store.save_session("main", &state).unwrap();
+        let restored = store.load_session("main").unwrap();
+
+        // Assert
+        assert_eq!(restored.tabs[0].custom_name, None);
+    }
+
+    #[test]
+    fn 付け直した名前の列が無い古いファイルでも開ける() {
+        // Arrange: `custom_name` を導入する前と同じ形のテーブルだけを作る
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.sqlite3");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "create table session_tab (
+                         window_label text not null,
+                         position integer not null,
+                         id text not null,
+                         name text not null,
+                         file_path text,
+                         content text not null,
+                         dirty integer not null,
+                         primary key (window_label, id)
+                     );
+                     insert into session_tab
+                         (window_label, position, id, name, file_path, content, dirty)
+                     values ('main', 0, 't1', '無題-1.sql', null, 'select 1', 0);",
+                )
+                .unwrap();
+        }
+
+        // Act
+        let store = HistoryStore::open(&path).unwrap();
+        let restored = store.load_session("main").unwrap();
+
+        // Assert
+        assert_eq!(restored.tabs.len(), 1);
+        assert_eq!(restored.tabs[0].name, String::from("無題-1.sql"));
+        assert_eq!(restored.tabs[0].custom_name, None);
+        assert_eq!(restored.tabs[0].content, String::from("select 1"));
+    }
+
+    #[test]
+    fn 付け直した名前を持たないタブでもjsonから読める() {
+        // Arrange: `customName` が無い、古い形の JSON
+        let json = r#"{"id":"t1","name":"無題-1.sql","filePath":null,"content":"","dirty":false}"#;
+
+        // Act
+        let tab: SessionTab = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert_eq!(tab.custom_name, None);
+        assert_eq!(tab.name, String::from("無題-1.sql"));
     }
 
     #[test]

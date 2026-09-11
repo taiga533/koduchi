@@ -240,7 +240,7 @@ export function sourceSearchRequest(
  * @param kind オブジェクトの種類
  */
 function emptyDefinition(owner: string, name: string, kind: ObjectKind): ObjectDefinition {
-  return { owner, name, kind, columns: [], constraints: [], indexes: [] }
+  return { owner, name, kind, comment: null, columns: [], constraints: [], indexes: [] }
 }
 
 /**
@@ -283,6 +283,27 @@ export function queryResponse(
     columns,
     chunk: { rows, exhausted: options.exhausted ?? true },
     elapsedMs: 84,
+    notices: [],
+    inTransaction: options.inTransaction ?? false,
+    discardedTab: options.discardedTab ?? null,
+  }
+}
+
+/**
+ * 問い合わせ以外の応答を組み立てる（ADR 0034）。
+ *
+ * @param affectedRows 影響した行数。行数の概念が無い文（DDL・PL/SQL ブロック
+ *   など）では `null`
+ * @param options 巻き添えで閉じられたタブ、未コミットかどうか
+ */
+export function statementResponse(
+  affectedRows: number | null,
+  options: { discardedTab?: string | null; inTransaction?: boolean } = {},
+): ExecuteResponse {
+  return {
+    kind: 'statement',
+    affectedRows,
+    elapsedMs: 12,
     notices: [],
     inTransaction: options.inTransaction ?? false,
     discardedTab: options.discardedTab ?? null,

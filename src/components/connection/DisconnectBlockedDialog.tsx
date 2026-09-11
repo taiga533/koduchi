@@ -7,6 +7,7 @@
  */
 
 import { CircleAlert } from 'lucide-react'
+import { useEscapeKey } from '../../input/useEscapeKey'
 
 interface DisconnectBlockedDialogProps {
   /** 実行中の文を中止する（`⌘.` と同じ）。 */
@@ -19,6 +20,9 @@ export function DisconnectBlockedDialog({
   onCancelExecution,
   onClose,
 }: DisconnectBlockedDialogProps) {
+  // `esc` で閉じる。打鍵は器ではなく `window` で受ける（ADR 0031）。
+  useEscapeKey(onClose)
+
   return (
     <div
       role="dialog"

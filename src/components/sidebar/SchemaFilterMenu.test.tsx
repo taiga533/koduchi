@@ -37,9 +37,7 @@ afterEach(() => {
 describe('SchemaFilterMenu', () => {
   it('スキーマを隠す条件は 2 つで既定はどちらも有効である', async () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
@@ -51,9 +49,7 @@ describe('SchemaFilterMenu', () => {
 
   it('条件を変えるとスキーマを取得し直す', async () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
     await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
 
     // Act
@@ -69,9 +65,7 @@ describe('SchemaFilterMenu', () => {
 
   it('条件は接続のエントリへ書き戻される', async () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
     await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
 
     // Act
@@ -88,9 +82,7 @@ describe('SchemaFilterMenu', () => {
 
   it('種別の可否は既定ですべて有効である', async () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
@@ -104,9 +96,7 @@ describe('SchemaFilterMenu', () => {
 
   it('種別を落とすとその種別だけを外して取得し直す', async () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
     await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
 
     // Act
@@ -122,9 +112,7 @@ describe('SchemaFilterMenu', () => {
 
   it('種別の可否も接続のエントリへ書き戻される', async () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
     await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
 
     // Act
@@ -137,9 +125,7 @@ describe('SchemaFilterMenu', () => {
 
   it('保存していない接続では書き戻さない', async () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId="c1" savedConnectionId={null} onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId={null} />)
     await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
 
     // Act
@@ -152,35 +138,12 @@ describe('SchemaFilterMenu', () => {
 
   it('未接続では操作できない', () => {
     // Arrange
-    render(
-      <SchemaFilterMenu connectionId={null} savedConnectionId={null} onReload={async () => {}} />,
-    )
+    render(<SchemaFilterMenu connectionId={null} savedConnectionId={null} />)
 
     // Act
     const ボタン = screen.getByRole('button', { name: 'スキーマの絞り込み' })
 
     // Assert
     expect(ボタン).toBeDisabled()
-  })
-
-  it('再読み込みを押すと取得し直す', async () => {
-    // Arrange
-    const 読み直した: string[] = []
-    render(
-      <SchemaFilterMenu
-        connectionId="c1"
-        savedConnectionId="saved-1"
-        onReload={async (id) => {
-          読み直した.push(id)
-        }}
-      />,
-    )
-    await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
-
-    // Act
-    await userEvent.click(screen.getByRole('button', { name: '再読み込み' }))
-
-    // Assert
-    expect(読み直した).toEqual(['c1'])
   })
 })

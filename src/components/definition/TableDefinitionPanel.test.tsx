@@ -24,6 +24,7 @@ const 定義: ObjectDefinition = {
   owner: 'KODUCHI',
   name: 'SHIPMENTS',
   kind: 'table',
+  comment: null,
   columns: [
     {
       objectName: 'SHIPMENTS',
@@ -104,6 +105,21 @@ const 定義: ObjectDefinition = {
       generated: true,
       columns: [{ name: 'SHIPMENT_ID', descending: false }],
     },
+  ],
+}
+
+/**
+ * コメントの付いた表の定義（ADR 0033）。
+ *
+ * `TRACKING_NO` にだけコメントが無い。外部結合が効いていれば列は落ちない。
+ */
+const コメント付きの定義: ObjectDefinition = {
+  ...定義,
+  comment: '出荷。受注 1 件に対して 1 行が立つ',
+  columns: [
+    { ...定義.columns[0], comment: '出荷番号' },
+    { ...定義.columns[1], comment: '受注番号' },
+    { ...定義.columns[2] },
   ],
 }
 
@@ -197,6 +213,96 @@ describe('TableDefinitionPanel', () => {
 
     // Assert
     expect(screen.getByText('当てはまる列がありません')).toBeInTheDocument()
+  })
+
+  it('オブジェクトのコメントを見出しの下に出す', async () => {
+    // Arrange & Act: 内訳を 5 つめに増やさず、見出しに添える（ADR 0033）
+    await パネルを開く({ definition: コメント付きの定義 })
+
+    // Assert
+    expect(await screen.findByText('出荷。受注 1 件に対して 1 行が立つ')).toBeInTheDocument()
+  })
+
+  it('コメントの無いオブジェクトでは見出しに何も足さない', async () => {
+    // Arrange & Act
+    await パネルを開く()
+
+    // Assert
+    expect(await screen.findByText('KODUCHI.SHIPMENTS')).toBeInTheDocument()
+    expect(screen.queryByText('出荷。受注 1 件に対して 1 行が立つ')).not.toBeInTheDocument()
+  })
+
+  it('列のコメントを 5 つめの欄に出す', async () => {
+    // Arrange & Act
+    await パネルを開く({ definition: コメント付きの定義 })
+
+    // Assert
+    expect(await screen.findByRole('columnheader', { name: 'コメント' })).toBeInTheDocument()
+    expect(screen.getByText('出荷番号')).toBeInTheDocument()
+    expect(screen.getByText('受注番号')).toBeInTheDocument()
+  })
+
+  it('コメントの無い列も一覧から落ちない', async () => {
+    // Arrange & Act: 外部結合が内部結合になっていればこの列が消える（ADR 0033）
+    await パネルを開く({ definition: コメント付きの定義 })
+
+    // Assert
+    expect(await screen.findByText('TRACKING_NO')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+
+  it('コメントが 1 つも無ければコメントの欄そのものを出さない', async () => {
+    // Arrange & Act: `—` だけが並ぶ欄に幅を取らせない（ADR 0033）
+    await パネルを開く()
+
+    // Assert
+    expect(await screen.findByText('TRACKING_NO')).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'コメント' })).not.toBeInTheDocument()
+  })
+
+  it('列をコメントの論理名で絞り込める', async () => {
+    // Arrange: 物理名が読めない表では、利用者が知っているのは論理名である
+    const user = await パネルを開く({ definition: コメント付きの定義 })
+    await screen.findByText('SHIPMENT_ID')
+
+    // Act
+    await user.type(screen.getByLabelText('定義を絞り込む'), '受注番号')
+
+    // Assert
+    await waitFor(() => {
+      expect(screen.queryByText('SHIPMENT_ID')).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('ORDER_ID')).toBeInTheDocument()
+  })
+
+  it('コメントの欄は絞り込んでも消えない', async () => {
+    // Arrange: 欄の有無は絞り込む前の全列で決める（ADR 0033）
+    const user = await パネルを開く({ definition: コメント付きの定義 })
+    await screen.findByText('TRACKING_NO')
+
+    // Act: コメントの無い列だけが残る語で絞り込む
+    await user.type(screen.getByLabelText('定義を絞り込む'), 'TRACKING')
+
+    // Assert
+    await waitFor(() => {
+      expect(screen.queryByText('SHIPMENT_ID')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('columnheader', { name: 'コメント' })).toBeInTheDocument()
+  })
+
+  it('列のタブのコピーにコメントの欄も混ざる', async () => {
+    // Arrange: 写すのは今画面に出ているものである（ADR 0033）
+    const user = await パネルを開く({ definition: コメント付きの定義 })
+    await screen.findByText('SHIPMENT_ID')
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '3 件の列をコピー' }))
+
+    // Assert
+    const lines = 書いた文字列[0].split('\n')
+    expect(lines[0]).toBe('#\t列\t型\tNULL\tコメント')
+    expect(lines[1]).toBe('1\tSHIPMENT_ID\tNUMBER(12)\tNOT NULL\t出荷番号')
+    expect(lines[3]).toBe('3\tTRACKING_NO\tVARCHAR2(64)\t可\t—')
   })
 
   it('制約のタブへ切り替えると外部キーの参照先まで出る', async () => {

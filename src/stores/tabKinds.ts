@@ -138,6 +138,9 @@ export function openDefinitionTab(
 /**
  * セッションへ書き出すタブを選び出す（ADR 0005・0022）。
  *
+ * 利用者が付けた名前も一緒に書き出す（ADR 0032）。付けた名前が再起動で消える
+ * のでは、付ける値打ちが無い。
+ *
  * **定義タブは書き出さない。**定義は接続に属し、切断すれば捨てられる
  * （ADR 0019）。小槌は接続そのものを復元しないため、書き出したところで
  * 再起動後は中身を出せない。しかも次に繋ぐ先が別の接続なら、そのオブジェクトは
@@ -150,6 +153,7 @@ export function toSessionTabs(tabs: EditorTab[]): SessionTab[] {
   return tabs.filter(isSqlTab).map((tab) => ({
     id: tab.id,
     name: tab.name,
+    customName: tab.customName,
     filePath: tab.filePath,
     content: tab.content,
     dirty: tab.dirty,
@@ -162,6 +166,9 @@ export function toSessionTabs(tabs: EditorTab[]): SessionTab[] {
  * 書き出す側が定義タブを落としているため、読む側で振り分ける必要は無い。
  * それでも SQL タブとして組み立てることを型で示しておく。
  *
+ * 利用者が付けた名前（ADR 0032）を持たない古いセッションでは `customName` が
+ * `null` で届き、自動の名前がそのまま出る。
+ *
  * @param tabs セッションに保存されていたタブ
  */
 export function fromSessionTabs(tabs: SessionTab[]): SqlTab[] {
@@ -169,6 +176,8 @@ export function fromSessionTabs(tabs: SessionTab[]): SqlTab[] {
     kind: 'sql',
     id: tab.id,
     name: tab.name,
+    // 項目そのものを持たない古いセッションでは `undefined` で届く。
+    customName: tab.customName ?? null,
     filePath: tab.filePath,
     content: tab.content,
     dirty: tab.dirty,

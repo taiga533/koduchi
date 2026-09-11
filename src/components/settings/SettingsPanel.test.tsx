@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls } from '../../test/fakeDbApi'
@@ -24,6 +24,31 @@ afterEach(() => {
 })
 
 describe('SettingsPanel', () => {
+  it('焦点がどこにも当たっていなくても esc で閉じる（ADR 0031）', () => {
+    // Arrange
+    let 閉じた = false
+    render(<SettingsPanel clientUnavailable={false} onClose={() => (閉じた = true)} />)
+    ;(document.activeElement as HTMLElement | null)?.blur()
+
+    // Act
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    // Assert
+    expect(閉じた).toBe(true)
+  })
+
+  it('変換中の esc では閉じない（ADR 0025）', () => {
+    // Arrange
+    let 閉じた = false
+    render(<SettingsPanel clientUnavailable={false} onClose={() => (閉じた = true)} />)
+
+    // Act
+    fireEvent.keyDown(document.body, { key: 'Escape', isComposing: true })
+
+    // Assert
+    expect(閉じた).toBe(false)
+  })
+
   it('テーマは 3 択である', () => {
     // Arrange
     render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
