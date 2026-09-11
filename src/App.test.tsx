@@ -1343,6 +1343,30 @@ describe('接続断の検出と回復（ADR 0026）', () => {
     expect(calls.connect).toHaveLength(1)
   })
 
+  it('スキーマの読み込み中に切れても、繋ぎ直せばツリーを取り直す', async () => {
+    // Arrange: ツリーは接続の識別子で引く。取り直さないと、断で止まった
+    // ままのツリーが空で残り続ける（ADR 0030）
+    let 断を返す = true
+    const { api, calls } = createFakeDbApi({
+      onSchemaOverview: () => (断を返す ? Promise.reject(アイドル切断) : []),
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('接続が切れました')
+    断を返す = false
+    const 断までの取得回数 = calls.schemaOverview.length
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: '再接続' }))
+
+    // Assert
+    await screen.findByRole('button', { name: '接続中' })
+    await waitFor(() => expect(calls.schemaOverview.length).toBeGreaterThan(断までの取得回数))
+    const 繋ぎ直した後の識別子 = useConnectionStore.getState().connection?.id
+    expect(calls.schemaOverview.at(-1)?.id).toBe(繋ぎ直した後の識別子)
+  })
+
   it('未コミットのまま切れたらロールバックされたことをメッセージタブへ残す', async () => {
     // Arrange: 未コミットの表示だけを黙って消すのが最も悪い（ADR 0012 からの申し送り）
     let 断を返す = false
