@@ -1,40 +1,40 @@
 {
-  "fill": {
-    "solid": "display-p3:0.94568,1.00000,0.97617,1.00000"
+  "fill" : {
+    "solid" : "display-p3:0.94568,1.00000,0.97617,1.00000"
   },
-  "groups": [
+  "groups" : [
     {
-      "blur-material": null,
-      "layers": [
+      "blur-material" : null,
+      "layers" : [
         {
-          "blend-mode": "normal",
-          "fill": "none",
-          "glass": true,
-          "image-name": "koduchi.svg",
-          "name": "koduchi",
-          "position": {
-            "scale": 0.14,
-            "translation-in-points": [
+          "blend-mode" : "normal",
+          "fill" : "none",
+          "glass" : true,
+          "image-name" : "koduchi.svg",
+          "name" : "koduchi",
+          "position" : {
+            "scale" : 0.14,
+            "translation-in-points" : [
               0,
               0
             ]
           }
         }
       ],
-      "lighting": "individual",
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
+      "lighting" : "individual",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
       },
-      "specular": true,
-      "translucency": {
-        "enabled": true,
-        "value": 0.25
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.25
       }
     }
   ],
-  "supported-platforms": {
-    "squares": [
+  "supported-platforms" : {
+    "squares" : [
       "macOS"
     ]
   }

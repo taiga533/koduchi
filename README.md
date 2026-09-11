@@ -8,8 +8,8 @@ TypeScript + Vite + UnoCSS で作る macOS 向けデスクトップアプリ。
 ## インストール
 
 [リリースページ](https://github.com/taiga533/koduchi/releases)から `.dmg` を
-ダウンロードし、`koduchi.app` を `/Applications` へ移す。Apple Silicon 向けの
-ビルドのみを配布している。
+ダウンロードし、`koduchi.app` を `/Applications` へ移す。**macOS 26.2 以降**の
+Apple Silicon 向けのビルドのみを配布している。
 
 配布物は Apple の Developer ID で署名し、公証（notarization）を通してある
 （[ADR 0028](adr/0028-配布物の署名と公証.md)）。**そのまま起動できる。**

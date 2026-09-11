@@ -27,8 +27,9 @@ jobs:
     # Xcode の版だけを明示して選ぶ。
     #
     # **これで SDK も動く**（16.4 の既定は macOS 15.5、26.3 は macOS 26.2）。
-    # dmg の対応 OS はここで決まるため、Xcode の版もランナーと同じく
-    # 決め打ちにしてある。上げるときは対応 OS への影響を見ること。
+    # 小槌の対応 OS は macOS 26.2 以降と決めてあり（tauri.conf.json の
+    # minimumSystemVersion）、ここで選ぶ Xcode の版はそれと対になっている。
+    # 片方だけを動かさないこと。
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
