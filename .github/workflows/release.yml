@@ -115,6 +115,30 @@ jobs:
           # パスそのものは秘密ではない。中身だけが秘密である。
           echo "APPLE_API_KEY_PATH=${dir}/AuthKey.p8" >>"${GITHUB_ENV}"
 
+      # Tauri は actool に stdin を親からそのまま継がせる（`spawn()` の既定）。
+      # `bun run tauri build` の経路ではその fd が閉じており、actool（の裏で動く
+      # ibtoold / AssetCatalogAgent）が「Bad file descriptor」の警告だけを出して
+      # exit 0 で返り、Assets.car を作らない。Tauri は stderr を
+      # 握り潰して「actool did not generate Assets.car file」とだけ言う。
+      # 同じ引数を手で叩けば通る（実測: v0.2.0 の 2 回目、2026-09-11）。
+      #
+      # actool を包んで stdin に /dev/null を与えるだけで通る。PATH の先頭に置き、
+      # Tauri が `actool` を引いたときにこちらが呼ばれるようにする。
+      # 上流の同種の報告: https://github.com/tauri-apps/tauri/issues/15315
+      # Tauri 側で直ったら、この段とこの註釈を消す。
+      - name: actool に stdin を与える包みを置く
+        run: |
+          set -euo pipefail
+          real="$(xcrun --find actool)"
+          mkdir -p "${RUNNER_TEMP}/actool-shim"
+          cat > "${RUNNER_TEMP}/actool-shim/actool" <<SHIM
+          #!/bin/bash
+          exec "${real}" "\$@" < /dev/null
+          SHIM
+          chmod +x "${RUNNER_TEMP}/actool-shim/actool"
+          echo "${RUNNER_TEMP}/actool-shim" >> "${GITHUB_PATH}"
+          echo "包んだ actool: ${real}"
+
       # Tauri は APPLE_CERTIFICATE から署名の識別名を取る。tauri.conf.json に
       # signingIdentity は書かない（書くと証明書名との一致検査に掛かり、
       # "-" のままだと dmg の署名そのものが飛ぶ。ADR 0028）。
