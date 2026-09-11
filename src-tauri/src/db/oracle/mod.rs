@@ -20,9 +20,34 @@ use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use oracle::sql_type::OracleType;
-use oracle::{Connection, ResultSet, Row};
+use oracle::{Connection, ResultSet, Row, StatementType};
 use std::sync::Arc;
 use std::time::Instant;
+
+/// 影響行数に意味のある文か（ADR 0034）。
+///
+/// 行を数えられるのは `INSERT` / `UPDATE` / `DELETE` / `MERGE` だけである。
+/// DDL・PL/SQL ブロック・`CALL` には「影響を受けた行」という概念が無く、
+/// `Statement::row_count` は 0 を返す。そのまま「0 行」と出すと、1 行も
+/// 当たらなかった `UPDATE` と見分けが付かない。
+///
+/// 種別は Oracle が文を準備した時点で持っているもの（ODPI-C の
+/// `dpiStmtInfo.statementType`）であり、小槌が SQL を読んで決めたものでは
+/// ない。`GRANT` や `TRUNCATE` のように OCI が番号を持たない文は
+/// `Unknown` で届くが、どれも行数の概念を持たないため偽で正しい。
+///
+/// # 引数
+///
+/// * `statement_type` - Oracle が返した文の種別
+fn has_row_count(statement_type: StatementType) -> bool {
+    matches!(
+        statement_type,
+        StatementType::Insert
+            | StatementType::Update
+            | StatementType::Delete
+            | StatementType::Merge
+    )
+}
 
 /// 開いたままの結果セット（ADR 0003）。
 ///
@@ -303,6 +328,10 @@ impl Driver for OracleDriver {
             .build()
             .map_err(|error| errors::map_execute_error("", &error))?;
 
+        // 文の種別は準備した時点で決まっている。実行すると結果セットごと
+        // 手放すため、先に控えておく（ADR 0034）。
+        let statement_type = statement.statement_type();
+
         let bound = bind::bound_values(&statement, binds)?;
 
         if statement.is_query() {
@@ -347,7 +376,9 @@ impl Driver for OracleDriver {
             .execute_named(&bind::params(&bound))
             .map_err(|error| errors::map_execute_error("", &error))?;
 
-        let affected_rows = statement.row_count().unwrap_or(0);
+        // 行数の概念が無い文では数を返さない（ADR 0034）。
+        let affected_rows =
+            has_row_count(statement_type).then(|| statement.row_count().unwrap_or(0));
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
         Ok(ExecuteOutcome::Statement {
@@ -461,5 +492,99 @@ impl Driver for OracleDriver {
 
     fn source_context(&mut self, target: &SourceTarget, line: u32) -> DbResult<Vec<SourceLine>> {
         source::source_context(&self.connection, target, line)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dmlの4種別は影響行数を持つ() {
+        // Arrange
+        let dml = [
+            StatementType::Insert,
+            StatementType::Update,
+            StatementType::Delete,
+            StatementType::Merge,
+        ];
+
+        // Act
+        let 持つ: Vec<bool> = dml.iter().map(|kind| has_row_count(*kind)).collect();
+
+        // Assert
+        assert_eq!(持つ, vec![true, true, true, true]);
+    }
+
+    #[test]
+    fn ddlは影響行数を持たない() {
+        // Arrange
+        let ddl = [
+            StatementType::Create,
+            StatementType::Alter,
+            StatementType::Drop,
+        ];
+
+        // Act
+        let 持つ: Vec<bool> = ddl.iter().map(|kind| has_row_count(*kind)).collect();
+
+        // Assert
+        assert_eq!(持つ, vec![false, false, false]);
+    }
+
+    #[test]
+    fn plsqlブロックとcallは影響行数を持たない() {
+        // Arrange
+        let ブロック = [
+            StatementType::Begin,
+            StatementType::Declare,
+            StatementType::Call,
+        ];
+
+        // Act
+        let 持つ: Vec<bool> = ブロック.iter().map(|kind| has_row_count(*kind)).collect();
+
+        // Assert
+        assert_eq!(持つ, vec![false, false, false]);
+    }
+
+    #[test]
+    fn トランザクション制御と実行計画は影響行数を持たない() {
+        // Arrange
+        let その他 = [
+            StatementType::Commit,
+            StatementType::Rollback,
+            StatementType::ExplainPlan,
+        ];
+
+        // Act
+        let 持つ: Vec<bool> = その他.iter().map(|kind| has_row_count(*kind)).collect();
+
+        // Assert
+        assert_eq!(持つ, vec![false, false, false]);
+    }
+
+    #[test]
+    fn 種別が分からない文は影響行数を持たない() {
+        // Arrange: `GRANT` や `TRUNCATE` は OCI が番号を持たず `Unknown` で届く
+        let kind = StatementType::Unknown;
+
+        // Act
+        let 持つ = has_row_count(kind);
+
+        // Assert
+        assert!(!持つ);
+    }
+
+    #[test]
+    fn 問い合わせは影響行数を持たない() {
+        // Arrange: 問い合わせはそもそも `Statement` として返らない
+        let kind = StatementType::Select;
+
+        // Act
+        let 持つ = has_row_count(kind);
+
+        // Assert
+        assert!(!持つ);
     }
 }

@@ -315,6 +315,83 @@ fn dbms_outputの通知が実行結果に添えられる() {
     }
 }
 
+/// 問い合わせ以外の文を実行し、影響行数を取り出す（ADR 0034）。
+fn 影響行数(pool: &ConnectionPool, sql: &str) -> Option<u64> {
+    match pool.execute(TAB, sql, &[]).unwrap().outcome {
+        ExecuteOutcome::Statement { affected_rows, .. } => affected_rows,
+        other => panic!("問い合わせ以外の結果になるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn ddlの結果は影響行数を持たない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let _ = pool.execute(TAB, "drop table koduchi.ddl_probe", &[]);
+
+    // Act
+    let 作成 = 影響行数(&pool, "create table koduchi.ddl_probe (id number)");
+    let 変更 = 影響行数(
+        &pool,
+        "alter table koduchi.ddl_probe add (memo varchar2(10))",
+    );
+    let 削除 = 影響行数(&pool, "drop table koduchi.ddl_probe");
+
+    // Assert
+    assert_eq!(作成, None);
+    assert_eq!(変更, None);
+    assert_eq!(削除, None);
+}
+
+#[test]
+#[serial]
+fn dmlの結果は影響行数を持つ() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let 元の値 = セグメントを読む(&pool);
+
+    // Act
+    let 当たった = 影響行数(
+        &pool,
+        "update koduchi.user_traits set segment = 'power' where user_id = 1",
+    );
+    let 当たらなかった = 影響行数(
+        &pool,
+        "update koduchi.user_traits set segment = 'power' where user_id = -1",
+    );
+
+    // Assert
+    assert_eq!(当たった, Some(1));
+    assert_eq!(当たらなかった, Some(0));
+    pool.execute(
+        TAB,
+        &format!("update koduchi.user_traits set segment = '{元の値}' where user_id = 1"),
+        &[],
+    )
+    .unwrap();
+    pool.commit().unwrap();
+}
+
+#[test]
+#[serial]
+fn plsqlブロックの結果は影響行数を持たない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let 影響 = 影響行数(&pool, "begin koduchi.say_hello(1); end;");
+
+    // Assert
+    assert_eq!(影響, None);
+}
+
 #[test]
 #[serial]
 fn 読み取り専用接続では書き込みが拒まれる() {

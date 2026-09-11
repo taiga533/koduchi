@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow'
 import type { LogEntry, ScriptProgress, TabExecution, TabPlan } from '../../stores/execution'
 import {
   formatResultSummary,
+  formatStatementOutcome,
   selectExecution,
   selectPlan,
   selectResultTabs,
@@ -140,11 +141,11 @@ function PaneBody({
   }
 
   if (execution.columns.length === 0) {
+    // 行数の概念が無い文（DDL・PL/SQL ブロックなど）に「0 行に影響しました」と
+    // 出さない。成功したのか空振りしたのかが読めなくなる（ADR 0034）。
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-7px">
-        <p className="text-13px text-fg m-0">
-          {(execution.affectedRows ?? 0).toLocaleString('ja-JP')} 行に影響しました
-        </p>
+        <p className="text-13px text-fg m-0">{formatStatementOutcome(execution.affectedRows)}</p>
         <p className="text-12px text-fg4 m-0">{execution.elapsedMs} ms</p>
       </div>
     )
