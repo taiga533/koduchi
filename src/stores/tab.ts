@@ -30,6 +30,10 @@ interface TabBase {
    * タブに表示する名前。
    *
    * SQL タブは `無題-1.sql` などのファイル名、定義タブはオブジェクト名である。
+   *
+   * **これは小槌が付ける「自動の名前」である。**利用者が付け直した名前は
+   * `SqlTab.customName` が別に持ち、画面に出す側は `tabNaming.ts` の
+   * `tabDisplayName` を通して選ぶ（ADR 0032）。
    */
   name: string
 }
@@ -37,6 +41,14 @@ interface TabBase {
 /** SQL を書くタブ 1 枚。 */
 export interface SqlTab extends TabBase {
   kind: 'sql'
+  /**
+   * 利用者が付け直した名前（ADR 0032）。付け直していなければ `null`。
+   *
+   * `name`（自動の名前）とは別に持つ。混ぜてしまうと元の名前がどこにも残らず、
+   * 付け直しを取り消す道を別に作ることになる。どちらを出すかは
+   * `tabNaming.ts` の `tabDisplayName` が決める。
+   */
+  customName: string | null
   /** 保存先のファイル。未保存のバッファでは `null`。 */
   filePath: string | null
   /** エディタの内容。 */
@@ -107,6 +119,13 @@ interface TabState {
    * 並びはそのままセッションへ保存され、再起動で復元される（ADR 0005）。
    */
   moveTab: (id: string, toIndex: number) => void
+  /**
+   * タブの名前を付け直す（ADR 0032）。
+   *
+   * `null` を渡すと利用者の名前を捨て、自動の名前へ戻る。定義タブでは何も
+   * 起きない（名前がオブジェクトの同一性そのものであるため。ADR 0022）。
+   */
+  renameTab: (id: string, name: string | null) => void
   /** タブの内容を書き換える。内容が変われば未保存になる。 */
   updateContent: (id: string, content: string) => void
   /** ファイルを開いて新しいタブにする（`⌘O`）。 */
@@ -150,6 +169,7 @@ function createTab(): SqlTab {
     kind: 'sql',
     id: crypto.randomUUID(),
     name: `無題-${untitledCounter}.sql`,
+    customName: null,
     filePath: null,
     content: '',
     dirty: false,
@@ -220,6 +240,13 @@ export const useTabStore = create<TabState>((set, get) => ({
       return tabs === state.tabs ? state : { tabs }
     }),
 
+  renameTab: (id, name) =>
+    set((state) => ({
+      tabs: state.tabs.map((tab) =>
+        tab.id === id && isSqlTab(tab) ? { ...tab, customName: name } : tab,
+      ),
+    })),
+
   updateContent: (id, content) =>
     set((state) => ({
       tabs: state.tabs.map((tab) =>
@@ -241,6 +268,7 @@ export const useTabStore = create<TabState>((set, get) => ({
         kind: 'sql',
         id: crypto.randomUUID(),
         name: baseName(filePath),
+        customName: null,
         filePath,
         content,
         dirty: false,

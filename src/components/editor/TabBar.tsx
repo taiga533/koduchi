@@ -24,6 +24,14 @@
  *    流されない。選んだタブが帯の外に居るときは `tabScroll.ts` の `revealOffset`
  *    で見える位置まで送る。
  *
+ * **名前の付け直し（ADR 0032）はタブの名前をダブルクリックして始める。**掴みと
+ * 食い合わないのは、並べ替えが「4px 動かすまでは掴んだと見なさない」という
+ * しきい値を初めから持っている（`tabOrder.ts` の `DRAG_THRESHOLD`）からである。
+ * ダブルクリックは動かない打鍵なので `held` に届かず、`event.detail` を見て
+ * 打ち消すような細工は要らない。編集中のタブは掴まない（入力欄の中で文字を
+ * 選ぼうとして並びが動くのを防ぐ）。**定義タブの名前は変えられない**
+ * （`tabNaming.ts` の `canRenameTab`）。
+ *
  * 並べ替えは Pointer Events で行う。`Splitter` と同じく `setPointerCapture` を
  * 使い、`mousemove` を `window` に貼らない。落とす位置の計算は `tabOrder.ts` の
  * 純粋な関数に寄せてある。**スクロールしても `dropIndex` はそのままでよい**
@@ -38,6 +46,8 @@ import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerE
 import { Plus, TableProperties, X } from 'lucide-react'
 import { useTabStore } from '../../stores/tab'
 import { isDefinitionTab, isDirty } from '../../stores/tabKinds'
+import { isComposingKey } from '../../input/ime'
+import { canRenameTab, normalizeTabName, tabDisplayName, tabTitle } from './tabNaming'
 import { DRAG_THRESHOLD, dropIndex } from './tabOrder'
 import type { TabRect } from './tabOrder'
 import { autoScrollStep, revealOffset } from './tabScroll'
@@ -96,12 +106,82 @@ function releasePointer(element: Element, pointerId: number): void {
   }
 }
 
+interface TabNameInputProps {
+  /** 編集を始めたときの名前。今タブ帯に出ている名前である。 */
+  initial: string
+  /**
+   * 名前が決まった。`null` は「自動の名前へ戻す」である（ADR 0032）。
+   *
+   * 空文字も空白だけも `null` になる。取り消しのための別の入口を作らずに、
+   * 付け直しを元へ戻せるようにするための決まりである。
+   */
+  onCommit: (name: string | null) => void
+  /** `esc`。打ち込んだものを捨てて元の名前のままにする。 */
+  onCancel: () => void
+}
+
+/**
+ * タブの名前を打ち直す欄（ADR 0032）。
+ *
+ * 名前の場所にそのまま重ねる。`●` 印も閉じるボタンも出したままなので、
+ * `tabSizing.ts` が数えている固定部分の幅は変わらない。**タブは編集中も
+ * 広がらない。**
+ *
+ * 焦点が外れたときは**確定する**。打ち込んだ文字を、うっかり別の場所を押した
+ * だけで捨てるのは失うものが大きい。取り消したいときは `esc` がある。
+ */
+function TabNameInput({ initial, onCommit, onCancel }: TabNameInputProps) {
+  const [draft, setDraft] = useState(initial)
+  /** 確定を 2 度走らせない。`⏎` で確定すると、外れる焦点が `blur` も呼ぶ。 */
+  const done = useRef(false)
+
+  /** 打ち込まれたものを確定する。 */
+  const 確定する = (): void => {
+    if (done.current) {
+      return
+    }
+    done.current = true
+    onCommit(normalizeTabName(draft))
+  }
+
+  return (
+    <input
+      autoFocus
+      // ここから始めた押し下げでタブを掴まない（ADR 0023 の `data-tab-action`）。
+      data-tab-action="rename"
+      value={draft}
+      aria-label="タブの名前"
+      // 既定の欄幅（`size` の 20 文字ぶん）に器を押し広げさせない。
+      size={1}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={確定する}
+      onKeyDown={(event) => {
+        // 変換中の `⏎` は変換の確定、`esc` は変換の取り消しである（ADR 0025）。
+        if (isComposingKey(event)) {
+          return
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          確定する()
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          done.current = true
+          onCancel()
+        }
+      }}
+      className="flex-1 min-w-0 w-full px-4px py-1px rounded-4px bg-bg border border-line text-11.5px text-fg font-inherit"
+    />
+  )
+}
+
 export function TabBar({ onCloseTab }: TabBarProps) {
   const tabs = useTabStore((state) => state.tabs)
   const activeTabId = useTabStore((state) => state.activeTabId)
   const selectTab = useTabStore((state) => state.selectTab)
   const moveTab = useTabStore((state) => state.moveTab)
   const openNewTab = useTabStore((state) => state.openNewTab)
+  const renameTab = useTabStore((state) => state.renameTab)
 
   const drag = useRef<DragState | null>(null)
   /** タブの ID から描かれている要素を引く。横位置を実測するために持つ。 */
@@ -111,6 +191,21 @@ export function TabBar({ onCloseTab }: TabBarProps) {
   /** 端でのスクロールを回している間だけ入る、次のフレームの識別子。 */
   const frame = useRef<number | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  /** 名前を付け直しているタブの ID（ADR 0032）。編集していなければ `null`。 */
+  const [editingId, setEditingId] = useState<string | null>(null)
+
+  /**
+   * 名前の付け直しを始める（ADR 0032）。
+   *
+   * 定義タブでは何も起きない。名前がオブジェクトの同一性そのものだからである
+   * （`tabNaming.ts` の `canRenameTab`）。
+   */
+  const startRename = useCallback((id: string) => {
+    const tab = useTabStore.getState().tabs.find((item) => item.id === id)
+    if (tab && canRenameTab(tab)) {
+      setEditingId(id)
+    }
+  }, [])
 
   /**
    * 今の並び順でタブの横位置を測る。
@@ -255,15 +350,23 @@ export function TabBar({ onCloseTab }: TabBarProps) {
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
           const dragging = tab.id === draggingId
+          const editing = tab.id === editingId
+          const display = tabDisplayName(tab)
 
           /**
            * 掴む。閉じるボタンの上から始めたときは掴まない。
            *
            * 押し下げた時点でそのタブを選ぶ。並べ替えたタブが選ばれていないと、
            * どれを動かしたのかが分からなくなる。
+           *
+           * **名前を付け直している間も掴まない**（ADR 0032）。入力欄の中で文字を
+           * 選ぼうと押したまま動かすと、しきい値を越えて並びが動いてしまう。
            */
           const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
             if (event.button !== 0) {
+              return
+            }
+            if (editing) {
               return
             }
             if ((event.target as HTMLElement).closest('[data-tab-action]')) {
@@ -310,8 +413,38 @@ export function TabBar({ onCloseTab }: TabBarProps) {
             endDrag(event.currentTarget, event.pointerId)
           }
 
-          /** `⌥←` / `⌥→` で 1 つずつ動かす（ADR 0023）。 */
+          /**
+           * タブ帯の中でだけ効く打鍵。
+           *
+           * `⌥←` / `⌥→` で 1 つずつ動かし（ADR 0023）、`F2` で名前を付け直す
+           * （ADR 0032）。どちらもタブ帯の外では意味を持たないため、`App.tsx`
+           * ではなくここに置く（`CLAUDE.md` の「キーバインドの置き場所」）。
+           *
+           * **名前を付け直している間は、ここの打鍵を一切効かせない。**入力欄は
+           * この器の中に描かれるため、打った打鍵はそのまま上がってくる。
+           * **macOS では `⌥←` / `⌥→` は入力欄の単語単位のカーソル移動である。**
+           * 名前の途中で単語の頭へ戻ろうとした `⌥←` でタブが左隣と入れ替わっては
+           * ならない。`onPointerDown` の `editing` の関所と 1 対 1 で並ぶ。
+           */
           const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+            // 変換中の打鍵は IME のものである（ADR 0025）。
+            if (isComposingKey(event)) {
+              return
+            }
+            if (editing) {
+              return
+            }
+            if (
+              event.key === 'F2' &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              !event.shiftKey
+            ) {
+              event.preventDefault()
+              startRename(tab.id)
+              return
+            }
             if (!event.altKey || event.metaKey || event.ctrlKey) {
               return
             }
@@ -339,9 +472,17 @@ export function TabBar({ onCloseTab }: TabBarProps) {
                 }
               }}
               data-tab-id={tab.id}
-              // 名前を省いても、指を乗せれば全体が読める。
-              title={tab.name}
+              // 名前を省いても、指を乗せれば全体が読める。付け直した名前が自動の
+              // 名前を覆っているときは、隠れたほうもここに出る（ADR 0032）。
+              title={tabTitle(tab)}
               style={{ minWidth: `${TAB_MIN_WIDTH}px`, maxWidth: `${TAB_MAX_WIDTH}px` }}
+              onDoubleClick={(event) => {
+                // 閉じるボタンを続けて押したときに編集へ入らない。
+                if ((event.target as HTMLElement).closest('[data-tab-action]')) {
+                  return
+                }
+                startRename(tab.id)
+              }}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
@@ -361,24 +502,35 @@ export function TabBar({ onCloseTab }: TabBarProps) {
                 // 印の有無で幅が動かないよう、印が無いときも場所だけは空けておく。
                 <span className="w-7px shrink-0" aria-hidden="true" />
               )}
-              <button
-                type="button"
-                onClick={() => selectTab(tab.id)}
-                aria-label={isDefinitionTab(tab) ? `${tab.name} の定義` : undefined}
-                className="flex items-center gap-5px min-w-0 bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
-              >
-                {/* 定義タブの目印（ADR 0022）。名前だけでは SQL タブと見分けにくい。 */}
-                {isDefinitionTab(tab) ? (
-                  <TableProperties size={12} className="text-fg5 shrink-0" aria-hidden />
-                ) : null}
-                {/* 縮んだぶんは `…` で省く。省いた名前は器の `title` で読める。 */}
-                <span className="truncate">{tab.name}</span>
-              </button>
+              {editing ? (
+                <TabNameInput
+                  initial={display}
+                  onCommit={(name) => {
+                    renameTab(tab.id, name)
+                    setEditingId(null)
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => selectTab(tab.id)}
+                  aria-label={isDefinitionTab(tab) ? `${display} の定義` : undefined}
+                  className="flex items-center gap-5px min-w-0 bg-transparent border-none p-0 text-inherit font-inherit text-11.5px cursor-pointer"
+                >
+                  {/* 定義タブの目印（ADR 0022）。名前だけでは SQL タブと見分けにくい。 */}
+                  {isDefinitionTab(tab) ? (
+                    <TableProperties size={12} className="text-fg5 shrink-0" aria-hidden />
+                  ) : null}
+                  {/* 縮んだぶんは `…` で省く。省いた名前は器の `title` で読める。 */}
+                  <span className="truncate">{display}</span>
+                </button>
+              )}
               <button
                 type="button"
                 data-tab-action="close"
                 onClick={() => onCloseTab(tab.id)}
-                aria-label={`${tab.name} を閉じる`}
+                aria-label={`${display} を閉じる`}
                 className="flex items-center bg-transparent border-none p-0 text-fg5 font-inherit cursor-pointer"
               >
                 <X size={13} className="shrink-0" />

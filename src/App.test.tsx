@@ -1085,7 +1085,15 @@ describe('App', () => {
 function タブを初期化する(): void {
   useTabStore.setState({
     tabs: [
-      { kind: 'sql', id: 'sql-1', name: '無題-1.sql', filePath: null, content: '', dirty: false },
+      {
+        kind: 'sql',
+        id: 'sql-1',
+        name: '無題-1.sql',
+        customName: null,
+        filePath: null,
+        content: '',
+        dirty: false,
+      },
     ],
     activeTabId: 'sql-1',
     bindValues: {},
@@ -1265,6 +1273,7 @@ describe('接続断の検出と回復（ADR 0026）', () => {
       kind: 'sql' as const,
       id: 'lost-tab',
       name: '無題.sql',
+      customName: null,
       filePath: null,
       content: '',
       dirty: false,

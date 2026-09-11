@@ -32,7 +32,16 @@ beforeEach(() => {
   resetUntitledCounter()
   useSchemaStore.getState().clear()
   useTabStore.getState().restore({
-    tabs: [{ id: 'tab-1', name: '無題-1.sql', filePath: null, content: 'select 1', dirty: false }],
+    tabs: [
+      {
+        id: 'tab-1',
+        name: '無題-1.sql',
+        customName: null,
+        filePath: null,
+        content: 'select 1',
+        dirty: false,
+      },
+    ],
     activeTabId: 'tab-1',
   })
 })
@@ -53,7 +62,16 @@ describe('EditorPanel', () => {
     // Arrange
     act(() =>
       useTabStore.getState().restore({
-        tabs: [{ id: 'tab-2', name: '無題-2.sql', filePath: null, content: '', dirty: false }],
+        tabs: [
+          {
+            id: 'tab-2',
+            name: '無題-2.sql',
+            customName: null,
+            filePath: null,
+            content: '',
+            dirty: false,
+          },
+        ],
         activeTabId: 'tab-2',
       }),
     )

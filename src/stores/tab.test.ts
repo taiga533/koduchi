@@ -235,6 +235,72 @@ describe('useTabStore.moveTab', () => {
   })
 })
 
+describe('useTabStore.renameTab（ADR 0032）', () => {
+  it('付け直した名前は customName に入り自動の名前は残る', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+    const 自動の名前 = useTabStore.getState().tabs[0].name
+
+    // Act
+    useTabStore.getState().renameTab(id, '売上集計')
+
+    // Assert
+    expect(sqlTabAt(0).customName).toBe('売上集計')
+    expect(sqlTabAt(0).name).toBe(自動の名前)
+  })
+
+  it('null を渡すと付け直した名前が消えて自動の名前へ戻る', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+    useTabStore.getState().renameTab(id, '売上集計')
+
+    // Act
+    useTabStore.getState().renameTab(id, null)
+
+    // Assert
+    expect(sqlTabAt(0).customName).toBeNull()
+  })
+
+  it('付け直したタブをファイルへ保存しても利用者の名前は消えない', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+    useTabStore.getState().renameTab(id, '売上集計')
+
+    // Act
+    useTabStore.getState().markSaved(id, '/tmp/sales.sql')
+
+    // Assert
+    expect(sqlTabAt(0).customName).toBe('売上集計')
+    expect(sqlTabAt(0).name).toBe('sales.sql')
+  })
+
+  it('定義タブの名前は変わらない', () => {
+    // Arrange
+    const tabId = useTabStore
+      .getState()
+      .openDefinitionTab({ owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' })
+
+    // Act
+    useTabStore.getState().renameTab(tabId, '出荷')
+
+    // Assert
+    const tab = useTabStore.getState().tabs.find((item) => item.id === tabId)
+    expect(tab?.name).toBe('SHIPMENTS')
+    expect(tab).not.toHaveProperty('customName')
+  })
+
+  it('居ないタブを指しても並びは変わらない', () => {
+    // Arrange
+    const 前 = useTabStore.getState().tabs
+
+    // Act
+    useTabStore.getState().renameTab('居ない', '売上集計')
+
+    // Assert
+    expect(useTabStore.getState().tabs.map((tab) => tab.name)).toEqual(前.map((tab) => tab.name))
+  })
+})
+
 describe('selectActiveTab', () => {
   it('選択中のタブを返す', () => {
     // Arrange
@@ -325,10 +391,18 @@ describe('セッションの復元', () => {
     // Arrange
     const session = {
       tabs: [
-        { id: 't1', name: '無題-3.sql', filePath: null, content: 'select 1', dirty: true },
+        {
+          id: 't1',
+          name: '無題-3.sql',
+          customName: null,
+          filePath: null,
+          content: 'select 1',
+          dirty: true,
+        },
         {
           id: 't2',
           name: 'users.sql',
+          customName: null,
           filePath: '/tmp/users.sql',
           content: 'select 2',
           dirty: false,
@@ -351,7 +425,16 @@ describe('セッションの復元', () => {
   it('復元した無題の番号とぶつからない番号が次に振られる', () => {
     // Arrange
     useTabStore.getState().restore({
-      tabs: [{ id: 't1', name: '無題-3.sql', filePath: null, content: '', dirty: false }],
+      tabs: [
+        {
+          id: 't1',
+          name: '無題-3.sql',
+          customName: null,
+          filePath: null,
+          content: '',
+          dirty: false,
+        },
+      ],
       activeTabId: 't1',
     })
 
@@ -441,7 +524,16 @@ describe('定義タブ', () => {
 
     // Act
     useTabStore.getState().restore({
-      tabs: [{ id: 't1', name: '無題-9.sql', filePath: null, content: 'select 1', dirty: false }],
+      tabs: [
+        {
+          id: 't1',
+          name: '無題-9.sql',
+          customName: null,
+          filePath: null,
+          content: 'select 1',
+          dirty: false,
+        },
+      ],
       activeTabId: 't1',
     })
 
@@ -465,10 +557,34 @@ describe('selectSession', () => {
 
     // Assert
     expect(session.tabs).toEqual([
-      { id, name: '無題-1.sql', filePath: null, content: 'select 1 from dual', dirty: true },
+      {
+        id,
+        name: '無題-1.sql',
+        customName: null,
+        filePath: null,
+        content: 'select 1 from dual',
+        dirty: true,
+      },
     ])
     expect(session.activeTabId).toBe(id)
     expect(session.sidebarSegment).toBe('schema')
+  })
+
+  it('付け直した名前も書き出す（ADR 0032）', () => {
+    // Arrange
+    const id = useTabStore.getState().tabs[0].id
+    useTabStore.getState().renameTab(id, '売上集計')
+
+    // Act
+    const session = selectSession(useTabStore.getState(), {
+      sidebarSegment: 'schema',
+      sidebarWidth: 240,
+      editorHeight: 268,
+    })
+
+    // Assert
+    expect(session.tabs[0].customName).toBe('売上集計')
+    expect(session.tabs[0].name).toBe('無題-1.sql')
   })
 
   it('定義タブは書き出さず、選んでいれば選択も落とす', () => {
@@ -577,7 +693,16 @@ describe('バインド変数の記憶', () => {
 
     // Act
     useTabStore.getState().restore({
-      tabs: [{ id: 't1', name: '無題-1.sql', filePath: null, content: '', dirty: false }],
+      tabs: [
+        {
+          id: 't1',
+          name: '無題-1.sql',
+          customName: null,
+          filePath: null,
+          content: '',
+          dirty: false,
+        },
+      ],
       activeTabId: 't1',
     })
 

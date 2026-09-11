@@ -505,6 +505,12 @@ export interface SavedQueryQuery {
 export interface SessionTab {
   id: string
   name: string
+  /**
+   * 利用者が付け直した名前（ADR 0032）。付け直していなければ `null`。
+   *
+   * この項目を持たない古いセッションでは `null` で届く。
+   */
+  customName: string | null
   filePath: string | null
   content: string
   dirty: boolean
