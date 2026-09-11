@@ -68,14 +68,30 @@ describe('declarationsFor', () => {
     expect(found.size).toBe(0)
   })
 
-  it('at-rule の選択子は拾わない', () => {
+  it('@media を含む css は黙って読み飛ばさず例外を投げる', () => {
     // Arrange
-    const css = '@media (min-width: 10px) { color: red; }'
+    const css = '@media (min-width: 10px) {\n  html { overflow: hidden; }\n}'
+
+    // Act & Assert
+    expect(() => declarationsFor(css, 'html')).toThrow(/at-rule/)
+  })
+
+  it('@supports を含む css でも例外を投げる', () => {
+    // Arrange
+    const css = 'body { color: red; }\n@supports (display: grid) { body { color: blue; } }'
+
+    // Act & Assert
+    expect(() => declarationsFor(css, 'body')).toThrow(/at-rule/)
+  })
+
+  it('ブロックを持たない at-rule は素通りする', () => {
+    // Arrange
+    const css = "@charset 'utf-8';\nbody { color: red; }"
 
     // Act
-    const found = declarationsFor(css, '@media (min-width: 10px)')
+    const found = declarationsFor(css, 'body')
 
     // Assert
-    expect(found.size).toBe(0)
+    expect(found.get('color')).toBe('red')
   })
 })

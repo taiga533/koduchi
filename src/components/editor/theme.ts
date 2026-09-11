@@ -35,9 +35,26 @@ const highlightStyle = HighlightStyle.define([
  * 参照する（ADR 0008。既定はデザインどおりの 12px）。行の高さは倍率指定なので
  * 一緒に付いてくる。
  */
-const editorTheme = EditorView.theme({
-  '&': {
+export const editorThemeSpec = {
+  /*
+   * **高さは `&` ではなく `&.cm-editor` に置く（issue #37）。**
+   *
+   * `SqlEditor` は補完の候補を編集領域の外へ出すため `tooltips({ parent:
+   * document.body })` を使っている。`@codemirror/view` はこのとき本体直下に
+   * 入れ物の `div` を 1 枚作り、**そこへエディタと同じテーマの class を付ける**
+   * （`createContainer`。与えるのは `position: relative` と `themeClasses` だけ
+   * である）。`&` はそのテーマの class そのものを指すため、`&` に高さを書くと
+   * **この空の入れ物にも高さが付く。**本体の下にビューポート 1 枚ぶんの白い帯が
+   * 生まれ、document がその分だけスクロールするようになる。
+   *
+   * `.cm-editor` は編集領域そのものにしか付かないため、併記すれば入れ物には
+   * 当たらない。`fontSize` と `color` は入れ物に付いてよい（中に出る補完の
+   * 候補がそれを継ぐ）ので `&` のままにしてある。**`&` へ寸法を書き足さない。**
+   */
+  '&.cm-editor': {
     height: '100%',
+  },
+  '&': {
     fontSize: 'var(--fs-editor)',
     color: 'var(--fg)',
     backgroundColor: 'var(--panel)',
@@ -160,7 +177,9 @@ const editorTheme = EditorView.theme({
     outline: 'none',
   },
   '.cm-selectionMatch': { backgroundColor: 'var(--fill2)' },
-})
+}
+
+const editorTheme = EditorView.theme(editorThemeSpec)
 
 /** エディタのテーマ一式。 */
 export const koduchiEditorTheme: Extension = [editorTheme, syntaxHighlighting(highlightStyle)]

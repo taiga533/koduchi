@@ -7,9 +7,14 @@
  * 消えていないこと**なら確かめられる。そのための読み取りをここへ寄せてある。
  *
  * 相手にするのは入れ子の無い平らな stylesheet だけである。`@media` のような
- * ブロックを持つ at-rule は解さない（`app.css` には無い。`tokens.css` のような
- * at-rule を含む file をこの関数へ渡さないこと）。
+ * **ブロックを持つ at-rule を見つけたら例外を投げる。**黙って読み飛ばすと、
+ * `@media` の中の `html { … }` を top-level の規則として拾ってしまい、
+ * **テストが緑のまま嘘をつく**（`app.css` にいつか `@media` が入ったときに
+ * ちょうどそうなる）。解せないものは読まずに落ちるほうがよい。
  */
+
+/** ブロックを開く at-rule（`@media (…) {` など）。`@charset` のような 1 行のものは含まない。 */
+const ブロックを持つ_AT_RULE = /@[a-zA-Z-]+[^;{}]*\{/
 
 /** 註釈を落とす。`app.css` の註釈は入れ子にならない。 */
 function 註釈を落とす(css: string): string {
@@ -31,10 +36,17 @@ function 註釈を落とす(css: string): string {
 export function declarationsFor(css: string, selector: string): Map<string, string> {
   const 探す選択子 = selector.trim()
   const found = new Map<string, string>()
+  const 平ら = 註釈を落とす(css)
 
-  for (const [, 選択子の並び, 中身] of 註釈を落とす(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const 選択子たち = 選択子の並び.split(',').map((one) => one.trim())
-    if (選択子たち[0]?.startsWith('@') || !選択子たち.includes(探す選択子)) {
+  if (ブロックを持つ_AT_RULE.test(平ら)) {
+    throw new Error('declarationsFor はブロックを持つ at-rule を解さない')
+  }
+
+  for (const [, 選択子の並び, 中身] of 平ら.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    // `@charset '…';` のようなブロックを持たない at-rule は、直前の文として
+    // 選択子にくっついて拾われる。最後の `;` より後ろだけを選択子と見る。
+    const 選択子たち = (選択子の並び.split(';').pop() ?? '').split(',').map((one) => one.trim())
+    if (!選択子たち.includes(探す選択子)) {
       continue
     }
     for (const 宣言 of 中身.split(';')) {
