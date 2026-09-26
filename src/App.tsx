@@ -28,11 +28,13 @@ import { ConnectionPicker } from './components/connection/ConnectionPicker'
 import { DisconnectBlockedDialog } from './components/connection/DisconnectBlockedDialog'
 import type { CsvExportState } from './components/csv/CsvSaveDialog'
 import { CsvSaveDialog } from './components/csv/CsvSaveDialog'
-import { BindValuesDialog } from './components/editor/BindValuesDialog'
 import { EditorPanel } from './components/editor/EditorPanel'
 import { confirmCloseTab } from './components/editor/closing'
 import { SaveQueryDialog } from './components/editor/SaveQueryDialog'
 import { Splitter } from './components/layout/Splitter'
+import { Shell } from './components/layout/Shell'
+import { CenteredPanel } from './components/layout/CenteredPanel'
+import { Splash } from './components/layout/Splash'
 import {
   EDITOR_HEIGHT_DEFAULT,
   EDITOR_HEIGHT_MIN,
@@ -43,7 +45,8 @@ import {
 } from './components/layout/paneSizes'
 import type { PaletteCommand } from './components/palette/CommandPalette'
 import { CommandPalette } from './components/palette/CommandPalette'
-import { RunButton } from './components/editor/RunButton'
+import { RunControls } from './components/editor/RunControls'
+import { BindPrompt } from './components/editor/BindPrompt'
 import type { EditorPosition, SqlEditorHandle } from './components/editor/SqlEditor'
 import { TabBar } from './components/editor/TabBar'
 import { tabBaseName, tabDisplayName, tabFileName } from './components/editor/tabNaming'
@@ -53,8 +56,6 @@ import { SessionsPanel } from './components/sessions/SessionsPanel'
 import { SourceSearchPanel } from './components/source/SourceSearchPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
-import { StatusBar } from './components/statusbar/StatusBar'
-import { TitleBar } from './components/titlebar/TitleBar'
 import { exportCsv } from './csv/exportCsv'
 import { inferBindKinds } from './sql/bindTypes'
 import type { BindOccurrence } from './sql/statements'
@@ -76,13 +77,11 @@ import { useSavedQueryStore } from './stores/savedQuery'
 import { useDefinitionStore } from './stores/definition'
 import { useSessionsStore } from './stores/sessions'
 import { useSourceSearchStore } from './stores/sourceSearch'
-import type { BindInput } from './stores/tab'
 import {
   fillBindDefaults,
   selectActiveSqlTab,
   selectActiveTab,
   selectBindValues,
-  selectSession,
   toBinds,
   useTabStore,
 } from './stores/tab'
@@ -105,9 +104,6 @@ const INITIAL_POSITION: EditorPosition = {
   offset: 0,
   selectedText: null,
 }
-
-/** セッションを書き出すまでの待ち時間（ミリ秒）。 */
-const SESSION_SAVE_DELAY = 600
 
 /** `.sql` ファイルを開く / 保存するときの絞り込み。 */
 const SQL_FILTERS = [{ name: 'SQL', extensions: ['sql'] }]
@@ -1347,179 +1343,5 @@ export function App() {
         )}
       </div>
     </Shell>
-  )
-}
-
-/**
- * 実行ボタンの状態を配る薄い包み。
- *
- * 実行中かどうかと選択の有無はストアから読む。ここで購読しておくことで、
- * 打鍵のたびにアプリ全体を描き直さずに済む。
- */
-function RunControls({
-  tabId,
-  ...handlers
-}: {
-  tabId: string | null
-  onRun: () => void
-  onRunSelection: () => void
-  onRunScript: () => void
-  onExplain: () => void
-  onExplainActual: () => void
-  onSaveCsv: () => void
-  onCancel: () => void
-}) {
-  const running = useExecutionStore((state) =>
-    tabId === null ? false : state.byTab[tabId]?.status === 'running',
-  )
-  const hasSelection = useUiStore((state) => state.hasSelection)
-
-  return <RunButton running={running} hasSelection={hasSelection} {...handlers} />
-}
-
-/**
- * バインド変数ダイアログへ、選択中のタブが覚えている値を配る薄い包み。
- *
- * 入力のたびに描き直る範囲をここへ閉じ込める。アプリのルートで購読すると、
- * 1 文字打つたびにサイドバーと結果ペインまで組み直される。
- */
-function BindPrompt({
-  names,
-  onSubmit,
-  onClose,
-}: {
-  names: string[]
-  onSubmit: () => void
-  onClose: () => void
-}) {
-  const tabId = useTabStore((state) => state.activeTabId)
-  const values = useTabStore((state) => selectBindValues(state, tabId))
-  const setBindValues = useTabStore((state) => state.setBindValues)
-
-  const onChange = (next: Record<string, BindInput>): void => {
-    if (tabId) {
-      setBindValues(tabId, next)
-    }
-  }
-
-  return (
-    <BindValuesDialog
-      names={names}
-      values={values}
-      onChange={onChange}
-      onSubmit={onSubmit}
-      onClose={onClose}
-    />
-  )
-}
-
-/**
- * 3 パネル構成の枠。
- *
- * タイトルバー・本体・ステータスバーを縦に並べる。本体の中身は呼び出し側が渡す。
- * 設定画面・CSV の保存ダイアログ・コマンドパレットは、この枠の上に重ねる。
- *
- * 切断はステータスバーの接続状態から呼ぶ。「切断」と「別の接続へ切り替え…」は
- * どちらも同じ動きであるため、受け取る手続きは 1 つでよい。
- */
-function Shell({
-  children,
-  onOpenSettings,
-  onDisconnect,
-  onOpenSessions,
-  onOpenSourceSearch,
-  onCommit,
-  onRollback,
-  onReconnect,
-  onOpenPalette,
-  overlay,
-}: {
-  children: React.ReactNode
-  onOpenSettings: () => void
-  onDisconnect: () => void
-  /** セッションとロックのパネルを開く（ADR 0017）。接続中の画面だけが渡す。 */
-  onOpenSessions?: () => void
-  /**
-   * オブジェクトのソース検索のパネルを開く（`⇧⌘F`、ADR 0021）。
-   * 接続中の画面だけが渡す。
-   */
-  onOpenSourceSearch?: () => void
-  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
-  onCommit?: () => void
-  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
-  onRollback?: () => void
-  /** 同じ接続先へ繋ぎ直す（ADR 0026）。接続中の画面だけが渡す。 */
-  onReconnect?: () => void
-  /** `⌘K`。コマンドパレットを開く（ADR 0018）。接続中の画面だけが渡す。 */
-  onOpenPalette?: () => void
-  overlay?: React.ReactNode
-}) {
-  return (
-    <div className="relative h-full flex flex-col bg-bg">
-      <SessionSaver />
-      <TitleBar onOpenPalette={onOpenPalette} />
-      <div className="flex-1 min-h-0 flex gap-6px p-6px">{children}</div>
-      <StatusBar
-        onOpenSettings={onOpenSettings}
-        onDisconnect={onDisconnect}
-        onSwitchConnection={onDisconnect}
-        onOpenSessions={onOpenSessions}
-        onOpenSourceSearch={onOpenSourceSearch}
-        onCommit={onCommit}
-        onRollback={onRollback}
-        onReconnect={onReconnect}
-      />
-      {overlay}
-    </div>
-  )
-}
-
-/**
- * タブ構成の書き出し（ADR 0005）。
- *
- * 打鍵のたびに変わるタブの配列を、この何も描かない部品だけで購読する。
- * ルートで購読すると画面全体が打鍵ごとに描き直る。
- */
-function SessionSaver() {
-  const tabs = useTabStore((state) => state.tabs)
-  const activeTabId = useTabStore((state) => state.activeTabId)
-  const sidebarSegment = useUiStore((state) => state.sidebarSegment)
-  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
-  const editorHeight = useUiStore((state) => state.editorHeight)
-
-  // タブの状態が落ち着いたら書き出す。1 打鍵ごとに書かないよう少し待つ。
-  // ペインの寸法も同じ待ちに乗せる。ドラッグ中は 1 フレームごとに変わるためである。
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const session = selectSession(
-        { tabs, activeTabId },
-        { sidebarSegment, sidebarWidth, editorHeight },
-      )
-      void getDbApi()
-        .saveSession(currentWindowLabel(), session)
-        .catch(() => {})
-    }, SESSION_SAVE_DELAY)
-
-    return () => clearTimeout(timer)
-  }, [activeTabId, editorHeight, sidebarSegment, sidebarWidth, tabs])
-
-  return null
-}
-
-/** 本体いっぱいに広がる 1 枚のパネル。案内画面と接続作成に使う。 */
-function CenteredPanel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex-1 min-w-0 bg-panel rounded-10px border border-line flex items-center justify-center overflow-auto p-24px">
-      {children}
-    </div>
-  )
-}
-
-/** Instant Client の判定が終わるまでの表示。 */
-function Splash() {
-  return (
-    <div className="h-full flex items-center justify-center bg-bg text-12.5px text-fg4">
-      起動しています…
-    </div>
   )
 }
