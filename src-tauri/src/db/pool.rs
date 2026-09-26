@@ -87,6 +87,13 @@ struct Lease {
     tab_id: String,
     /// プール内での接続の位置。
     slot: usize,
+    /// 割り当ての通し番号（ADR 0003 への 2026-09-27 の追記）。
+    ///
+    /// 新しいカーソルを開くたびに採り直す。実行と続きの取り出しは、待った後に
+    /// 割り当てを外すことがある。タブの ID だけで外すと、待っている間に同じタブが
+    /// 受けた新しい割り当て（実行し直しのカーソル）まで外し、割り当ての無い
+    /// カーソルが残る。積むときに控えた番号と一致するものだけを外す。
+    serial: u64,
 }
 
 /// 割り当ての表。
@@ -105,6 +112,30 @@ struct LeaseTable {
     /// タブの ID は使い回されず（UUID）、接続を張り直せばプールごと作り直すため、
     /// 1 つのプールの中で「手放したタブがまた使われる」ことは無い。
     released: HashSet<String>,
+    /// 次に採る割り当ての通し番号。
+    next_serial: u64,
+}
+
+impl LeaseTable {
+    /// 割り当ての通し番号を採る。
+    ///
+    /// プールごとに単調に増やせば足りる。プールより長く生きる割り当ては無い。
+    fn next_serial(&mut self) -> u64 {
+        self.next_serial += 1;
+        self.next_serial
+    }
+
+    /// 控えた通し番号の割り当てだけを外す。
+    ///
+    /// 待っている間に同じタブが新しい割り当てを受けていれば、番号が違うため
+    /// 外さない（`Lease::serial` を参照）。
+    ///
+    /// # 引数
+    ///
+    /// * `serial` - 積むときに控えた通し番号
+    fn remove_serial(&mut self, serial: u64) {
+        self.leases.retain(|lease| lease.serial != serial);
+    }
 }
 
 /// 実行の結果と、その巻き添えで結果セットを閉じられたタブ。
@@ -331,15 +362,20 @@ impl ConnectionPool {
     ///
     /// * `table` - 握っている割り当ての表
     /// * `tab_id` - 対象のタブ
-    fn touch(&self, table: &mut LeaseTable, tab_id: &str) -> Option<Arc<ConnectionHandle>> {
+    ///
+    /// # 戻り値
+    ///
+    /// 割り当てられている接続と、その割り当ての通し番号。
+    fn touch(&self, table: &mut LeaseTable, tab_id: &str) -> Option<(Arc<ConnectionHandle>, u64)> {
         let index = table
             .leases
             .iter()
             .position(|lease| lease.tab_id == tab_id)?;
         let lease = table.leases.remove(index);
         let handle = Arc::clone(&self.handles[lease.slot]);
+        let serial = lease.serial;
         table.leases.push(lease);
-        Some(handle)
+        Some((handle, serial))
     }
 
     /// タブに接続を割り当てる。
@@ -354,19 +390,26 @@ impl ConnectionPool {
     ///
     /// # 戻り値
     ///
-    /// 割り当てた接続と、剥がされたタブ。
+    /// 割り当てた接続・その割り当ての通し番号・剥がされたタブ。通し番号は
+    /// 既に持っている接続を使い続ける場合も採り直す。実行は新しいカーソルを
+    /// 開くため、前のカーソルの続きを待っている側に外させてはならない。
     fn acquire(
         &self,
         table: &mut LeaseTable,
         tab_id: &str,
-    ) -> DbResult<(Arc<ConnectionHandle>, Option<String>)> {
+    ) -> DbResult<(Arc<ConnectionHandle>, u64, Option<String>)> {
         if table.released.contains(tab_id) {
             return Err(DbError::new(DbErrorKind::Closed, RELEASED_TAB_MESSAGE));
         }
 
+        let serial = table.next_serial();
+
         // 既にこのタブが持っている接続は、そのまま使い続ける。
-        if let Some(handle) = self.touch(table, tab_id) {
-            return Ok((handle, None));
+        if let Some((handle, _)) = self.touch(table, tab_id) {
+            if let Some(lease) = table.leases.last_mut() {
+                lease.serial = serial;
+            }
+            return Ok((handle, serial, None));
         }
 
         // 空いている接続があればそれを使う。
@@ -375,8 +418,9 @@ impl ConnectionPool {
             table.leases.push(Lease {
                 tab_id: tab_id.to_string(),
                 slot,
+                serial,
             });
-            return Ok((Arc::clone(&self.handles[slot]), None));
+            return Ok((Arc::clone(&self.handles[slot]), serial, None));
         }
 
         // 空きが無ければ、最も長く使われていない割り当てを剥がす。
@@ -385,9 +429,10 @@ impl ConnectionPool {
         table.leases.push(Lease {
             tab_id: tab_id.to_string(),
             slot: 剥がす.slot,
+            serial,
         });
 
-        Ok((handle, Some(剥がす.tab_id)))
+        Ok((handle, serial, Some(剥がす.tab_id)))
     }
 
     /// タブの割り当てを外す。
@@ -436,14 +481,15 @@ impl ConnectionPool {
             return Err(DbError::connection_lost(CONNECTION_LOST_MESSAGE));
         }
 
-        let (pending, discarded_tab) = {
+        let (pending, serial, discarded_tab) = {
             let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
-            let (handle, discarded_tab) = self.acquire(&mut table, tab_id)?;
+            let (handle, serial, discarded_tab) = self.acquire(&mut table, tab_id)?;
             // 剥がしたタブのカーソルは、同じ接続を使い回す前に閉じておく必要がある。
             // 実行そのものが前のカーソルを閉じるため、ここでは表からの削除だけでよい。
             // 積むのは表を握ったまま行う（`leases` の説明を参照）。
             (
                 handle.send_execute(sql, binds, self.chunk_size)?,
+                serial,
                 discarded_tab,
             )
         };
@@ -458,7 +504,7 @@ impl ConnectionPool {
 
         if !保持し続ける {
             let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
-            table.leases.retain(|lease| lease.tab_id != tab_id);
+            table.remove_serial(serial);
         }
 
         Ok(ExecuteResponse {
@@ -481,9 +527,9 @@ impl ConnectionPool {
             return Err(DbError::connection_lost(CONNECTION_LOST_MESSAGE));
         }
 
-        let pending = {
+        let (pending, serial) = {
             let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
-            let handle = self.touch(&mut table, tab_id).ok_or_else(|| {
+            let (handle, serial) = self.touch(&mut table, tab_id).ok_or_else(|| {
                 DbError::new(
                     DbErrorKind::Closed,
                     "結果は破棄されました。再実行してください",
@@ -491,7 +537,7 @@ impl ConnectionPool {
             })?;
             // 表を握ったまま積む。離してから積むと、この割り当てを剥がした別のタブの
             // 実行が先に積まれ、そのタブの行を読んでしまう。
-            handle.send_fetch_more(self.chunk_size)?
+            (handle.send_fetch_more(self.chunk_size)?, serial)
         };
         self.表を離した();
 
@@ -500,7 +546,7 @@ impl ConnectionPool {
         // 尽きたら接続を明け渡す。
         if chunk.exhausted {
             let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
-            table.leases.retain(|lease| lease.tab_id != tab_id);
+            table.remove_serial(serial);
         }
 
         Ok(chunk)
@@ -1314,15 +1360,26 @@ mod tests {
     /// 札を付けるドライバが、カーソルの無いところから取り出そうとしたときの文言。
     const カーソルが無い: &str = "カーソルが開いていない";
 
+    /// 札に含めると、その実行は最初のかたまりで尽きる。
+    ///
+    /// 実行を待った後に割り当てを外す経路（`!保持し続ける`）を通すためにある。
+    const 実行で尽きる: &str = "（実行で尽きる）";
+
+    /// 札に含めると、そのカーソルの続きの取り出しは尽きる。
+    ///
+    /// 続きの取り出しを待った後に割り当てを外す経路を通すためにある。
+    const 続きで尽きる: &str = "（続きで尽きる）";
+
     /// 札を載せた 1 行ぶんのかたまりを作る。
     ///
     /// # 引数
     ///
     /// * `札` - カーソルを開いた SQL
-    fn 札の付いたかたまり(札: &str) -> Chunk {
+    /// * `exhausted` - カーソルが尽きたか
+    fn 札の付いたかたまり(札: &str, exhausted: bool) -> Chunk {
         Chunk {
             rows: vec![vec![crate::db::value::Cell::new(CellKind::Text, 札)]],
-            exhausted: false,
+            exhausted,
         }
     }
 
@@ -1344,7 +1401,7 @@ mod tests {
                     type_name: String::from("VARCHAR2"),
                     kind: CellKind::Text,
                 }],
-                chunk: 札の付いたかたまり(sql),
+                chunk: 札の付いたかたまり(sql, sql.contains(実行で尽きる)),
                 elapsed_ms: 0,
                 notices: Vec::new(),
                 in_transaction: false,
@@ -1353,7 +1410,7 @@ mod tests {
 
         fn fetch_more(&mut self, _chunk_size: usize) -> DbResult<Chunk> {
             match self.開いている.lock().unwrap().as_deref() {
-                Some(札) => Ok(札の付いたかたまり(札)),
+                Some(札) => Ok(札の付いたかたまり(札, 札.contains(続きで尽きる))),
                 None => Err(DbError::new(DbErrorKind::Closed, カーソルが無い)),
             }
         }
@@ -1542,6 +1599,48 @@ mod tests {
         // Assert: A が受け取るのは A の行であり、B の行を 1 かたまり奪ってもいない
         assert_eq!(続き.rows[0][0].text, "A");
         assert_eq!(pool.fetch_more("B").unwrap().rows[0][0].text, "B");
+    }
+
+    #[test]
+    fn 尽きた実行を待つ間に同じタブが受けた新しい割り当ては外されない() {
+        // Arrange: 尽きた実行は待った後に割り当てを外す。その間に同じタブの
+        // 次の実行が割り当てを受け、新しいカーソルを開く
+        let (pool, 開いている) = 一本のプールを組む();
+        let 実行する側 = Arc::clone(&pool);
+        表を離した直後に割り込ませる(&pool, move || {
+            実行する側.execute("A", "A2", &[]).unwrap();
+        });
+
+        // Act
+        let 実行 = format!("A1{実行で尽きる}");
+        pool.execute("A", &実行, &[]).unwrap();
+
+        // Assert: 次の実行のカーソルには割り当てが残り、続きを取れる
+        assert!(pool.leased("A").is_some());
+        assert_eq!(開いている.lock().unwrap().as_deref(), Some("A2"));
+        assert_eq!(pool.fetch_more("A").unwrap().rows[0][0].text, "A2");
+    }
+
+    #[test]
+    fn 尽きた続きの取り出しを待つ間に同じタブが受けた新しい割り当ては外されない() {
+        // Arrange: 続きが尽きると待った後に割り当てを外す。その間に同じタブの
+        // 実行し直しが割り当てを受け、新しいカーソルを開く
+        let (pool, 開いている) = 一本のプールを組む();
+        let 最初 = format!("A1{続きで尽きる}");
+        pool.execute("A", &最初, &[]).unwrap();
+        let 実行する側 = Arc::clone(&pool);
+        表を離した直後に割り込ませる(&pool, move || {
+            実行する側.execute("A", "A2", &[]).unwrap();
+        });
+
+        // Act
+        let 続き = pool.fetch_more("A").unwrap();
+
+        // Assert
+        assert!(続き.exhausted);
+        assert!(pool.leased("A").is_some());
+        assert_eq!(開いている.lock().unwrap().as_deref(), Some("A2"));
+        assert_eq!(pool.fetch_more("A").unwrap().rows[0][0].text, "A2");
     }
 
     #[test]
