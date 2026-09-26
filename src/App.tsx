@@ -19,7 +19,7 @@
  * 選択中のタブに依存させず、押された時点のタブをストアから読む。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { getDbApi } from './api/db'
 import { InstantClientNotice } from './components/connection/InstantClientNotice'
 import { ConnectionForm } from './components/connection/ConnectionForm'
@@ -53,10 +53,9 @@ import { SourceSearchPanel } from './components/source/SourceSearchPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { onConnectionLost } from './connection/lost'
-import type { Ask, AskAnswers } from './mediator/ask'
 import type { CommandScreen } from './mediator/commands'
 import { commandById, dispatchCommandKey, runCommand } from './mediator/commands'
-import { DISMISSED } from './mediator/ask'
+import { createAskChannel } from './mediator/ask'
 import {
   disconnectAndReset,
   openNewConnectionWindow,
@@ -110,25 +109,11 @@ const INITIAL_POSITION: EditorPosition = {
  */
 type ConnectionView = { mode: 'picker' } | { mode: 'form'; connection: SavedConnection | null }
 
-/** 答えを待っている尋ね事。答えたら `resolve` で仲介者へ返す。 */
-interface Pending<T> {
-  resolve: (answer: T) => void
-}
-
 export function App() {
   const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
   const [connectionView, setConnectionView] = useState<ConnectionView>({ mode: 'picker' })
   const [csvOpen, setCsvOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [bindPrompt, setBindPrompt] = useState<
-    ({ names: string[] } & Pending<AskAnswers['binds']>) | null
-  >(null)
-  const [disconnectBlocked, setDisconnectBlocked] = useState<Pending<
-    AskAnswers['disconnectBlocked']
-  > | null>(null)
-  const [saveQueryPrompt, setSaveQueryPrompt] = useState<
-    ({ name: string; sql: string } & Pending<AskAnswers['saveQuery']>) | null
-  >(null)
   // 実行に要る位置は描画に関わらないため、状態ではなく ref で持つ。
   const positionRef = useRef<EditorPosition>(INITIAL_POSITION)
   // スキーマツリーからエディタへ差し込むための口（ADR 0020）。
@@ -208,40 +193,11 @@ export function App() {
     [setCursor],
   )
 
-  /**
-   * 仲介者からの尋ね事を画面に描く（ADR 0035）。
-   *
-   * 同じ種類の尋ね事が重なったら、前のものは「何もしない」答えで解いてから
-   * 差し替える。答えの来ない `Promise` を残すと、その裁定は永遠に止まる。
-   */
-  const [ask] = useState<Ask>(
-    () =>
-      ((request: Parameters<Ask>[0]) =>
-        new Promise((resolve) => {
-          if (request.kind === 'binds') {
-            setBindPrompt((previous) => {
-              previous?.resolve(DISMISSED.binds)
-              return { names: request.names, resolve: resolve as Pending<boolean>['resolve'] }
-            })
-            return
-          }
-          if (request.kind === 'disconnectBlocked') {
-            setDisconnectBlocked((previous) => {
-              previous?.resolve(DISMISSED.disconnectBlocked)
-              return { resolve: resolve as Pending<AskAnswers['disconnectBlocked']>['resolve'] }
-            })
-            return
-          }
-          setSaveQueryPrompt((previous) => {
-            previous?.resolve(DISMISSED.saveQuery)
-            return {
-              name: request.defaultName,
-              sql: request.sql,
-              resolve: resolve as Pending<string | null>['resolve'],
-            }
-          })
-        })) as Ask,
-  )
+  // 仲介者からの尋ね事（ADR 0035）。仲介者は答えを `await` し、ここは描いて
+  // 押された答えを返すだけである。受け渡し口は画面ごとに 1 つ持つ。
+  const [asks] = useState(createAskChannel)
+  const pendingAsks = useSyncExternalStore(asks.subscribe, asks.getSnapshot)
+  const ask = asks.ask
 
   /** 押された時点のカーソルと尋ね方。実行の裁定へ渡す。 */
   const runScreen = useCallback((): RunScreen => ({ cursor: positionRef.current, ask }), [ask])
@@ -380,44 +336,26 @@ export function App() {
       {sourceSearchOpen ? (
         <SourceSearchPanel connectionId={connection.id} onClose={closeSourceSearch} />
       ) : null}
-      {bindPrompt ? (
+      {pendingAsks.binds ? (
         <BindPrompt
-          names={bindPrompt.names}
-          onSubmit={() => {
-            setBindPrompt(null)
-            bindPrompt.resolve(true)
-          }}
-          onClose={() => {
-            setBindPrompt(null)
-            bindPrompt.resolve(false)
-          }}
+          names={pendingAsks.binds.request.names}
+          onSubmit={() => pendingAsks.binds?.answer(true)}
+          onClose={() => pendingAsks.binds?.answer(false)}
         />
       ) : null}
       {csvOpen ? <CsvExportDialog onClose={() => setCsvOpen(false)} /> : null}
-      {disconnectBlocked ? (
+      {pendingAsks.disconnectBlocked ? (
         <DisconnectBlockedDialog
-          onCancelExecution={() => {
-            setDisconnectBlocked(null)
-            disconnectBlocked.resolve('cancelExecution')
-          }}
-          onClose={() => {
-            setDisconnectBlocked(null)
-            disconnectBlocked.resolve('dismiss')
-          }}
+          onCancelExecution={() => pendingAsks.disconnectBlocked?.answer('cancelExecution')}
+          onClose={() => pendingAsks.disconnectBlocked?.answer('dismiss')}
         />
       ) : null}
-      {saveQueryPrompt ? (
+      {pendingAsks.saveQuery ? (
         <SaveQueryDialog
-          defaultName={saveQueryPrompt.name}
-          sql={saveQueryPrompt.sql}
-          onSubmit={(name) => {
-            setSaveQueryPrompt(null)
-            saveQueryPrompt.resolve(name)
-          }}
-          onClose={() => {
-            setSaveQueryPrompt(null)
-            saveQueryPrompt.resolve(null)
-          }}
+          defaultName={pendingAsks.saveQuery.request.defaultName}
+          sql={pendingAsks.saveQuery.request.sql}
+          onSubmit={(name) => pendingAsks.saveQuery?.answer(name)}
+          onClose={() => pendingAsks.saveQuery?.answer(null)}
         />
       ) : null}
       {paletteOpen ? (

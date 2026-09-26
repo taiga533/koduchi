@@ -537,6 +537,32 @@ describe('App', () => {
     await waitFor(() => expect(calls.commit).toEqual(['c1']))
   })
 
+  it('⇧⌘S で名前を尋ね、決めた名前で保存済みへ積む', async () => {
+    // Arrange: 尋ね事は仲介者が await し、画面が描いて答えを返す（ADR 0035）
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    SQLタブを一枚にする({ name: '売上.sql', content: 'select 1 from dual' })
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+
+    // Act
+    fireEvent.keyDown(window, { key: 'S', metaKey: true, shiftKey: true })
+    const 名前 = await screen.findByLabelText('名前')
+    await user.clear(名前)
+    await user.type(名前, '売上集計')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    // Assert
+    await waitFor(() =>
+      expect(calls.createSavedQuery).toMatchObject([
+        { name: '売上集計', sql: 'select 1 from dual', connectionName: 'dev' },
+      ]),
+    )
+    expect(screen.queryByLabelText('名前')).not.toBeInTheDocument()
+  })
+
   it('⌘W で選んでいるタブを閉じる', async () => {
     // Arrange
     const { api } = createFakeDbApi()

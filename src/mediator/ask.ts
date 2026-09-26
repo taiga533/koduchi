@@ -46,3 +46,77 @@ export const DISMISSED: AskAnswers = {
 export type Ask = <K extends AskKind>(
   request: Extract<AskRequest, { kind: K }>,
 ) => Promise<AskAnswers[K]>
+
+/** 答えを待っている 1 つの尋ね事。 */
+export interface PendingAsk<K extends AskKind> {
+  request: Extract<AskRequest, { kind: K }>
+  /** 答える。答えたら尋ね事は片付く。 */
+  answer: (answer: AskAnswers[K]) => void
+}
+
+/**
+ * 答えを待っている尋ね事の一覧。種類ごとに高々 1 つである。
+ *
+ * 種類ごとに分けるのは、以前 `App.tsx` が種類ごとに表示フラグを持っていた
+ * 振る舞いを保つためである（違う種類の尋ね事は同時に出ていてよい）。
+ */
+export type PendingAsks = { [K in AskKind]?: PendingAsk<K> }
+
+/**
+ * 尋ね事の受け渡し口。仲介者が `ask` で出し、画面が `getSnapshot` で読んで描く。
+ *
+ * `subscribe` と `getSnapshot` は React の `useSyncExternalStore` に渡せる形にしてある。
+ * ここ自体は React に依存しない。
+ */
+export interface AskChannel {
+  ask: Ask
+  subscribe: (listener: () => void) => () => void
+  getSnapshot: () => PendingAsks
+}
+
+/**
+ * 尋ね事の受け渡し口を作る。
+ *
+ * 同じ種類の尋ね事を重ねて出したら、前のものは `DISMISSED` の答えで解いてから
+ * 差し替える。答えの来ない `Promise` を残すと、その裁定はいつまでも止まったままになる。
+ */
+export function createAskChannel(): AskChannel {
+  let pending: PendingAsks = {}
+  const listeners = new Set<() => void>()
+
+  /** 一覧を差し替えて知らせる。`useSyncExternalStore` は参照が変わったかで見る。 */
+  const update = (next: PendingAsks): void => {
+    pending = next
+    for (const listener of listeners) {
+      listener()
+    }
+  }
+
+  const ask = (<K extends AskKind>(request: Extract<AskRequest, { kind: K }>) =>
+    new Promise<AskAnswers[K]>((resolve) => {
+      const kind = request.kind as K
+      const previous = pending[kind] as PendingAsk<K> | undefined
+
+      const entry: PendingAsk<K> = {
+        request,
+        answer: (answer) => {
+          // 差し替えられた後に古い尋ね事へ答えても、新しいものは片付けない。
+          if (pending[kind] === entry) {
+            update({ ...pending, [kind]: undefined })
+          }
+          resolve(answer)
+        },
+      }
+      update({ ...pending, [kind]: entry })
+      previous?.answer(DISMISSED[kind])
+    })) as Ask
+
+  return {
+    ask,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    getSnapshot: () => pending,
+  }
+}
