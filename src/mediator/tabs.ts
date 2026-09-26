@@ -22,7 +22,8 @@ import type { DefinitionTarget } from '../types/db'
  * 書き出されないため、ここで捨てた内容は再起動しても戻らない。
  *
  * 開いたままのカーソルはデータベース側の資源を握り続けるため、閉じる前に
- * 明示的に手放す（ADR 0003）。結果テーブルで手を入れた列幅も、二度と使われない
+ * 明示的に手放す（ADR 0003）。実行中のタブなら、手放す前に中止の命令を送る
+ * （ADR README「エディタとタブ」）。結果テーブルで手を入れた列幅も、二度と使われない
  * ため一緒に忘れる。
  *
  * **タブを閉じる経路はここ 1 つである。**タブの `✕` も `⌘W` もここを通る。
@@ -40,7 +41,12 @@ export async function closeTabAndRelease(tabId: string): Promise<void> {
 
   const connection = useConnectionStore.getState().connection
   if (connection) {
-    void useExecutionStore.getState().releaseTab(connection.id, tabId)
+    const execution = useExecutionStore.getState()
+    // 実行中なら先に中止の命令を送る。手放すだけでは走っている文がデータベース
+    // の上で最後まで走り続け、閉じたタブの文が接続を握ったままになる。走って
+    // いないタブへは送らない（`cancel` の関所が弾く）。
+    void execution.cancel(connection.id, tabId)
+    void execution.releaseTab(connection.id, tabId)
   }
   useUiStore.getState().clearResultColumnWidths(tabId)
   // 定義タブなら、そのタブが抱えていた定義と DDL も捨てる（ADR 0022）。

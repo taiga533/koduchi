@@ -4,7 +4,7 @@ import { resetCloseTabDialog, setCloseTabDialog } from '../components/editor/clo
 import { createFakeDbApi } from '../test/fakeDbApi'
 import { SQLタブを一枚にする, 接続済みにする, 未接続にする } from '../test/activeConnection'
 import { useDefinitionStore } from '../stores/definition'
-import { useExecutionStore } from '../stores/execution'
+import { emptyExecution, useExecutionStore } from '../stores/execution'
 import { selectActiveSqlTab, selectActiveTab, useTabStore } from '../stores/tab'
 import { useUiStore } from '../stores/ui'
 import {
@@ -79,6 +79,47 @@ describe('closeTabAndRelease', () => {
     expect(タブの並び()).not.toContain('sql-1')
     expect(calls.releaseTab).toEqual([{ id: 'c1', tabId: 'sql-1' }])
     expect(useUiStore.getState().resultColumnWidths['sql-1']).toBeUndefined()
+  })
+
+  it('実行中のタブを閉じると、手放す前に中止の命令を送る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    SQLタブを一枚にする()
+    useExecutionStore.setState({ byTab: { 'sql-1': { ...emptyExecution, status: 'running' } } })
+    const 順序: string[] = []
+    setDbApi({
+      ...api,
+      cancel: async (id, tabId) => {
+        順序.push('cancel')
+        await api.cancel(id, tabId)
+      },
+      releaseTab: async (id, tabId) => {
+        順序.push('releaseTab')
+        await api.releaseTab(id, tabId)
+      },
+    })
+
+    // Act
+    await closeTabAndRelease('sql-1')
+
+    // Assert
+    expect(calls.cancel).toEqual([{ id: 'c1', tabId: 'sql-1' }])
+    expect(順序).toEqual(['cancel', 'releaseTab'])
+  })
+
+  it('実行中でないタブを閉じても中止の命令は送らない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    SQLタブを一枚にする()
+    useExecutionStore.setState({ byTab: { 'sql-1': { ...emptyExecution, status: 'succeeded' } } })
+
+    // Act
+    await closeTabAndRelease('sql-1')
+
+    // Assert
+    expect(calls.cancel).toEqual([])
+    expect(calls.releaseTab).toEqual([{ id: 'c1', tabId: 'sql-1' }])
   })
 
   it('定義タブを閉じるとその定義も手放す', async () => {
