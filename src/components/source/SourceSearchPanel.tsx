@@ -17,7 +17,10 @@
  * 絞る速い道具、ここはデータベースへ投げて待つ道具である。
  */
 
+import { useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { FileCode2, Search, X } from 'lucide-react'
+import { getClipboardApi } from '../../api/clipboard'
 import { useSchemaStore } from '../../stores/schema'
 import {
   canSearch,
@@ -29,6 +32,8 @@ import type { SourceKind, SourceLine, SourceObjectMatches } from '../../types/db
 import { SOURCE_KIND_LABELS, SOURCE_KIND_ORDER } from '../../types/db'
 import { blockComposingSubmit } from '../../input/ime'
 import { useEscapeKey } from '../../input/useEscapeKey'
+import { SourceMatchContextMenu } from './SourceMatchContextMenu'
+import type { SourceMatchMenuState } from './SourceMatchContextMenu'
 
 interface SourceSearchPanelProps {
   /** 接続の識別子。 */
@@ -264,7 +269,11 @@ function PanelBody({
   )
 }
 
-/** 当たったオブジェクト 1 つと、その中で当たった行。 */
+/**
+ * 当たったオブジェクト 1 つと、その中で当たった行。
+ *
+ * 見出しと行の右クリックでメニューを出す（ADR 0038。`SourceMatchContextMenu.tsx`）。
+ */
 function MatchedObject({
   object,
   selected,
@@ -274,9 +283,25 @@ function MatchedObject({
   selected: SelectedMatch | null
   onSelect: (line: number) => void
 }) {
+  const [menu, setMenu] = useState<SourceMatchMenuState | null>(null)
+  const objectName = `${object.owner}.${object.name}`
+
+  /**
+   * 右クリックでメニューを開く。
+   *
+   * @param lineText 当たった行の本文。見出しなら `null`
+   */
+  const openMenu = (lineText: string | null) => (event: ReactMouseEvent) => {
+    event.preventDefault()
+    setMenu({ x: event.clientX, y: event.clientY, objectName, lineText })
+  }
+
   return (
     <div className="flex flex-col gap-2px">
-      <p className="m-0 flex items-center gap-6px text-11.5px text-fg2">
+      <p
+        className="m-0 flex items-center gap-6px text-11.5px text-fg2"
+        onContextMenu={openMenu(null)}
+      >
         <FileCode2 size={13} className="text-fg5 shrink-0" />
         <span className="font-500">
           {object.owner}.{object.name}
@@ -298,6 +323,7 @@ function MatchedObject({
               <button
                 type="button"
                 onClick={() => onSelect(line.line)}
+                onContextMenu={openMenu(line.text)}
                 aria-label={`${object.name} の ${line.line} 行目`}
                 className={`w-full flex items-baseline gap-8px px-7px py-2px rounded-5px border-none cursor-pointer font-inherit text-left ${
                   選ばれている ? 'bg-fill' : 'bg-transparent'
@@ -312,6 +338,13 @@ function MatchedObject({
           )
         })}
       </ul>
+      {menu ? (
+        <SourceMatchContextMenu
+          state={menu}
+          onCopy={(text) => void getClipboardApi().writeText(text)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   )
 }

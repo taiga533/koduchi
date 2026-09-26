@@ -16,7 +16,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import userEvent from '@testing-library/user-event'
 import { TabBar } from './TabBar'
 import type { EditorTab, SqlTab } from '../../stores/tab'
@@ -199,6 +200,16 @@ function 三枚開く(): void {
   useTabStore.getState().openNewTab()
 }
 
+/** 右クリックのメニューから届く要求（ADR 0038）。受け取るだけで何もしない。 */
+function 右クリックの操作() {
+  return {
+    onCloseOtherTabs: vi.fn(),
+    onCloseTabsToRight: vi.fn(),
+    onSaveTab: vi.fn(),
+    onSaveTabAs: vi.fn(),
+  }
+}
+
 describe('TabBar', () => {
   it('未保存のタブにも閉じるボタンが出る', () => {
     // Arrange: 起動直後のタブに何か打つと未保存になる
@@ -207,7 +218,7 @@ describe('TabBar', () => {
     expect(sqlTabAt(0).dirty).toBe(true)
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.getByRole('button', { name: '無題-1.sql を閉じる' })).toBeInTheDocument()
@@ -218,7 +229,7 @@ describe('TabBar', () => {
     const tab = useTabStore.getState().tabs[0]
     useTabStore.getState().updateContent(tab.id, 'select 1 from dual')
     const onCloseTab = vi.fn()
-    render(<TabBar onCloseTab={onCloseTab} />)
+    render(<TabBar onCloseTab={onCloseTab} {...右クリックの操作()} />)
 
     // Act
     fireEvent.click(screen.getByRole('button', { name: '無題-1.sql を閉じる' }))
@@ -233,7 +244,7 @@ describe('TabBar', () => {
     useTabStore.getState().updateContent(tab.id, 'select 1 from dual')
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.getByRole('img', { name: '未保存' })).toBeInTheDocument()
@@ -245,7 +256,7 @@ describe('TabBar', () => {
     // beforeEach で開いた 1 枚は未保存ではない
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.queryByRole('img', { name: '未保存' })).not.toBeInTheDocument()
@@ -258,7 +269,7 @@ describe('TabBar', () => {
     タブを据える([出荷の定義タブ], 'd1')
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.getByRole('button', { name: 'SHIPMENTS を閉じる' })).toBeInTheDocument()
@@ -267,7 +278,7 @@ describe('TabBar', () => {
   it('タブの名前を押すとそのタブが選ばれる', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 一枚目 = useTabStore.getState().tabs[0]
 
     // Act
@@ -280,7 +291,7 @@ describe('TabBar', () => {
   it('掴んだタブは押し下げた時点で選ばれる', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 一枚目 = useTabStore.getState().tabs[0]
 
     // Act
@@ -293,7 +304,7 @@ describe('TabBar', () => {
   it('タブを右へドラッグすると並びが入れ替わる', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act: 1 枚目を 2 枚目の中心（154）より右へ動かす
     ドラッグする(タブの器('無題-1.sql'), 50, 160)
@@ -305,7 +316,7 @@ describe('TabBar', () => {
   it('タブを左端へドラッグすると先頭へ来る', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     ドラッグする(タブの器('無題-3.sql'), 258, -100)
@@ -317,7 +328,7 @@ describe('TabBar', () => {
   it('しきい値より小さい動きでは並べ替えない', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     ドラッグする(タブの器('無題-1.sql'), 50, 52)
@@ -329,7 +340,7 @@ describe('TabBar', () => {
   it('離した後の動きは並びを変えない', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
     ドラッグする(器, 50, 160)
 
@@ -343,7 +354,7 @@ describe('TabBar', () => {
   it('閉じるボタンの上から始めた動きでは並べ替えない', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
     const 閉じる = screen.getByRole('button', { name: '無題-1.sql を閉じる' })
 
@@ -359,7 +370,7 @@ describe('TabBar', () => {
   it('左ボタン以外ではドラッグを始めない', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
 
     // Act
@@ -374,7 +385,7 @@ describe('TabBar', () => {
   it('ドラッグ中は本文の選択が止まり、離すと戻る', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
 
     // Act
@@ -392,7 +403,7 @@ describe('TabBar', () => {
   it('⌥→ でタブが 1 つ後ろへ動く', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('無題-1.sql'), { key: 'ArrowRight', altKey: true })
@@ -404,7 +415,7 @@ describe('TabBar', () => {
   it('⌥← でタブが 1 つ前へ動く', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('無題-3.sql'), { key: 'ArrowLeft', altKey: true })
@@ -416,7 +427,7 @@ describe('TabBar', () => {
   it('端のタブは ⌥ の矢印でも外へ出ない', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('無題-1.sql'), { key: 'ArrowLeft', altKey: true })
@@ -428,7 +439,7 @@ describe('TabBar', () => {
   it('⌥ を伴わない矢印キーでは並べ替えない', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('無題-1.sql'), { key: 'ArrowRight' })
@@ -439,7 +450,7 @@ describe('TabBar', () => {
 
   it('新しいタブのボタンでタブが増える', () => {
     // Arrange
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.click(screen.getByRole('button', { name: '新しいタブ' }))
@@ -458,7 +469,7 @@ describe('TabBar の定義タブ', () => {
     タブを据える([SQLタブ('t1'), 出荷の定義タブ, SQLタブ('t2')], 't1')
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.getByRole('button', { name: 't1.sql' })).toBeInTheDocument()
@@ -471,7 +482,7 @@ describe('TabBar の定義タブ', () => {
     タブを据える([出荷の定義タブ], 'd1')
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.queryByRole('img', { name: '未保存' })).not.toBeInTheDocument()
@@ -483,7 +494,7 @@ describe('TabBar の定義タブ', () => {
     タブを据える([SQLタブ('t1', { dirty: true }), 出荷の定義タブ], 't1')
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.getByRole('img', { name: '未保存' })).toBeInTheDocument()
@@ -494,7 +505,7 @@ describe('TabBar の定義タブ', () => {
   it('定義タブを押すとそのタブが選ばれる', async () => {
     // Arrange
     タブを据える([SQLタブ('t1'), 出荷の定義タブ], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: 'SHIPMENTS の定義' }))
@@ -507,7 +518,7 @@ describe('TabBar の定義タブ', () => {
     // Arrange: 結果セットの後始末が要るため、ストアを直接触らない（ADR 0003）
     const 閉じる = vi.fn()
     タブを据える([出荷の定義タブ], 'd1')
-    render(<TabBar onCloseTab={閉じる} />)
+    render(<TabBar onCloseTab={閉じる} {...右クリックの操作()} />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: 'SHIPMENTS を閉じる' }))
@@ -519,7 +530,7 @@ describe('TabBar の定義タブ', () => {
   it('定義タブも掴んで並べ替えられる', () => {
     // Arrange: 並びは 1 本であり、並べ替えは種類を問わない（ADR 0022・0023）
     タブを据える([SQLタブ('t1'), 出荷の定義タブ, SQLタブ('t2')], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act: 定義タブ（中心 154）を 3 枚目の中心（258）より右へ動かす
     ドラッグする(タブの器('SHIPMENTS の定義'), 154, 300)
@@ -531,7 +542,7 @@ describe('TabBar の定義タブ', () => {
   it('⌥← で定義タブが 1 つ前へ動く', () => {
     // Arrange
     タブを据える([SQLタブ('t1'), 出荷の定義タブ], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('SHIPMENTS の定義'), { key: 'ArrowLeft', altKey: true })
@@ -550,7 +561,7 @@ describe('TabBar のあふれの収め方', () => {
   it('新しいタブのボタンはスクロールする器の外に居る', () => {
     // Arrange: 器の中に居ると、タブが増えたときに一緒に流れて押せなくなる
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     const 追加 = screen.getByRole('button', { name: '新しいタブ' })
@@ -563,7 +574,7 @@ describe('TabBar のあふれの収め方', () => {
   it('タブはすべてスクロールする器の中に居る', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     const タブ = Array.from(document.querySelectorAll<HTMLElement>('[data-tab-id]'))
@@ -576,7 +587,7 @@ describe('TabBar のあふれの収め方', () => {
   it('省かれても読めるよう、タブは名前をそのまま `title` に持つ', () => {
     // Arrange: 長い名前は `…` で省かれる。全体を確かめる道が要る
     タブを据える([SQLタブ('とても長い名前の付いた集計クエリ')], 'とても長い名前の付いた集計クエリ')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     const 器 = タブの器('とても長い名前の付いた集計クエリ.sql')
@@ -588,7 +599,7 @@ describe('TabBar のあふれの収め方', () => {
   it('定義タブも名前をそのまま `title` に持つ', () => {
     // Arrange
     タブを据える([出荷の定義タブ], 'd1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     const 器 = タブの器('SHIPMENTS の定義')
@@ -607,7 +618,7 @@ describe('TabBar の選択の追従', () => {
   it('右に隠れているタブを選ぶと帯がそこまで送られる', () => {
     // Arrange: 帯は 150px。3 枚目は 208〜308 に居て見えていない
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const [一枚目, , 三枚目] = useTabStore.getState().tabs
     act(() => {
       useTabStore.getState().selectTab(一枚目.id)
@@ -626,7 +637,7 @@ describe('TabBar の選択の追従', () => {
   it('左に隠れているタブを選ぶと帯が戻される', () => {
     // Arrange: 帯を 158 まで送った状態から 1 枚目を選ぶ
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const [一枚目] = useTabStore.getState().tabs
     const 帯 = 帯の寸法を与える(150, 158)
 
@@ -642,7 +653,7 @@ describe('TabBar の選択の追従', () => {
   it('既に見えているタブを選び直しても帯は動かない', () => {
     // Arrange: 帯が 400px あれば 3 枚とも見えている
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const [一枚目, , 三枚目] = useTabStore.getState().tabs
     act(() => {
       useTabStore.getState().selectTab(一枚目.id)
@@ -661,7 +672,7 @@ describe('TabBar の選択の追従', () => {
   it('掴んでいる間は選択の追従で帯が動かず、離すと動かしたタブが見える位置へ来る', () => {
     // Arrange: 帯は 150px、送り量 0。1 枚目を掴んで末尾へ動かす
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
     const 帯 = 帯の寸法を与える(150, 0)
 
@@ -721,7 +732,7 @@ describe('TabBar の端でのスクロール', () => {
   it('掴んだタブを帯の右端まで持っていくと帯が送られる', () => {
     // Arrange: 帯は 0〜150。右端の内側 24px は 126 から
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
     const 帯 = 帯の寸法を与える(150, 0)
 
@@ -737,7 +748,7 @@ describe('TabBar の端でのスクロール', () => {
   it('掴んだタブを帯の左端まで持っていくと帯が戻される', () => {
     // Arrange: 帯を 100 まで送った状態から左端へ持っていく
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-3.sql')
     const 帯 = 帯の寸法を与える(150, 100)
 
@@ -753,7 +764,7 @@ describe('TabBar の端でのスクロール', () => {
   it('端から離れた位置では帯を送らない', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
     const 帯 = 帯の寸法を与える(150, 0)
 
@@ -769,7 +780,7 @@ describe('TabBar の端でのスクロール', () => {
   it('端に居ても指を離せば帯は送られなくなる', () => {
     // Arrange
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
     const 帯 = 帯の寸法を与える(150, 0)
     fireEvent.pointerDown(器, { pointerId: 1, button: 0, clientX: 50 })
@@ -787,7 +798,7 @@ describe('TabBar の端でのスクロール', () => {
   it('しきい値を越えていない押し下げでは帯を送らない', () => {
     // Arrange: 掴んだと見なす前に端へ居ても、ただの押し下げである
     三枚開く()
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('無題-1.sql')
     const 帯 = 帯の寸法を与える(150, 0)
 
@@ -825,7 +836,7 @@ function 編集中(): boolean {
 describe('TabBar の名前の付け直し', () => {
   it('タブをダブルクリックすると名前の入力欄が出る', () => {
     // Arrange
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.doubleClick(タブの器('無題-1.sql'))
@@ -836,7 +847,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('打ち直して ⏎ を押すとタブ帯の名前が変わる', async () => {
     // Arrange
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('無題-1.sql'))
 
     // Act
@@ -852,7 +863,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('自動の名前は付け直しても残る', async () => {
     // Arrange
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('無題-1.sql'))
 
     // Act
@@ -867,7 +878,7 @@ describe('TabBar の名前の付け直し', () => {
   it('空の名前を確定すると自動の名前へ戻る', async () => {
     // Arrange
     タブを据える([SQLタブ('t1', { customName: '売上集計' })], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('売上集計'))
 
     // Act
@@ -882,7 +893,7 @@ describe('TabBar の名前の付け直し', () => {
   it('空白だけの名前を確定しても自動の名前へ戻る', async () => {
     // Arrange
     タブを据える([SQLタブ('t1', { customName: '売上集計' })], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('売上集計'))
 
     // Act
@@ -896,7 +907,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('esc で打ち込んだものを捨てて元の名前のままにする', async () => {
     // Arrange
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('無題-1.sql'))
 
     // Act
@@ -911,7 +922,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('焦点が外れたら確定する', async () => {
     // Arrange: 打ち込んだ文字を、別の場所を押しただけで捨てない（ADR 0032）
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('無題-1.sql'))
 
     // Act
@@ -926,7 +937,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('変換中の ⏎ では確定しない（ADR 0025）', async () => {
     // Arrange: 変換確定の `⏎` は `keyCode` 229 で届く
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('無題-1.sql'))
 
     // Act
@@ -941,7 +952,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('変換中の esc では取り消さない（ADR 0025）', async () => {
     // Arrange: 変換中の `esc` は変換の取り消しである
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('無題-1.sql'))
 
     // Act
@@ -954,7 +965,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('変換していない ⏎ は今までどおり確定する（ADR 0025）', async () => {
     // Arrange: 変換中を見る手当てが `⏎` を丸ごと殺していないことを見る
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('無題-1.sql'))
 
     // Act
@@ -970,7 +981,7 @@ describe('TabBar の名前の付け直し', () => {
     // Arrange: macOS では `⌥←` は入力欄の単語単位のカーソル移動である。
     // 入力欄はタブの器の中に描かれるため、打鍵はそのまま器へ上がってくる。
     タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('t2.sql'))
 
     // Act
@@ -984,7 +995,7 @@ describe('TabBar の名前の付け直し', () => {
   it('名前を打っている最中の ⌥→ でもタブが動かない', () => {
     // Arrange
     タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('t1.sql'))
 
     // Act
@@ -998,7 +1009,7 @@ describe('TabBar の名前の付け直し', () => {
   it('編集を終えれば ⌥← の並べ替えはこれまでどおり効く', () => {
     // Arrange: 編集中の関所が並べ替えを殺していないことを見る
     タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     fireEvent.doubleClick(タブの器('t2.sql'))
     fireEvent.keyDown(入力欄(), { key: 'Escape' })
 
@@ -1011,7 +1022,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('F2 で名前の入力欄が出る', () => {
     // Arrange
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('無題-1.sql'), { key: 'F2' })
@@ -1022,7 +1033,7 @@ describe('TabBar の名前の付け直し', () => {
 
   it('⇧F2 では編集に入らない', () => {
     // Arrange: 修飾の付いた `F2` は別の打鍵である（`⌥←` の判定と揃える）
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('無題-1.sql'), { key: 'F2', shiftKey: true })
@@ -1034,7 +1045,7 @@ describe('TabBar の名前の付け直し', () => {
   it('ダブルクリックしても並びは動かない（ADR 0023 の掴みと食い合わない）', () => {
     // Arrange: 掴みは 4px 動かすまで成立しない（`DRAG_THRESHOLD`）
     タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('t1.sql')
     横位置を与える()
 
@@ -1053,7 +1064,7 @@ describe('TabBar の名前の付け直し', () => {
   it('編集中のタブは掴めない', () => {
     // Arrange: 入力欄の中で文字を選ぼうとして並びが動いてはいけない
     タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
     const 器 = タブの器('t1.sql')
     fireEvent.doubleClick(器)
 
@@ -1067,7 +1078,7 @@ describe('TabBar の名前の付け直し', () => {
   it('編集していないタブはこれまでどおり掴んで動かせる', () => {
     // Arrange: 付け直しを足したことで並べ替えが壊れていないことを見る
     タブを据える([SQLタブ('t1'), SQLタブ('t2')], 't1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     ドラッグする(タブの器('t1.sql'), 50, 300)
@@ -1079,7 +1090,7 @@ describe('TabBar の名前の付け直し', () => {
   it('定義タブをダブルクリックしても編集に入らない（ADR 0022）', () => {
     // Arrange: 定義タブの名前はオブジェクトの同一性そのものである
     タブを据える([出荷の定義タブ], 'd1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.doubleClick(タブの器('SHIPMENTS の定義'))
@@ -1091,7 +1102,7 @@ describe('TabBar の名前の付け直し', () => {
   it('定義タブでは F2 でも編集に入らない（ADR 0022）', () => {
     // Arrange
     タブを据える([出荷の定義タブ], 'd1')
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Act
     fireEvent.keyDown(タブの器('SHIPMENTS の定義'), { key: 'F2' })
@@ -1103,7 +1114,7 @@ describe('TabBar の名前の付け直し', () => {
   it('閉じるボタンをダブルクリックしても編集に入らない', () => {
     // Arrange: `data-tab-action` の上から始めた操作は掴みも編集も起こさない
     const 閉じる = vi.fn()
-    render(<TabBar onCloseTab={閉じる} />)
+    render(<TabBar onCloseTab={閉じる} {...右クリックの操作()} />)
 
     // Act
     fireEvent.doubleClick(screen.getByRole('button', { name: '無題-1.sql を閉じる' }))
@@ -1117,7 +1128,7 @@ describe('TabBar の名前の付け直し', () => {
     タブを据える([SQLタブ('t1', { customName: '売上集計' })], 't1')
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(screen.getByRole('button', { name: '売上集計 を閉じる' })).toBeInTheDocument()
@@ -1128,9 +1139,151 @@ describe('TabBar の名前の付け直し', () => {
     タブを据える([SQLタブ('t1', { customName: '売上集計' })], 't1')
 
     // Act
-    render(<TabBar onCloseTab={vi.fn()} />)
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
 
     // Assert
     expect(タブの器('売上集計').title).toBe('売上集計（t1.sql）')
+  })
+})
+
+describe('タブの右クリックメニュー', () => {
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('真ん中のタブを右クリックすると閉じる系・名前の変更・保存が並び、選択は動かない', () => {
+    // Arrange
+    三枚開く()
+    const [, 真ん中] = useTabStore.getState().tabs
+    const 選んでいたタブ = useTabStore.getState().activeTabId
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: 真ん中.name }))
+
+    // Assert
+    const 項目 = within(screen.getByTestId('tab-context-menu'))
+      .getAllByRole('menuitem')
+      .map((item) => item.textContent?.replace(/[⌘⇧⌥⌃].*$|F2$/, ''))
+    expect(項目).toEqual([
+      '閉じる',
+      '他のタブを閉じる',
+      '右側のタブを閉じる',
+      '名前を変更',
+      '保存',
+      '名前を付けて保存',
+    ])
+    expect(useTabStore.getState().activeTabId).toBe(選んでいたタブ)
+  })
+
+  it('右端のタブでは右側を閉じる項目を出さない', () => {
+    // Arrange
+    三枚開く()
+    const 右端 = useTabStore.getState().tabs[2]
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: 右端.name }))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: '右側のタブを閉じる' })).not.toBeInTheDocument()
+  })
+
+  it('項目は右クリックしたタブの ID で要求を届ける', () => {
+    // Arrange
+    三枚開く()
+    const 左端 = useTabStore.getState().tabs[0]
+    const 操作 = 右クリックの操作()
+    const onCloseTab = vi.fn()
+    render(<TabBar onCloseTab={onCloseTab} {...操作} />)
+    const 開く = () => fireEvent.contextMenu(screen.getByRole('button', { name: 左端.name }))
+
+    // Act
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^閉じる/ }))
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: '他のタブを閉じる' }))
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: '右側のタブを閉じる' }))
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^保存/ }))
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^名前を付けて保存/ }))
+
+    // Assert
+    expect(onCloseTab).toHaveBeenCalledWith(左端.id)
+    expect(操作.onCloseOtherTabs).toHaveBeenCalledWith(左端.id)
+    expect(操作.onCloseTabsToRight).toHaveBeenCalledWith(左端.id)
+    expect(操作.onSaveTab).toHaveBeenCalledWith(左端.id)
+    expect(操作.onSaveTabAs).toHaveBeenCalledWith(左端.id)
+    expect(screen.queryByTestId('tab-context-menu')).not.toBeInTheDocument()
+  })
+
+  it('名前を変更を選ぶとそのタブの名前の欄が開く', () => {
+    // Arrange
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
+    fireEvent.contextMenu(screen.getByRole('button', { name: '無題-1.sql' }))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: /^名前を変更/ }))
+
+    // Assert
+    expect(screen.getByRole('textbox', { name: 'タブの名前' })).toHaveValue('無題-1.sql')
+  })
+
+  it('ファイルに結び付いたタブではパスをコピーできる', async () => {
+    // Arrange
+    const 書いた: string[] = []
+    setClipboardApi({ writeText: async (text) => void 書いた.push(text) })
+    useTabStore.getState().openFile('/tmp/users.sql', 'select 1 from dual')
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'users.sql' }))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: 'ファイルのパスをコピー' }))
+
+    // Assert
+    expect(書いた).toEqual(['/tmp/users.sql'])
+  })
+
+  it('ファイルに結び付いていないタブにはパスのコピーを出さない', () => {
+    // Arrange
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: '無題-1.sql' }))
+
+    // Assert
+    expect(
+      screen.queryByRole('menuitem', { name: 'ファイルのパスをコピー' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('定義タブでは名前の変更も保存も出さない', () => {
+    // Arrange
+    useTabStore.setState({ tabs: [出荷の定義タブ], activeTabId: 'd1' })
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'SHIPMENTS の定義' }))
+
+    // Assert
+    const 項目 = within(screen.getByTestId('tab-context-menu'))
+      .getAllByRole('menuitem')
+      .map((item) => item.textContent?.replace(/[⌘⇧⌥⌃].*$/, ''))
+    expect(項目).toEqual(['閉じる'])
+  })
+
+  it('名前を打っている間の右クリックは入力欄に任せる', () => {
+    // Arrange
+    render(<TabBar onCloseTab={vi.fn()} {...右クリックの操作()} />)
+    fireEvent.doubleClick(screen.getByRole('button', { name: '無題-1.sql' }))
+
+    // Act
+    const 既定動作 = fireEvent.contextMenu(screen.getByRole('textbox', { name: 'タブの名前' }))
+
+    // Assert
+    expect(既定動作).toBe(true)
+    expect(screen.queryByTestId('tab-context-menu')).not.toBeInTheDocument()
   })
 })

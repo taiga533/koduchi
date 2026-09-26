@@ -835,6 +835,29 @@ describe('ツリーの右クリックメニュー', () => {
     // Assert
     expect(screen.queryByTestId('schema-tree-context-menu')).not.toBeInTheDocument()
   })
+
+  it('メニューを押しても閉じても焦点はツリーの行に残る', () => {
+    // Arrange: 結果テーブルのメニューに揃えた（ADR 0038）。奪うと閉じた後に
+    // 矢印キーがツリーへ届かない
+    接続を置く('lower')
+    renderTree()
+    const 行 = screen.getByRole('button', { name: /KODUCHI/ })
+    行.focus()
+    fireEvent.contextMenu(行)
+
+    // Act
+    const 項目の既定動作 = fireEvent.mouseDown(
+      screen.getByRole('menuitem', { name: '名前をコピー' }),
+    )
+    const 暗幕の既定動作 = fireEvent.mouseDown(
+      screen.getByTestId('schema-tree-context-menu-backdrop'),
+    )
+
+    // Assert: `fireEvent` は既定動作を止められたときに偽を返す
+    expect(項目の既定動作).toBe(false)
+    expect(暗幕の既定動作).toBe(false)
+    expect(document.activeElement).toBe(行)
+  })
 })
 
 describe('ツリーのキーボード操作', () => {

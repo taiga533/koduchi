@@ -1,13 +1,14 @@
 /**
  * エディタのタブの裁定（ADR 0020・0022・0023・0035）。
  *
- * タブを閉じる・定義タブを開く・SQL を新しいタブへ入れる、の 3 つを持つ。
+ * タブを閉じる（1 枚・他・右側）・定義タブを開く・SQL を新しいタブへ入れる、を持つ。
  * タブを閉じると結果セット・列幅・定義も手放すため、タブのストアだけでは
  * 完結しない。
  */
 
 import { confirmCloseTab } from '../components/editor/closing'
 import { tabDisplayName } from '../components/editor/tabNaming'
+import { otherTabIds, tabIdsToTheRight } from '../components/editor/tabOrder'
 import { useConnectionStore } from '../stores/connection'
 import { useDefinitionStore } from '../stores/definition'
 import { useExecutionStore } from '../stores/execution'
@@ -26,17 +27,21 @@ import type { DefinitionTarget } from '../types/db'
  * （ADR README「エディタとタブ」・ADR 0003 への 2026-09-27 の追記）。結果テーブルで手を入れた列幅も、二度と使われない
  * ため一緒に忘れる。
  *
- * **タブを閉じる経路はここ 1 つである。**タブの `✕` も `⌘W` もここを通る。
+ * **タブを閉じる経路はここ 1 つである。**タブの `✕` も `⌘W` も右クリックの
+ * メニュー（ADR 0038）もここを通る。
  *
  * @param tabId 閉じるタブ
+ *
+ * @returns タブがもう無いか。確認で取り消されたときだけ偽。何枚かをまとめて
+ *   閉じる裁定が、取り消された時点で止まるために見る
  */
-export async function closeTabAndRelease(tabId: string): Promise<void> {
+export async function closeTabAndRelease(tabId: string): Promise<boolean> {
   const tab = useTabStore.getState().tabs.find((item) => item.id === tabId)
   if (!tab) {
-    return
+    return true
   }
   if (!(await confirmCloseTab(tab, tabDisplayName(tab)))) {
-    return
+    return false
   }
 
   const connection = useConnectionStore.getState().connection
@@ -50,6 +55,43 @@ export async function closeTabAndRelease(tabId: string): Promise<void> {
   // 定義タブなら、そのタブが抱えていた定義と DDL も捨てる（ADR 0022）。
   useDefinitionStore.getState().drop(tabId)
   useTabStore.getState().closeTab(tabId)
+  return true
+}
+
+/**
+ * タブを 1 枚ずつ、同じ関所を通して閉じる（ADR 0038）。
+ *
+ * 書きかけのタブがあれば 1 枚ずつ尋ねる。**取り消されたらそこで止める。**
+ * 「閉じない」と答えた人は、残りも閉じてよいかを考え直している。
+ *
+ * @param tabIds 閉じるタブ。並び順に尋ねる
+ */
+async function closeTabsInOrder(tabIds: readonly string[]): Promise<void> {
+  for (const tabId of tabIds) {
+    if (!(await closeTabAndRelease(tabId))) {
+      return
+    }
+  }
+}
+
+/**
+ * 右クリックの「他のタブを閉じる」（ADR 0038）。
+ *
+ * @param tabId 残すタブ
+ */
+export async function closeOtherTabs(tabId: string): Promise<void> {
+  const ids = useTabStore.getState().tabs.map((tab) => tab.id)
+  await closeTabsInOrder(otherTabIds(ids, tabId))
+}
+
+/**
+ * 右クリックの「右側のタブを閉じる」（ADR 0038）。
+ *
+ * @param tabId 基準のタブ。これ自身は閉じない
+ */
+export async function closeTabsToRight(tabId: string): Promise<void> {
+  const ids = useTabStore.getState().tabs.map((tab) => tab.id)
+  await closeTabsInOrder(tabIdsToTheRight(ids, tabId))
 }
 
 /** `⌘W`。選んでいるタブを閉じる。閉じる経路は `closeTabAndRelease` 1 つに集める。 */

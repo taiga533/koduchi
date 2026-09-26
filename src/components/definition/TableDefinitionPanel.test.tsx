@@ -655,3 +655,51 @@ describe('TableDefinitionPanel', () => {
     await waitFor(() => expect(screen.queryByTestId('table-definition')).not.toBeInTheDocument())
   })
 })
+
+describe('定義タブの行の右クリック（ADR 0038）', () => {
+  it('列の行の「名前をコピー」は列名だけを写す', async () => {
+    // Arrange
+    await パネルを開く()
+    fireEvent.contextMenu(await screen.findByText('TRACKING_NO'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: '名前をコピー' }))
+
+    // Assert
+    expect(書いた文字列).toEqual(['TRACKING_NO'])
+    expect(screen.queryByTestId('definition-row-context-menu')).not.toBeInTheDocument()
+  })
+
+  it('列の行の「この行をコピー」は見出し無しで全列の中の番号を写す', async () => {
+    // Arrange
+    await パネルを開く()
+    fireEvent.contextMenu(await screen.findByText('TRACKING_NO'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: 'この行をコピー' }))
+
+    // Assert
+    expect(書いた文字列).toEqual(['3\tTRACKING_NO\tVARCHAR2(64)\t可'])
+  })
+
+  it('制約の行でも名前と 1 行を写せる', async () => {
+    // Arrange
+    const user = await パネルを開く()
+    await screen.findByText('TRACKING_NO')
+    await user.click(screen.getByRole('tab', { name: /制約/ }))
+    const 行 = screen.getByText('FK_SHIPMENTS_ORDER')
+    const 開く = () => fireEvent.contextMenu(行)
+
+    // Act
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: '名前をコピー' }))
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'この行をコピー' }))
+
+    // Assert
+    expect(書いた文字列).toEqual([
+      'FK_SHIPMENTS_ORDER',
+      '外部キー\tFK_SHIPMENTS_ORDER\tORDER_ID\tKODUCHI.ORDERS (ORDER_ID) ON DELETE CASCADE',
+    ])
+  })
+})

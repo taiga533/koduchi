@@ -271,3 +271,28 @@ export interface PointerPress {
 export function startsSelection(press: PointerPress): boolean {
   return press.button === 0 && !press.ctrlKey
 }
+
+/**
+ * 行番号の右クリックで保つ選択を決める（ADR 0038）。
+ *
+ * その行が今の選択に掛かっていれば選択を保ち、掛かっていなければ行全体を
+ * 選び直す。セルの右クリック（選択の中なら保つ）と同じ考えで、行番号では
+ * 「行」が単位になる。
+ *
+ * @param current 今の選択
+ * @param row 右クリックした行
+ * @param columnCount 列の数
+ */
+export function selectionForRowMenu(
+  current: CellSelection | null,
+  row: number,
+  columnCount: number,
+): CellSelection {
+  if (current) {
+    const range = selectionRange(current)
+    if (range.top <= row && row <= range.bottom) {
+      return current
+    }
+  }
+  return rowSelection(row, columnCount)
+}

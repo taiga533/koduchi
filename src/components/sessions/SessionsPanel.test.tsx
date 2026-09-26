@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, sessionRow, type FakeCalls } from '../../test/fakeDbApi'
 import { useSessionsStore } from '../../stores/sessions'
@@ -316,5 +317,50 @@ describe('SessionsPanel の IME 対応（ADR 0025）', () => {
 
     // Assert
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('セッションの行の右クリック（ADR 0038）', () => {
+  /** クリップボードへ書かれた文字列。 */
+  let 書いた: string[]
+
+  beforeEach(() => {
+    書いた = []
+    setClipboardApi({ writeText: async (text) => void 書いた.push(text) })
+  })
+
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('SID,SERIAL# と行を写せる', async () => {
+    // Arrange
+    パネルを描く()
+    const 行 = (await screen.findByText('WEB')).closest('tr') as HTMLElement
+
+    // Act
+    fireEvent.contextMenu(行)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'SID,SERIAL# をコピー' }))
+    fireEvent.contextMenu(行)
+    fireEvent.click(screen.getByRole('menuitem', { name: '行をコピー' }))
+
+    // Assert
+    expect(書いた).toEqual([
+      '30,300',
+      '30,300\tWEB\tACTIVE\tenq: TX - row lock contention\t42 秒\tsqlplus\tSID 20',
+    ])
+  })
+
+  it('kill できる行でもメニューに終了は無い', async () => {
+    // Arrange
+    パネルを描く()
+    const 行 = (await screen.findByText('BATCH')).closest('tr') as HTMLElement
+
+    // Act
+    fireEvent.contextMenu(行)
+
+    // Assert
+    const 項目 = screen.getAllByRole('menuitem').map((item) => item.textContent)
+    expect(項目).toEqual(['SID,SERIAL# をコピー', '行をコピー'])
   })
 })

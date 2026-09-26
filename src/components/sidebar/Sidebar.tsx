@@ -47,7 +47,10 @@ interface SidebarProps {
   onUseHistory: (sql: string) => void
   /** スキーマツリーの名前をエディタのカーソル位置へ入れる（ADR 0020）。 */
   onInsertIdentifier: (text: string) => void
-  /** スキーマツリーから `select * from …` を新しいタブに開く（ADR 0020）。 */
+  /**
+   * SQL を新しいタブに開く。実行はしない。スキーマツリーの「`SELECT` を開く」
+   * （ADR 0020）と、履歴・保存済みクエリの「新しいタブで開く」（ADR 0038）が使う。
+   */
   onOpenSelect: (sql: string) => void
   /**
    * スキーマツリーから定義タブを開く（ADR 0022）。
@@ -172,8 +175,12 @@ export function Sidebar({
             onOpenDefinition={onOpenDefinition}
           />
         ) : null}
-        {segment === 'history' ? <HistoryList onUse={onUseHistory} /> : null}
-        {segment === 'saved' ? <SavedQueryList onUse={onUseHistory} /> : null}
+        {segment === 'history' ? (
+          <HistoryList onUse={onUseHistory} onOpenInNewTab={onOpenSelect} />
+        ) : null}
+        {segment === 'saved' ? (
+          <SavedQueryList onUse={onUseHistory} onOpenInNewTab={onOpenSelect} />
+        ) : null}
       </div>
 
       {segment === 'schema' && progress !== '' ? (

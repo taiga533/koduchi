@@ -20,8 +20,10 @@
  * | セルをダブルクリック   | 詳細パネルを開く                 |
  * | セルを右クリック       | コピーのメニュー（選択は保つ）   |
  * | 行番号を単クリック     | 行全体を選ぶ                     |
+ * | 行番号を右クリック     | コピーのメニュー（ADR 0038）     |
  * | 見出しの右端をドラッグ | 列幅を変える                     |
  * | 見出しをダブルクリック | 列幅を内容に合わせる             |
+ * | 見出しを右クリック     | 列名と列のメニュー（ADR 0038）   |
  *
  * 右クリック（と `⌃` + クリック）の押し下げでは選択を始め直さない（`startsSelection`）。
  * 始め直すと、選んだ範囲がメニューの開く前に押したセル 1 つへ潰れる（issue #53）。
@@ -54,6 +56,7 @@ import {
 } from './columnSizing'
 import { CellDetailPanel } from './CellDetailPanel'
 import { ResultContextMenu } from './ResultContextMenu'
+import { ResultHeaderContextMenu } from './ResultHeaderContextMenu'
 import { ResultSearchBar } from './ResultSearchBar'
 import type { CellPosition, CellSelection, SelectionRange } from './selection'
 import {
@@ -65,6 +68,7 @@ import {
   rowSelection,
   selectAll,
   selectionEdges,
+  selectionForRowMenu,
   selectionRange,
   selectionShadow,
   startsSelection,
@@ -105,12 +109,17 @@ const ROW_HEIGHTS: Record<RowHeight, number> = {
  */
 const FETCH_MORE_THRESHOLD = 200
 
-/** 右クリックメニューの開いている位置と、押されたセルの列。 */
-interface ContextMenuState {
-  x: number
-  y: number
-  column: number
-}
+/**
+ * 右クリックメニューの開いている位置と、押された場所。
+ *
+ * `cell` はセル（`column` はその列）、`row` は行番号、`header` は列見出し
+ * （ADR 0038）。行番号から開いたときは列が決まらない。メニューは同時に 1 つしか
+ * 開かないため、状態も 1 つにまとめる。
+ */
+type ContextMenuState =
+  | { kind: 'cell'; x: number; y: number; column: number }
+  | { kind: 'row'; x: number; y: number }
+  | { kind: 'header'; x: number; y: number; column: number }
 
 /** 詳細パネルに出しているセルの位置。 */
 interface DetailTarget {
@@ -339,7 +348,33 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
         ? current
         : { anchor: { row, column }, focus: { row, column } },
     )
-    setMenu({ x: event.clientX, y: event.clientY, column })
+    setMenu({ kind: 'cell', x: event.clientX, y: event.clientY, column })
+  }, [])
+
+  /**
+   * 行番号の右クリックでメニューを開く（ADR 0038）。
+   *
+   * @param event 発生したイベント
+   * @param row 行番号
+   */
+  const openRowMenu = useCallback(
+    (event: ReactMouseEvent, row: number) => {
+      event.preventDefault()
+      setSelection((current) => selectionForRowMenu(current, row, columnCount))
+      setMenu({ kind: 'row', x: event.clientX, y: event.clientY })
+    },
+    [columnCount],
+  )
+
+  /**
+   * 列見出しの右クリックでメニューを開く（ADR 0038）。選択は動かさない。
+   *
+   * @param event 発生したイベント
+   * @param column 列番号
+   */
+  const openHeaderMenu = useCallback((event: ReactMouseEvent, column: number) => {
+    event.preventDefault()
+    setMenu({ kind: 'header', x: event.clientX, y: event.clientY, column })
   }, [])
 
   /** 検索バーを開き、検索欄へ焦点を移す（`⌘F`）。既に開いていれば語を選び直す。 */
@@ -546,6 +581,7 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                 width={widths[column.name]}
                 onResize={(width) => rememberWidth(column.name, width)}
                 onFit={() => fitColumn(column, columnIndex)}
+                onContextMenu={(event) => openHeaderMenu(event, columnIndex)}
               />
             ))}
           </div>
@@ -582,6 +618,7 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                           selectRow(virtualRow.index, event.shiftKey)
                         }
                       }}
+                      onContextMenu={(event) => openRowMenu(event, virtualRow.index)}
                       className="text-right text-fg6 border-r border-gl bg-panel2 cursor-pointer"
                       style={{ padding: 'var(--rp)' }}
                     >
@@ -643,7 +680,20 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
         />
       )}
 
-      {menu ? (
+      {menu?.kind === 'header' && columns[menu.column] !== undefined ? (
+        <ResultHeaderContextMenu
+          x={menu.x}
+          y={menu.y}
+          columnName={columns[menu.column].name}
+          onCopyName={() => void getClipboardApi().writeText(columns[menu.column].name)}
+          onCopyColumn={() =>
+            copyRange(selectionRange(columnSelection(menu.column, rowCount)), false)
+          }
+          onFit={() => fitColumn(columns[menu.column], menu.column)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {menu !== null && menu.kind !== 'header' ? (
         <ResultContextMenu
           x={menu.x}
           y={menu.y}
@@ -651,18 +701,17 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
             if (range) {
               copyRange(range, false)
             }
-            setMenu(null)
           }}
           onCopyWithHeader={() => {
             if (range) {
               copyRange(range, true)
             }
-            setMenu(null)
           }}
-          onCopyColumn={() => {
-            copyRange(selectionRange(columnSelection(menu.column, rowCount)), false)
-            setMenu(null)
-          }}
+          onCopyColumn={
+            menu.kind === 'cell'
+              ? () => copyRange(selectionRange(columnSelection(menu.column, rowCount)), false)
+              : undefined
+          }
           onClose={() => setMenu(null)}
         />
       ) : null}
@@ -678,6 +727,8 @@ interface ColumnHeaderProps {
   onResize: (width: number) => void
   /** 内容に合わせる（ダブルクリック）。 */
   onFit: () => void
+  /** 右クリック（ADR 0038）。 */
+  onContextMenu: (event: ReactMouseEvent) => void
 }
 
 /**
@@ -687,7 +738,7 @@ interface ColumnHeaderProps {
  * ポインタが見出しの外へ出ても幅が追従する。押し下げを拾う場所が本文のセルとは
  * 分かれているため、セル選択のドラッグとは食い合わない。
  */
-function ColumnHeader({ column, width, onResize, onFit }: ColumnHeaderProps) {
+function ColumnHeader({ column, width, onResize, onFit, onContextMenu }: ColumnHeaderProps) {
   const cellRef = useRef<HTMLDivElement>(null)
 
   const beginResize = (event: ReactMouseEvent<HTMLElement>) => {
@@ -714,6 +765,7 @@ function ColumnHeader({ column, width, onResize, onFit }: ColumnHeaderProps) {
       ref={cellRef}
       title={`${column.name} ${column.typeName}`}
       onDoubleClick={onFit}
+      onContextMenu={onContextMenu}
       className={`relative px-9px py-5px border-r border-line2 truncate ${
         isRightAligned(column.kind) ? 'text-right' : ''
       }`}

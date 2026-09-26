@@ -77,3 +77,30 @@ export function dropIndex(rects: TabRect[], draggingId: string, pointerX: number
 
   return current
 }
+
+/**
+ * 「他のタブを閉じる」で閉じるタブを、並び順に返す（ADR 0038）。
+ *
+ * 基準のタブが並びに無ければ何も閉じない。基準を取り違えたまま全部を閉じる
+ * より、何も起きないほうが取り返しが付く。
+ *
+ * @param ids 今の並び順のタブの ID
+ * @param id 残すタブ
+ */
+export function otherTabIds(ids: readonly string[], id: string): string[] {
+  if (!ids.includes(id)) {
+    return []
+  }
+  return ids.filter((item) => item !== id)
+}
+
+/**
+ * 「右側のタブを閉じる」で閉じるタブを、並び順に返す（ADR 0038）。
+ *
+ * @param ids 今の並び順のタブの ID
+ * @param id 基準のタブ。これ自身は閉じない
+ */
+export function tabIdsToTheRight(ids: readonly string[], id: string): string[] {
+  const index = ids.indexOf(id)
+  return index === -1 ? [] : ids.slice(index + 1)
+}

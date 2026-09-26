@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropIndex, moveItem } from './tabOrder'
+import { dropIndex, moveItem, otherTabIds, tabIdsToTheRight } from './tabOrder'
 import type { TabRect } from './tabOrder'
 
 /**
@@ -219,5 +219,64 @@ describe('dropIndex', () => {
 
     // Assert
     expect(index).toBe(0)
+  })
+})
+
+describe('otherTabIds', () => {
+  it('基準のタブ以外を並び順に返す', () => {
+    // Arrange
+    const 並び = ['a', 'b', 'c', 'd']
+
+    // Act
+    const 閉じる = otherTabIds(並び, 'b')
+
+    // Assert
+    expect(閉じる).toEqual(['a', 'c', 'd'])
+  })
+
+  it('基準のタブが並びに無ければ何も閉じない', () => {
+    // Arrange
+    const 並び = ['a', 'b']
+
+    // Act
+    const 閉じる = otherTabIds(並び, 'x')
+
+    // Assert
+    expect(閉じる).toEqual([])
+  })
+})
+
+describe('tabIdsToTheRight', () => {
+  it('基準のタブより右のタブだけを返す', () => {
+    // Arrange
+    const 並び = ['a', 'b', 'c', 'd']
+
+    // Act
+    const 閉じる = tabIdsToTheRight(並び, 'b')
+
+    // Assert
+    expect(閉じる).toEqual(['c', 'd'])
+  })
+
+  it('右端のタブでは何も閉じない', () => {
+    // Arrange
+    const 並び = ['a', 'b']
+
+    // Act
+    const 閉じる = tabIdsToTheRight(並び, 'b')
+
+    // Assert
+    expect(閉じる).toEqual([])
+  })
+
+  it('基準のタブが並びに無ければ何も閉じない', () => {
+    // Arrange
+    const 並び = ['a', 'b']
+
+    // Act
+    const 閉じる = tabIdsToTheRight(並び, 'x')
+
+    // Assert
+    expect(閉じる).toEqual([])
   })
 })

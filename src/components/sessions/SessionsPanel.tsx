@@ -13,7 +13,7 @@
  * 必ず確認を挟む。
  */
 
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { RefreshCw, Search, X } from 'lucide-react'
 import {
   AUTO_REFRESH_INTERVAL,
@@ -23,6 +23,10 @@ import {
 } from '../../stores/sessions'
 import type { BlockingNode, SessionRow } from '../../types/db'
 import { useEscapeKey } from '../../input/useEscapeKey'
+import { getClipboardApi } from '../../api/clipboard'
+import { SessionContextMenu } from './SessionContextMenu'
+import type { SessionMenuState } from './SessionContextMenu'
+import { blockedByLabel, buildSessionRowCopyText, sessionIdentity } from './sessionCopy'
 
 interface SessionsPanelProps {
   /** 接続の識別子。 */
@@ -267,7 +271,11 @@ function ChainNode({ node, depth }: { node: BlockingNode; depth: number }) {
   )
 }
 
-/** セッションの一覧。 */
+/**
+ * セッションの一覧。
+ *
+ * 行の右クリックでコピーのメニューを出す（ADR 0038。`SessionContextMenu.tsx`）。
+ */
 function SessionTable({
   sessions,
   currentSid,
@@ -281,59 +289,82 @@ function SessionTable({
   readOnly: boolean
   onKill: (session: SessionRow) => void
 }) {
+  const [menu, setMenu] = useState<SessionMenuState | null>(null)
+
   return (
-    <table className="w-full border-collapse text-11.5px">
-      <thead>
-        <tr className="text-fg4 text-left">
-          <th className="font-500 py-5px pr-8px">SID</th>
-          <th className="font-500 py-5px pr-8px">ユーザー</th>
-          <th className="font-500 py-5px pr-8px">状態</th>
-          <th className="font-500 py-5px pr-8px">待機イベント</th>
-          <th className="font-500 py-5px pr-8px">待機</th>
-          <th className="font-500 py-5px pr-8px">プログラム</th>
-          <th className="font-500 py-5px pr-8px">ブロック元</th>
-          <th className="font-500 py-5px" />
-        </tr>
-      </thead>
-      <tbody>
-        {sessions.map((session) => (
-          <tr key={`${session.sid}-${session.serial}`} className="border-t border-line2 text-fg2">
-            <td className="py-6px pr-8px whitespace-nowrap">
-              {session.sid},{session.serial}
-              {session.sid === currentSid ? (
-                <span className="ml-6px text-10.5px text-fg4">この接続</span>
-              ) : session.own ? (
-                <span className="ml-6px text-10.5px text-fg4">小槌</span>
-              ) : null}
-            </td>
-            <td className="py-6px pr-8px whitespace-nowrap">{session.username ?? '—'}</td>
-            <td className="py-6px pr-8px whitespace-nowrap">{session.status}</td>
-            <td className="py-6px pr-8px max-w-220px truncate" title={session.event ?? ''}>
-              {session.event ?? '—'}
-            </td>
-            <td className="py-6px pr-8px whitespace-nowrap">{session.secondsInWait} 秒</td>
-            <td className="py-6px pr-8px max-w-160px truncate" title={session.program ?? ''}>
-              {session.program ?? '—'}
-            </td>
-            <td className="py-6px pr-8px whitespace-nowrap">
-              <BlockedBy session={session} instance={instance} />
-            </td>
-            <td className="py-6px text-right whitespace-nowrap">
-              {readOnly || session.own ? null : (
-                <button
-                  type="button"
-                  onClick={() => onKill(session)}
-                  aria-label={`SID ${session.sid} を終了`}
-                  className="px-8px py-3px rounded-6px bg-transparent border border-line text-11px text-fg3 cursor-pointer font-inherit"
-                >
-                  終了…
-                </button>
-              )}
-            </td>
+    <>
+      <table className="w-full border-collapse text-11.5px">
+        <thead>
+          <tr className="text-fg4 text-left">
+            <th className="font-500 py-5px pr-8px">SID</th>
+            <th className="font-500 py-5px pr-8px">ユーザー</th>
+            <th className="font-500 py-5px pr-8px">状態</th>
+            <th className="font-500 py-5px pr-8px">待機イベント</th>
+            <th className="font-500 py-5px pr-8px">待機</th>
+            <th className="font-500 py-5px pr-8px">プログラム</th>
+            <th className="font-500 py-5px pr-8px">ブロック元</th>
+            <th className="font-500 py-5px" />
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {sessions.map((session) => (
+            <tr
+              key={`${session.sid}-${session.serial}`}
+              className="border-t border-line2 text-fg2"
+              onContextMenu={(event) => {
+                event.preventDefault()
+                setMenu({
+                  x: event.clientX,
+                  y: event.clientY,
+                  identity: sessionIdentity(session),
+                  row: buildSessionRowCopyText(session, instance),
+                })
+              }}
+            >
+              <td className="py-6px pr-8px whitespace-nowrap">
+                {session.sid},{session.serial}
+                {session.sid === currentSid ? (
+                  <span className="ml-6px text-10.5px text-fg4">この接続</span>
+                ) : session.own ? (
+                  <span className="ml-6px text-10.5px text-fg4">小槌</span>
+                ) : null}
+              </td>
+              <td className="py-6px pr-8px whitespace-nowrap">{session.username ?? '—'}</td>
+              <td className="py-6px pr-8px whitespace-nowrap">{session.status}</td>
+              <td className="py-6px pr-8px max-w-220px truncate" title={session.event ?? ''}>
+                {session.event ?? '—'}
+              </td>
+              <td className="py-6px pr-8px whitespace-nowrap">{session.secondsInWait} 秒</td>
+              <td className="py-6px pr-8px max-w-160px truncate" title={session.program ?? ''}>
+                {session.program ?? '—'}
+              </td>
+              <td className="py-6px pr-8px whitespace-nowrap">
+                <BlockedBy session={session} instance={instance} />
+              </td>
+              <td className="py-6px text-right whitespace-nowrap">
+                {readOnly || session.own ? null : (
+                  <button
+                    type="button"
+                    onClick={() => onKill(session)}
+                    aria-label={`SID ${session.sid} を終了`}
+                    className="px-8px py-3px rounded-6px bg-transparent border border-line text-11px text-fg3 cursor-pointer font-inherit"
+                  >
+                    終了…
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {menu ? (
+        <SessionContextMenu
+          state={menu}
+          onCopy={(text) => void getClipboardApi().writeText(text)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+    </>
   )
 }
 
@@ -343,18 +374,11 @@ function SessionTable({
  * 別インスタンスの相手は一覧に並ばないため、その旨を添える（ADR 0017）。
  */
 function BlockedBy({ session, instance }: { session: SessionRow; instance: number }) {
-  if (session.blockingSession === null) {
+  const label = blockedByLabel(session, instance)
+  if (label === null) {
     return <span className="text-fg4">—</span>
   }
-
-  const 別インスタンス = session.blockingInstance !== null && session.blockingInstance !== instance
-
-  return (
-    <span className="text-warn">
-      SID {session.blockingSession}
-      {別インスタンス ? `（インスタンス ${session.blockingInstance}）` : ''}
-    </span>
-  )
+  return <span className="text-warn">{label}</span>
 }
 
 /**

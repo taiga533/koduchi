@@ -614,6 +614,26 @@ describe('App', () => {
     )
   })
 
+  it('タブの右クリックの「他のタブを閉じる」は右クリックしたタブだけを残す', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    const 残すタブ = SQLタブを一枚にする().id
+    useTabStore.getState().openNewTab()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.contextMenu(screen.getByRole('button', { name: '無題-1.sql' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '他のタブを閉じる' }))
+
+    // Assert
+    await waitFor(() =>
+      expect(useTabStore.getState().tabs.map((tab) => tab.id)).toEqual([残すタブ]),
+    )
+  })
+
   it('実行に失敗するとメッセージタブが現れる', async () => {
     // Arrange
     const { api } = createFakeDbApi({

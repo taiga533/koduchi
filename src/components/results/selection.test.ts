@@ -9,6 +9,7 @@ import {
   rowSelection,
   selectAll,
   selectionEdges,
+  selectionForRowMenu,
   selectionRange,
   selectionShadow,
   startsSelection,
@@ -347,5 +348,37 @@ describe('startsSelection', () => {
 
     // Assert
     expect(result).toBe(false)
+  })
+})
+
+describe('selectionForRowMenu', () => {
+  it('選択が無ければ右クリックした行全体を選ぶ', () => {
+    // Arrange / Act
+    const 選択 = selectionForRowMenu(null, 2, 3)
+
+    // Assert
+    expect(selectionRange(選択)).toEqual({ top: 2, bottom: 2, left: 0, right: 2 })
+  })
+
+  it('右クリックした行が選択に掛かっていれば選択を保つ', () => {
+    // Arrange: 1〜3 行目の 2 列目だけを選んでいる
+    const 今の選択 = { anchor: { row: 1, column: 1 }, focus: { row: 3, column: 1 } }
+
+    // Act
+    const 選択 = selectionForRowMenu(今の選択, 2, 3)
+
+    // Assert
+    expect(選択).toBe(今の選択)
+  })
+
+  it('選択の外の行なら行全体を選び直す', () => {
+    // Arrange
+    const 今の選択 = { anchor: { row: 0, column: 0 }, focus: { row: 1, column: 1 } }
+
+    // Act
+    const 選択 = selectionForRowMenu(今の選択, 4, 3)
+
+    // Assert
+    expect(selectionRange(選択)).toEqual({ top: 4, bottom: 4, left: 0, right: 2 })
   })
 })

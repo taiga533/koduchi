@@ -32,6 +32,10 @@
  * 選ぼうとして並びが動くのを防ぐ）。**定義タブの名前は変えられない**
  * （`tabNaming.ts` の `canRenameTab`）。
  *
+ * **右クリックはタブのメニューを開く**（ADR 0038。`TabContextMenu.tsx`）。
+ * 右ボタンの押し下げでは掴まず選びもしない（`onPointerDown` は主ボタンだけを
+ * 見る）。メニューの項目は右クリックしたタブに効く。
+ *
  * 並べ替えは Pointer Events で行う。`Splitter` と同じく `setPointerCapture` を
  * 使い、`mousemove` を `window` に貼らない。落とす位置の計算は `tabOrder.ts` の
  * 純粋な関数に寄せてある。**スクロールしても `dropIndex` はそのままでよい**
@@ -45,13 +49,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { Plus, TableProperties, X } from 'lucide-react'
 import { useTabStore } from '../../stores/tab'
-import { isDefinitionTab, isDirty } from '../../stores/tabKinds'
+import { isDefinitionTab, isDirty, isSqlTab } from '../../stores/tabKinds'
+import { getClipboardApi } from '../../api/clipboard'
 import { isComposingKey } from '../../input/ime'
 import { canRenameTab, normalizeTabName, tabDisplayName, tabTitle } from './tabNaming'
 import { DRAG_THRESHOLD, dropIndex } from './tabOrder'
 import type { TabRect } from './tabOrder'
 import { autoScrollStep, revealOffset } from './tabScroll'
 import { TAB_MAX_WIDTH, TAB_MIN_WIDTH } from './tabSizing'
+import { TabContextMenu } from './TabContextMenu'
 
 interface TabBarProps {
   /**
@@ -61,6 +67,21 @@ interface TabBarProps {
    * 触らずに呼び出し側へ委ねる。
    */
   onCloseTab: (id: string) => void
+  /** 右クリックの「他のタブを閉じる」（ADR 0038）。閉じる関所は `onCloseTab` と同じ。 */
+  onCloseOtherTabs: (id: string) => void
+  /** 右クリックの「右側のタブを閉じる」（ADR 0038）。 */
+  onCloseTabsToRight: (id: string) => void
+  /** 右クリックの「保存」（ADR 0038）。選んでいないタブも保存する。 */
+  onSaveTab: (id: string) => void
+  /** 右クリックの「名前を付けて保存」（ADR 0038）。 */
+  onSaveTabAs: (id: string) => void
+}
+
+/** 右クリックのメニューの状態（ADR 0038）。 */
+interface TabMenuState {
+  x: number
+  y: number
+  id: string
 }
 
 /** ドラッグ中に覚えておくこと。 */
@@ -175,7 +196,13 @@ function TabNameInput({ initial, onCommit, onCancel }: TabNameInputProps) {
   )
 }
 
-export function TabBar({ onCloseTab }: TabBarProps) {
+export function TabBar({
+  onCloseTab,
+  onCloseOtherTabs,
+  onCloseTabsToRight,
+  onSaveTab,
+  onSaveTabAs,
+}: TabBarProps) {
   const tabs = useTabStore((state) => state.tabs)
   const activeTabId = useTabStore((state) => state.activeTabId)
   const selectTab = useTabStore((state) => state.selectTab)
@@ -193,6 +220,7 @@ export function TabBar({ onCloseTab }: TabBarProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   /** 名前を付け直しているタブの ID（ADR 0032）。編集していなければ `null`。 */
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [menu, setMenu] = useState<TabMenuState | null>(null)
 
   /**
    * 名前の付け直しを始める（ADR 0032）。
@@ -488,6 +516,14 @@ export function TabBar({ onCloseTab }: TabBarProps) {
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
               onKeyDown={onKeyDown}
+              onContextMenu={(event) => {
+                // 名前を打っている間の右クリックは入力欄のもの（貼り付けなど）である。
+                if (editing) {
+                  return
+                }
+                event.preventDefault()
+                setMenu({ x: event.clientX, y: event.clientY, id: tab.id })
+              }}
               className={`flex items-center gap-6px px-11px rounded-7px text-11.5px touch-none ${
                 active ? 'bg-panel text-fg' : 'text-fg3'
               } ${dragging ? 'opacity-60' : ''}`}
@@ -549,6 +585,43 @@ export function TabBar({ onCloseTab }: TabBarProps) {
         <Plus size={15} />
       </button>
       <div className="flex-1" />
+      {menu ? renderMenu(menu) : null}
     </div>
   )
+
+  /**
+   * 右クリックのメニューを描く。開いている間にタブが閉じられていたら描かない。
+   *
+   * @param state メニューの状態
+   */
+  function renderMenu(state: TabMenuState) {
+    const index = tabs.findIndex((item) => item.id === state.id)
+    if (index === -1) {
+      return null
+    }
+    const tab = tabs[index]
+    const id = tab.id
+    return (
+      <TabContextMenu
+        x={state.x}
+        y={state.y}
+        tab={tab}
+        heading={tabDisplayName(tab)}
+        hasOthers={tabs.length > 1}
+        hasRight={index < tabs.length - 1}
+        onClose={() => onCloseTab(id)}
+        onCloseOthers={() => onCloseOtherTabs(id)}
+        onCloseRight={() => onCloseTabsToRight(id)}
+        onRename={() => startRename(id)}
+        onSave={() => onSaveTab(id)}
+        onSaveAs={() => onSaveTabAs(id)}
+        onCopyPath={() => {
+          if (isSqlTab(tab) && tab.filePath !== null) {
+            void getClipboardApi().writeText(tab.filePath)
+          }
+        }}
+        onDismiss={() => setMenu(null)}
+      />
+    )
+  }
 }

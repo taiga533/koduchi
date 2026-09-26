@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls } from '../../test/fakeDbApi'
 import type { HistoryEntry } from '../../types/db'
@@ -41,12 +42,13 @@ beforeEach(() => {
 
 afterEach(() => {
   resetDbApi()
+  resetClipboardApi()
 })
 
 describe('HistoryList', () => {
   it('sql の 1 行目と行数と所要時間が並ぶ', () => {
     // Arrange
-    render(<HistoryList onUse={() => {}} />)
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Act
     const 一件目 = screen.getByText('select * from users')
@@ -58,7 +60,7 @@ describe('HistoryList', () => {
 
   it('失敗した実行には失敗と出る', () => {
     // Arrange
-    render(<HistoryList onUse={() => {}} />)
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Act
     const 失敗 = screen.getByText('失敗')
@@ -70,7 +72,7 @@ describe('HistoryList', () => {
   it('履歴を押すと sql を渡す', async () => {
     // Arrange
     const 渡された: string[] = []
-    render(<HistoryList onUse={(sql) => 渡された.push(sql)} />)
+    render(<HistoryList onUse={(sql) => 渡された.push(sql)} onOpenInNewTab={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByText('select * from users'))
@@ -81,7 +83,7 @@ describe('HistoryList', () => {
 
   it('一件ごとに削除できる', async () => {
     // Arrange
-    render(<HistoryList onUse={() => {}} />)
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Act
     await userEvent.click(screen.getAllByRole('button', { name: 'この履歴を削除' })[0])
@@ -92,7 +94,7 @@ describe('HistoryList', () => {
 
   it('スコープを全接続へ切り替えられる', async () => {
     // Arrange
-    render(<HistoryList onUse={() => {}} />)
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: '全接続' }))
@@ -106,9 +108,66 @@ describe('HistoryList', () => {
     useHistoryStore.setState({ entries: [], loading: false })
 
     // Act
-    render(<HistoryList onUse={() => {}} />)
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Assert
     expect(screen.getByText('実行した SQL がここに残ります')).toBeInTheDocument()
+  })
+})
+
+describe('履歴の右クリックメニュー', () => {
+  it('新しいタブで開くと全文の SQL を渡す', () => {
+    // Arrange
+    const 渡された: string[] = []
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={(sql) => 渡された.push(sql)} />)
+    fireEvent.contextMenu(screen.getByText('select * from users'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: '新しいタブで開く' }))
+
+    // Assert
+    expect(渡された).toEqual(['select * from users\nwhere id = 1'])
+    expect(screen.queryByTestId('sql-entry-context-menu')).not.toBeInTheDocument()
+  })
+
+  it('SQL をコピーすると 1 行目ではなく全文を写す', () => {
+    // Arrange
+    const 書いた: string[] = []
+    setClipboardApi({ writeText: async (text) => void 書いた.push(text) })
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={() => {}} />)
+    fireEvent.contextMenu(screen.getByText('select * from users'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: 'SQL をコピー' }))
+
+    // Assert
+    expect(書いた).toEqual(['select * from users\nwhere id = 1'])
+  })
+
+  it('エディタへ入れると削除は行の操作と同じ要求を届ける', () => {
+    // Arrange
+    const 入れた: string[] = []
+    render(<HistoryList onUse={(sql) => 入れた.push(sql)} onOpenInNewTab={() => {}} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByText('select * from nowhere'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'エディタへ入れる' }))
+    fireEvent.contextMenu(screen.getByText('select * from nowhere'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '削除' }))
+
+    // Assert
+    expect(入れた).toEqual(['select * from nowhere'])
+    expect(calls.deleteHistory).toEqual([2])
+  })
+
+  it('履歴には名前が無いので名前の変更を出さない', () => {
+    // Arrange
+    render(<HistoryList onUse={() => {}} onOpenInNewTab={() => {}} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByText('select * from users'))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: '名前を変更' })).not.toBeInTheDocument()
   })
 })

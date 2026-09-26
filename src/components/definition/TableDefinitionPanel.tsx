@@ -25,6 +25,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Check, Copy, Search } from 'lucide-react'
 import { getClipboardApi } from '../../api/clipboard'
 import {
@@ -44,7 +45,13 @@ import {
   formatReference,
   hasColumnComments,
 } from './definitionSearch'
+import { isOnSelectedText } from '../../input/nativeContextMenu'
+import { DefinitionRowContextMenu } from './DefinitionRowContextMenu'
+import type { DefinitionRowMenuState } from './DefinitionRowContextMenu'
 import {
+  buildColumnRowCopyText,
+  buildConstraintRowCopyText,
+  buildIndexRowCopyText,
   buildDdlCopyText,
   buildDefinitionCopy,
   describeDefinitionCopy,
@@ -356,39 +363,83 @@ function PanelBody({
 function ColumnTable({ columns, search }: { columns: TableColumn[]; search: string }) {
   const 絞り込み済み = useMemo(() => filterColumns(columns, search), [columns, search])
   const コメントを出す = useMemo(() => hasColumnComments(columns), [columns])
+  const rowMenu = useRowMenu()
 
   if (絞り込み済み.length === 0) {
     return <Empty>{columns.length === 0 ? '列がありません' : '当てはまる列がありません'}</Empty>
   }
 
   return (
-    <table className="w-full border-collapse text-11.5px">
-      <thead>
-        <tr className="text-fg4 text-left">
-          <th className="font-500 py-5px pr-8px w-40px">#</th>
-          <th className="font-500 py-5px pr-8px">列</th>
-          <th className="font-500 py-5px pr-8px">型</th>
-          <th className="font-500 py-5px pr-8px">NULL</th>
-          {コメントを出す ? <th className="font-500 py-5px">コメント</th> : null}
-        </tr>
-      </thead>
-      <tbody>
-        {絞り込み済み.map((column) => (
-          <tr key={column.name} className="border-t border-line2 text-fg2 align-top">
-            <td className="py-6px pr-8px text-fg5 tabular-nums">{columns.indexOf(column) + 1}</td>
-            <td className="py-6px pr-8px break-all">{column.name}</td>
-            <td className="py-6px pr-8px whitespace-nowrap text-fg3">{column.typeName}</td>
-            <td className="py-6px pr-8px whitespace-nowrap text-fg4">
-              {column.nullable ? '可' : 'NOT NULL'}
-            </td>
-            {コメントを出す ? (
-              <td className="py-6px break-all text-fg3 leading-[1.6]">{column.comment ?? '—'}</td>
-            ) : null}
+    <>
+      <table className="w-full border-collapse text-11.5px">
+        <thead>
+          <tr className="text-fg4 text-left">
+            <th className="font-500 py-5px pr-8px w-40px">#</th>
+            <th className="font-500 py-5px pr-8px">列</th>
+            <th className="font-500 py-5px pr-8px">型</th>
+            <th className="font-500 py-5px pr-8px">NULL</th>
+            {コメントを出す ? <th className="font-500 py-5px">コメント</th> : null}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {絞り込み済み.map((column) => (
+            <tr
+              key={column.name}
+              className="border-t border-line2 text-fg2 align-top"
+              onContextMenu={rowMenu.open(column.name, () =>
+                buildColumnRowCopyText(column, columns),
+              )}
+            >
+              <td className="py-6px pr-8px text-fg5 tabular-nums">{columns.indexOf(column) + 1}</td>
+              <td className="py-6px pr-8px break-all">{column.name}</td>
+              <td className="py-6px pr-8px whitespace-nowrap text-fg3">{column.typeName}</td>
+              <td className="py-6px pr-8px whitespace-nowrap text-fg4">
+                {column.nullable ? '可' : 'NOT NULL'}
+              </td>
+              {コメントを出す ? (
+                <td className="py-6px break-all text-fg3 leading-[1.6]">{column.comment ?? '—'}</td>
+              ) : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rowMenu.element}
+    </>
   )
+}
+
+/**
+ * 行の右クリックのメニューを持つ（ADR 0038）。3 つの表で同じ形なので 1 つにした。
+ *
+ * **選んだ文字の上ではウェブビューのメニューに任せる。**定義の文字はなぞって
+ * 写せる場所でもあり、選んだ部分だけを写す「コピー」を奪わない。
+ */
+function useRowMenu() {
+  const [menu, setMenu] = useState<DefinitionRowMenuState | null>(null)
+
+  /**
+   * 行の `onContextMenu` を作る。
+   *
+   * @param name 行の名前
+   * @param row 「この行をコピー」で写す 1 行を作る関数。開いたときだけ呼ぶ
+   */
+  const open = (name: string, row: () => string) => (event: ReactMouseEvent) => {
+    if (isOnSelectedText({ x: event.clientX, y: event.clientY }, window.getSelection())) {
+      return
+    }
+    event.preventDefault()
+    setMenu({ x: event.clientX, y: event.clientY, name, row: row() })
+  }
+
+  const element = menu ? (
+    <DefinitionRowContextMenu
+      state={menu}
+      onCopy={(text) => void getClipboardApi().writeText(text)}
+      onClose={() => setMenu(null)}
+    />
+  ) : null
+
+  return { open, element }
 }
 
 /**
@@ -405,6 +456,7 @@ function ConstraintTable({
   search: string
 }) {
   const 絞り込み済み = useMemo(() => filterConstraints(constraints, search), [constraints, search])
+  const rowMenu = useRowMenu()
 
   if (絞り込み済み.length === 0) {
     return (
@@ -413,33 +465,42 @@ function ConstraintTable({
   }
 
   return (
-    <table className="w-full border-collapse text-11.5px">
-      <thead>
-        <tr className="text-fg4 text-left">
-          <th className="font-500 py-5px pr-8px">種別</th>
-          <th className="font-500 py-5px pr-8px">名前</th>
-          <th className="font-500 py-5px pr-8px">列</th>
-          <th className="font-500 py-5px">参照先 / 条件</th>
-        </tr>
-      </thead>
-      <tbody>
-        {絞り込み済み.map((constraint) => (
-          <tr key={constraint.name} className="border-t border-line2 text-fg2 align-top">
-            <td className="py-6px pr-8px whitespace-nowrap">
-              {CONSTRAINT_KIND_LABELS[constraint.kind]}
-              {constraint.enabled ? null : (
-                <span className="ml-6px text-10.5px text-warn">無効</span>
-              )}
-            </td>
-            <td className="py-6px pr-8px break-all text-fg3">{constraint.name}</td>
-            <td className="py-6px pr-8px break-all">{constraint.columns.join(', ') || '—'}</td>
-            <td className="py-6px break-all text-fg3">
-              <ConstraintDetail constraint={constraint} />
-            </td>
+    <>
+      <table className="w-full border-collapse text-11.5px">
+        <thead>
+          <tr className="text-fg4 text-left">
+            <th className="font-500 py-5px pr-8px">種別</th>
+            <th className="font-500 py-5px pr-8px">名前</th>
+            <th className="font-500 py-5px pr-8px">列</th>
+            <th className="font-500 py-5px">参照先 / 条件</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {絞り込み済み.map((constraint) => (
+            <tr
+              key={constraint.name}
+              className="border-t border-line2 text-fg2 align-top"
+              onContextMenu={rowMenu.open(constraint.name, () =>
+                buildConstraintRowCopyText(constraint),
+              )}
+            >
+              <td className="py-6px pr-8px whitespace-nowrap">
+                {CONSTRAINT_KIND_LABELS[constraint.kind]}
+                {constraint.enabled ? null : (
+                  <span className="ml-6px text-10.5px text-warn">無効</span>
+                )}
+              </td>
+              <td className="py-6px pr-8px break-all text-fg3">{constraint.name}</td>
+              <td className="py-6px pr-8px break-all">{constraint.columns.join(', ') || '—'}</td>
+              <td className="py-6px break-all text-fg3">
+                <ConstraintDetail constraint={constraint} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rowMenu.element}
+    </>
   )
 }
 
@@ -476,49 +537,59 @@ function ConstraintDetail({ constraint }: { constraint: TableConstraint }) {
  */
 function IndexTable({ indexes, search }: { indexes: TableIndex[]; search: string }) {
   const 絞り込み済み = useMemo(() => filterIndexes(indexes, search), [indexes, search])
+  const rowMenu = useRowMenu()
 
   if (絞り込み済み.length === 0) {
     return <Empty>{indexes.length === 0 ? '索引がありません' : '当てはまる索引がありません'}</Empty>
   }
 
   return (
-    <table className="w-full border-collapse text-11.5px">
-      <thead>
-        <tr className="text-fg4 text-left">
-          <th className="font-500 py-5px pr-8px">名前</th>
-          <th className="font-500 py-5px pr-8px">列</th>
-          <th className="font-500 py-5px pr-8px">一意</th>
-          <th className="font-500 py-5px">種類</th>
-        </tr>
-      </thead>
-      <tbody>
-        {絞り込み済み.map((index) => (
-          <tr key={`${index.owner}.${index.name}`} className="border-t border-line2 text-fg2">
-            <td className="py-6px pr-8px break-all">
-              {index.name}
-              {index.generated ? (
-                <span
-                  className="ml-6px text-10.5px text-fg5"
-                  title="制約のために自動生成された索引"
-                >
-                  自動生成
-                </span>
-              ) : null}
-            </td>
-            <td className="py-6px pr-8px break-all text-fg3">{formatIndexColumns(index) || '—'}</td>
-            <td className="py-6px pr-8px whitespace-nowrap text-fg4">
-              {index.unique ? 'UNIQUE' : '—'}
-            </td>
-            <td className="py-6px whitespace-nowrap text-fg4">
-              {index.indexType}
-              {index.status && index.status !== 'VALID' ? (
-                <span className="ml-6px text-10.5px text-warn">{index.status}</span>
-              ) : null}
-            </td>
+    <>
+      <table className="w-full border-collapse text-11.5px">
+        <thead>
+          <tr className="text-fg4 text-left">
+            <th className="font-500 py-5px pr-8px">名前</th>
+            <th className="font-500 py-5px pr-8px">列</th>
+            <th className="font-500 py-5px pr-8px">一意</th>
+            <th className="font-500 py-5px">種類</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {絞り込み済み.map((index) => (
+            <tr
+              key={`${index.owner}.${index.name}`}
+              className="border-t border-line2 text-fg2"
+              onContextMenu={rowMenu.open(index.name, () => buildIndexRowCopyText(index))}
+            >
+              <td className="py-6px pr-8px break-all">
+                {index.name}
+                {index.generated ? (
+                  <span
+                    className="ml-6px text-10.5px text-fg5"
+                    title="制約のために自動生成された索引"
+                  >
+                    自動生成
+                  </span>
+                ) : null}
+              </td>
+              <td className="py-6px pr-8px break-all text-fg3">
+                {formatIndexColumns(index) || '—'}
+              </td>
+              <td className="py-6px pr-8px whitespace-nowrap text-fg4">
+                {index.unique ? 'UNIQUE' : '—'}
+              </td>
+              <td className="py-6px whitespace-nowrap text-fg4">
+                {index.indexType}
+                {index.status && index.status !== 'VALID' ? (
+                  <span className="ml-6px text-10.5px text-warn">{index.status}</span>
+                ) : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rowMenu.element}
+    </>
   )
 }
 

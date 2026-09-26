@@ -196,6 +196,50 @@ export function buildIndexesCopyText(indexes: TableIndex[]): string {
 }
 
 /**
+ * 見出し付きの表の文字列から、本文の 1 行目だけを取り出す。
+ *
+ * @param table 見出し付きの表
+ */
+function 見出しを除く(table: string): string {
+  return table.split('\n')[1] ?? ''
+}
+
+/**
+ * 列 1 つを、内訳のコピーと同じ欄の並びのタブ区切り 1 行にする（ADR 0038）。
+ *
+ * 行の右クリックの「この行をコピー」が使う。**見出しは付けない。**内訳
+ * まるごとのコピーが見出しを必ず付けるのは表として貼るためだが、1 行を
+ * 写すのは既に貼ってある表へ継ぎ足すか、1 列の素性を伝えるときである。
+ * 欄の並びと札の付け方は内訳のコピーと同じ関数を通すため食い違わない。
+ *
+ * @param column 写す列
+ * @param all 絞り込む前の全列。`#` とコメントの欄の判定に使う
+ */
+export function buildColumnRowCopyText(column: TableColumn, all: TableColumn[]): string {
+  return 見出しを除く(buildColumnsCopyText([column], all))
+}
+
+/**
+ * 制約 1 つをタブ区切り 1 行にする（ADR 0038）。見出しを付けない理由は
+ * `buildColumnRowCopyText` と同じ。
+ *
+ * @param constraint 写す制約
+ */
+export function buildConstraintRowCopyText(constraint: TableConstraint): string {
+  return 見出しを除く(buildConstraintsCopyText([constraint]))
+}
+
+/**
+ * 索引 1 つをタブ区切り 1 行にする（ADR 0038）。見出しを付けない理由は
+ * `buildColumnRowCopyText` と同じ。
+ *
+ * @param index 写す索引
+ */
+export function buildIndexRowCopyText(index: TableIndex): string {
+  return 見出しを除く(buildIndexesCopyText([index]))
+}
+
+/**
  * DDL の断片を繋ぐ。
  *
  * 見出しも註釈も足さず、空行 1 つで繋ぐだけである。前後の空白は落とす

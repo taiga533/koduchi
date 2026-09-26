@@ -1101,3 +1101,84 @@ describe('ResultTable の検索を閉じたあと', () => {
     expect(当たりのセル()).toEqual(['result-cell-0-0'])
   })
 })
+
+describe('ResultTable の見出しと行番号の右クリック（ADR 0038）', () => {
+  let クリップボード: FakeClipboard
+
+  beforeEach(() => {
+    クリップボード = createFakeClipboard()
+    setClipboardApi(クリップボード)
+  })
+
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('見出しの「列名をコピー」は列名だけを写し、選択は動かさない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+    右クリック(screen.getByText('LABEL'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: '列名をコピー' }))
+
+    // Assert
+    expect(クリップボード.last()).toBe('LABEL')
+    expect(選択中のセル()).toEqual(['result-cell-0-0'])
+    expect(screen.queryByTestId('result-header-context-menu')).not.toBeInTheDocument()
+  })
+
+  it('見出しの「この列をコピー」はその列の全行を写す', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    右クリック(screen.getByText('ID'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: 'この列をコピー' }))
+
+    // Assert
+    expect(クリップボード.last()).toBe('10\n20')
+  })
+
+  it('見出しの「列幅を内容に合わせる」はダブルクリックと同じ幅を覚える', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    fireEvent.doubleClick(screen.getByText('LABEL'))
+    const ダブルクリックの幅 = useUiStore.getState().resultColumnWidths['tab-1']?.LABEL
+    useUiStore.setState({ resultColumnWidths: {} })
+    右クリック(screen.getByText('LABEL'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: '列幅を内容に合わせる' }))
+
+    // Assert
+    expect(ダブルクリックの幅).toBeDefined()
+    expect(useUiStore.getState().resultColumnWidths['tab-1']?.LABEL).toBe(ダブルクリックの幅)
+  })
+
+  it('行番号を右クリックするとその行全体を選び、列のコピーは出さない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+
+    // Act
+    右クリック(screen.getByTestId('result-row-number-1'))
+
+    // Assert
+    expect(選択中のセル()).toEqual(['result-cell-1-0', 'result-cell-1-1'])
+    expect(screen.getByTestId('result-context-menu')).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'この列をコピー' })).not.toBeInTheDocument()
+  })
+
+  it('行番号のメニューの「コピー」は選んだ行を写す', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    右クリック(screen.getByTestId('result-row-number-0'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: 'コピー' }))
+
+    // Assert
+    expect(クリップボード.last()).toBe('10\t')
+  })
+})

@@ -6,13 +6,18 @@
  * 「全接続」であることだけである。
  *
  * 名前の変更は行の中で行う。そのためだけにダイアログを増やすほどの操作ではない。
+ *
+ * 行の右クリックでメニューを出す（ADR 0038。`SqlEntryContextMenu.tsx`）。
+ * 「名前を変更」は鉛筆と同じ行の中の編集を始める。
  */
 
 import { useState } from 'react'
 import { Check, Pencil, X } from 'lucide-react'
+import { getClipboardApi } from '../../api/clipboard'
 import type { SavedQuery } from '../../types/db'
 import { useSavedQueryStore } from '../../stores/savedQuery'
 import { isComposingKey } from '../../input/ime'
+import { SqlEntryContextMenu } from './SqlEntryContextMenu'
 
 /** SQL の 1 行目だけを取り出して詰める。一覧では全文を出さない。 */
 function summarize(sql: string): string {
@@ -22,9 +27,11 @@ function summarize(sql: string): string {
 interface SavedQueryListProps {
   /** 保存済みクエリの SQL をエディタへ入れる。 */
   onUse: (sql: string) => void
+  /** 保存済みクエリの SQL を新しいタブに入れる。実行はしない（ADR 0038）。 */
+  onOpenInNewTab: (sql: string) => void
 }
 
-export function SavedQueryList({ onUse }: SavedQueryListProps) {
+export function SavedQueryList({ onUse, onOpenInNewTab }: SavedQueryListProps) {
   const entries = useSavedQueryStore((state) => state.entries)
   const scope = useSavedQueryStore((state) => state.scope)
   const setScope = useSavedQueryStore((state) => state.setScope)
@@ -54,6 +61,7 @@ export function SavedQueryList({ onUse }: SavedQueryListProps) {
               key={entry.id}
               entry={entry}
               onUse={onUse}
+              onOpenInNewTab={onOpenInNewTab}
               onRename={rename}
               onRemove={remove}
             />
@@ -67,14 +75,23 @@ export function SavedQueryList({ onUse }: SavedQueryListProps) {
 interface SavedQueryRowProps {
   entry: SavedQuery
   onUse: (sql: string) => void
+  onOpenInNewTab: (sql: string) => void
   onRename: (id: number, name: string) => void
   onRemove: (id: number) => void
 }
 
 /** 保存済みクエリ 1 件。押すとエディタへ入り、鉛筆で名前を変え、✕ で消える。 */
-function SavedQueryRow({ entry, onUse, onRename, onRemove }: SavedQueryRowProps) {
+function SavedQueryRow({ entry, onUse, onOpenInNewTab, onRename, onRemove }: SavedQueryRowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(entry.name)
+  /** 右クリックのメニューを開いた点。閉じていれば `null`。 */
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+
+  /** 行の中で名前の編集を始める。鉛筆とメニューの 2 つの入口がある。 */
+  const 編集を始める = (): void => {
+    setDraft(entry.name)
+    setEditing(true)
+  }
 
   /** 名前の変更を確定する。空の名前は受け付けず、元の名前に戻す。 */
   const 確定する = (): void => {
@@ -125,7 +142,13 @@ function SavedQueryRow({ entry, onUse, onRename, onRemove }: SavedQueryRowProps)
   }
 
   return (
-    <li className="flex items-start gap-6px px-10px py-6px hover:bg-fill">
+    <li
+      className="flex items-start gap-6px px-10px py-6px hover:bg-fill"
+      onContextMenu={(event) => {
+        event.preventDefault()
+        setMenu({ x: event.clientX, y: event.clientY })
+      }}
+    >
       <button
         type="button"
         onClick={() => onUse(entry.sql)}
@@ -137,10 +160,7 @@ function SavedQueryRow({ entry, onUse, onRename, onRemove }: SavedQueryRowProps)
       </button>
       <button
         type="button"
-        onClick={() => {
-          setDraft(entry.name)
-          setEditing(true)
-        }}
+        onClick={編集を始める}
         aria-label="このクエリの名前を変える"
         className="shrink-0 flex items-center bg-transparent border-none p-0 text-fg5 cursor-pointer font-inherit"
       >
@@ -154,6 +174,19 @@ function SavedQueryRow({ entry, onUse, onRename, onRemove }: SavedQueryRowProps)
       >
         <X size={13} />
       </button>
+      {menu ? (
+        <SqlEntryContextMenu
+          x={menu.x}
+          y={menu.y}
+          heading={entry.name}
+          onUse={() => onUse(entry.sql)}
+          onOpenInNewTab={() => onOpenInNewTab(entry.sql)}
+          onCopy={() => void getClipboardApi().writeText(entry.sql)}
+          onRename={編集を始める}
+          onRemove={() => onRemove(entry.id)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </li>
   )
 }
