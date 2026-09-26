@@ -25,3 +25,11 @@ dist-ssr
 
 # d2 で描いた状態遷移の図（生成物）
 docs/state/*.svg
+
+# design-sync（Claude Design への同期）の作業物
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+.design-sync/pkg/dist/
