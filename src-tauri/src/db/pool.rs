@@ -169,6 +169,19 @@ pub struct ExecuteResponse {
     pub discarded_tab: Option<String>,
 }
 
+/// 中止で打ち切られたことを表すエラーか。
+///
+/// ドライバが `Cancelled` を返す場合と、Oracle の `ORA-01013` がそのまま届く場合の
+/// 両方を見る。どちらも「命令そのものは正しいが、中止に当たった」ことを表し、
+/// 積み直せば通る。
+///
+/// # 引数
+///
+/// * `error` - 命令の失敗
+fn is_cancelled_by_break(error: &DbError) -> bool {
+    error.kind == DbErrorKind::Cancelled || error.message.contains("ORA-01013")
+}
+
 /// ウィンドウ 1 つぶんの接続プール。
 pub struct ConnectionPool {
     handles: Vec<Arc<ConnectionHandle>>,
@@ -524,15 +537,44 @@ impl ConnectionPool {
 
         // 中止もカーソルを閉じるのもデータベースへの往復であり、`見張る` を通す
         // （ADR 0026・0030）。中止に失敗してもカーソルは閉じに行き、割り当ても外す。
+        let 中止を送った = 中止先.is_some();
         let 中止 = match 中止先 {
             Some(handle) => self.見張る(|| handle.cancel()),
             None => Ok(()),
         };
-        let 閉じた = self.見張る(|| pending.wait());
+        let mut 閉じた = self.見張る(|| pending.wait());
+
+        // 走っている印は、実行の返事を受けてから表を取り直して降ろすまでの間も
+        // 立っている。その間に手放すと、文はもう終わっているのに中止を送り、
+        // 中止はここで積んだカーソルを閉じる命令のほうに当たる。閉じ損ねたまま
+        // 割り当てを外すと、カーソルが誰にも閉じられずに残るため、1 度だけ積み直す。
+        if 中止を送った && 閉じた.as_ref().is_err_and(is_cancelled_by_break) {
+            閉じた = self.close_cursor_again(serial);
+        }
 
         let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
         table.remove_serial(serial);
         中止.and(閉じた)
+    }
+
+    /// 手放しの片付け中の割り当てへ、カーソルを閉じる命令を積み直して待つ。
+    ///
+    /// 積むのは表を握ったまま行う（`leases` の説明を参照）。割り当てが既に
+    /// 無ければ（全接続が片付け中で別のタブに引き継がれた、など）何もしない。
+    /// 引き継いだタブの実行は新しいカーソルを開く前に前のものを閉じるためである。
+    ///
+    /// # 引数
+    ///
+    /// * `serial` - 片付け中の割り当ての通し番号
+    fn close_cursor_again(&self, serial: u64) -> DbResult<()> {
+        let pending = {
+            let table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            let Some(lease) = table.leases.iter().find(|lease| lease.serial == serial) else {
+                return Ok(());
+            };
+            self.handles[lease.slot].send_close_cursor()?
+        };
+        self.見張る(|| pending.wait())
     }
 
     /// SQL を 1 文実行する。
@@ -1792,6 +1834,15 @@ mod tests {
         走った: Arc<Mutex<Vec<(usize, String)>>>,
         /// 中止を送ると失敗するか。
         中止に失敗する: bool,
+        /// 最初のカーソルを閉じる命令で、中止が届くのを待つか。
+        ///
+        /// 文が終わった後に届いた中止が、次に積まれたカーソルを閉じる命令に当たる
+        /// 順を、決まった形で再現するためにある。
+        閉じるときに中止を待つ: bool,
+        /// 閉じる命令で中止を待ち終えたか。待つのは最初の 1 度だけである。
+        閉じるときに待った: bool,
+        /// カーソルが開いているか。閉じ損ねを見分けるために共有する。
+        開いている: Arc<AtomicBool>,
     }
 
     /// 中止されるまで返らない文。
@@ -1853,6 +1904,7 @@ mod tests {
                 *中止された = false;
                 return Err(DbError::new(DbErrorKind::Cancelled, "ORA-01013"));
             }
+            self.開いている.store(true, Ordering::SeqCst);
             Ok(ExecuteOutcome::Query {
                 columns: Vec::new(),
                 chunk: Chunk {
@@ -1873,6 +1925,24 @@ mod tests {
         }
 
         fn close_cursor(&mut self) -> DbResult<()> {
+            if self.閉じるときに中止を待つ && !self.閉じるときに待った {
+                self.閉じるときに待った = true;
+                let (印, 知らせ) = &*self.中止;
+                let (mut 中止された, _) = 知らせ
+                    .wait_timeout_while(印.lock().unwrap(), Duration::from_secs(5), |届いた| {
+                        !*届いた
+                    })
+                    .unwrap();
+                if *中止された {
+                    // 走っている文の無いところへ届いた中止は、次の命令を打ち切る。
+                    *中止された = false;
+                    return Err(DbError::new(
+                        DbErrorKind::Execute,
+                        "ORA-01013: ユーザーによって現行の操作の取消しがリクエストされました",
+                    ));
+                }
+            }
+            self.開いている.store(false, Ordering::SeqCst);
             Ok(())
         }
 
@@ -1946,6 +2016,17 @@ mod tests {
     struct 止めるプールの記録 {
         中止した回数: Arc<Mutex<Vec<usize>>>,
         走った: Arc<Mutex<Vec<(usize, String)>>>,
+        /// 接続の番号ごとの、カーソルが開いているか。
+        開いている: Vec<Arc<AtomicBool>>,
+    }
+
+    /// 止めるドライバの振る舞いの選び方。
+    #[derive(Clone, Copy, Default)]
+    struct 止め方 {
+        /// 中止を送ると失敗させる。
+        中止に失敗する: bool,
+        /// 最初のカーソルを閉じる命令で中止が届くのを待たせる。
+        閉じるときに中止を待つ: bool,
     }
 
     /// 止めるドライバを `本数` ぶん載せたプールを組む。
@@ -1953,24 +2034,31 @@ mod tests {
     /// # 引数
     ///
     /// * `本数` - プールに載せる接続の本数
-    /// * `中止に失敗する` - 中止を送ると失敗させるか
+    /// * `止め方` - ドライバの振る舞い
     fn 止めるプールを組む(
         本数: usize,
-        中止に失敗する: bool,
+        止め方: 止め方,
     ) -> (Arc<ConnectionPool>, 止めるプールの記録) {
         let 中止した回数 = Arc::new(Mutex::new(Vec::new()));
         let 走った = Arc::new(Mutex::new(Vec::new()));
+        let 開いている: Vec<_> = (0..本数)
+            .map(|_| Arc::new(AtomicBool::new(false)))
+            .collect();
         let drivers: Vec<_> = (0..本数)
             .map(|番号| {
                 let 中止した回数 = Arc::clone(&中止した回数);
                 let 走った = Arc::clone(&走った);
+                let 開いている = Arc::clone(&開いている[番号]);
                 move || {
                     Ok(止めるドライバ {
                         番号,
                         中止: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
                         中止した回数,
                         走った,
-                        中止に失敗する,
+                        中止に失敗する: 止め方.中止に失敗する,
+                        閉じるときに中止を待つ: 止め方.閉じるときに中止を待つ,
+                        閉じるときに待った: false,
+                        開いている,
                     })
                 }
             })
@@ -1981,6 +2069,7 @@ mod tests {
             止めるプールの記録 {
                 中止した回数,
                 走った,
+                開いている,
             },
         )
     }
@@ -1990,7 +2079,7 @@ mod tests {
         // Arrange: 実行が表を離した直後（文が走っている間）に、同じタブの
         // 手放しが割り込む。中止を別のコマンドにすると手放しに追い越されうるため、
         // 手放しそのものが中止を送る（ADR 0003）
-        let (pool, 記録) = 止めるプールを組む(1, false);
+        let (pool, 記録) = 止めるプールを組む(1, 止め方::default());
         let 手放す側 = Arc::clone(&pool);
         表を離した直後に割り込ませる(&pool, move || {
             手放す側.release("A").unwrap();
@@ -2008,7 +2097,7 @@ mod tests {
     #[test]
     fn 走っていないタブを手放しても中止は送らない() {
         // Arrange: 走っていない接続へ中止を送ると、次に積まれた命令が打ち切られうる
-        let (pool, 記録) = 止めるプールを組む(1, false);
+        let (pool, 記録) = 止めるプールを組む(1, 止め方::default());
         pool.execute("A", "select 1 from dual", &[]).unwrap();
 
         // Act
@@ -2022,7 +2111,7 @@ mod tests {
     fn 手放しの片付けが済むまで別のタブはその接続を取らない() {
         // Arrange: A の文が走っている間に A を手放す。手放しが表を離した直後に
         // B が実行する。A の接続を B が取ると、A へ宛てた中止が B の文に当たりうる
-        let (pool, 記録) = 止めるプールを組む(2, false);
+        let (pool, 記録) = 止めるプールを組む(2, 止め方::default());
         let 手放す側 = Arc::clone(&pool);
         let 実行する側 = Arc::clone(&pool);
         表を離した直後に割り込ませる(&pool, move || {
@@ -2045,7 +2134,13 @@ mod tests {
     #[test]
     fn 中止に失敗しても手放しはカーソルを閉じて割り当てを外す() {
         // Arrange: 中止が失敗したからといって、閉じたタブに接続を握らせない
-        let (pool, 記録) = 止めるプールを組む(1, true);
+        let (pool, 記録) = 止めるプールを組む(
+            1,
+            止め方 {
+                中止に失敗する: true,
+                ..止め方::default()
+            },
+        );
         let 手放す側 = Arc::clone(&pool);
         let 手放した結果 = Arc::new(Mutex::new(None));
         let 控え = Arc::clone(&手放した結果);
@@ -2064,10 +2159,132 @@ mod tests {
     }
 
     #[test]
+    fn 文が終わった直後に手放して中止が閉じる命令に当たってもカーソルは閉じる() {
+        // Arrange: 実行の返事を受けてから走っている印を降ろすまでの間に手放すと、
+        // 中止を送る。文はもう終わっているため、中止は手放しが積んだカーソルを
+        // 閉じる命令に当たりうる（ADR 0003）
+        let (pool, 記録) = 止めるプールを組む(
+            1,
+            止め方 {
+                閉じるときに中止を待つ: true,
+                ..止め方::default()
+            },
+        );
+        let 手放す側 = Arc::clone(&pool);
+        let 走った = Arc::clone(&記録.走った);
+        let 手放した結果 = Arc::new(Mutex::new(None));
+        let 控え = Arc::clone(&手放した結果);
+        表を離した直後に割り込ませる(&pool, move || {
+            // 文が走り終えるのを待ってから手放す。
+            for _ in 0..1000 {
+                if !走った.lock().unwrap().is_empty() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            *控え.lock().unwrap() = Some(手放す側.release("A"));
+        });
+
+        // Act
+        pool.execute("A", "A", &[]).unwrap();
+
+        // Assert: 閉じ損ねたカーソルを残さない
+        let 手放した結果 = 手放した結果.lock().unwrap().take().unwrap();
+        assert!(手放した結果.is_ok(), "{手放した結果:?}");
+        assert_eq!(*記録.中止した回数.lock().unwrap(), vec![0]);
+        assert!(!記録.開いている[0].load(Ordering::SeqCst));
+        assert!(pool.leases.lock().unwrap().leases.is_empty());
+    }
+
+    #[test]
+    fn 剥がす先を選ぶときは片付け中の割り当てを後回しにする() {
+        // Arrange: A が最も古いが、手放しの片付け中である。片付け中の接続には
+        // A へ宛てた中止がまだ届いていないことがあり、引き継ぐと C の文が打ち切られうる
+        let (pool, _) = 止めるプールを組む(2, 止め方::default());
+        pool.execute("A", "A", &[]).unwrap();
+        pool.execute("B", "B", &[]).unwrap();
+        let 実行する側 = Arc::clone(&pool);
+        let 剥がされた = Arc::new(Mutex::new(None));
+        let 控え = Arc::clone(&剥がされた);
+        表を離した直後に割り込ませる(&pool, move || {
+            let 応答 = 実行する側.execute("C", "C", &[]).unwrap();
+            *控え.lock().unwrap() = Some(応答.discarded_tab);
+        });
+
+        // Act
+        pool.release("A").unwrap();
+
+        // Assert: 片付け中でない B を剥がした
+        assert_eq!(
+            剥がされた.lock().unwrap().take().unwrap(),
+            Some(String::from("B"))
+        );
+    }
+
+    #[test]
+    fn 全接続が片付け中なら最も古いものを引き継ぎ剥がしたタブは返さない() {
+        // Arrange: 片付け中のタブは閉じられており、「結果は破棄されました」を
+        // 出す先が無い
+        let (pool, _) = 止めるプールを組む(1, 止め方::default());
+        pool.execute("A", "A", &[]).unwrap();
+        let 実行する側 = Arc::clone(&pool);
+        let 剥がされた = Arc::new(Mutex::new(None));
+        let 控え = Arc::clone(&剥がされた);
+        表を離した直後に割り込ませる(&pool, move || {
+            let 応答 = 実行する側.execute("B", "B", &[]).unwrap();
+            *控え.lock().unwrap() = Some(応答.discarded_tab);
+        });
+
+        // Act
+        pool.release("A").unwrap();
+
+        // Assert: B が引き継ぎ、A の片付けは B の割り当てを外さない
+        assert_eq!(剥がされた.lock().unwrap().take().unwrap(), None);
+        assert!(pool.leased("B").is_some());
+    }
+
+    #[test]
+    fn 片付け中のタブの続きの取り出しは断る() {
+        // Arrange: 割り当ては片付けが済むまで表に残っているが、閉じたタブの
+        // カーソルから読ませない
+        let (pool, _) = 止めるプールを組む(1, 止め方::default());
+        pool.execute("A", "A", &[]).unwrap();
+        let 取り出す側 = Arc::clone(&pool);
+        let 続き = Arc::new(Mutex::new(None));
+        let 控え = Arc::clone(&続き);
+        表を離した直後に割り込ませる(&pool, move || {
+            *控え.lock().unwrap() = Some(取り出す側.fetch_more("A"));
+        });
+
+        // Act
+        pool.release("A").unwrap();
+
+        // Assert
+        let 続き = 続き.lock().unwrap().take().unwrap();
+        assert_eq!(続き.unwrap_err().kind, DbErrorKind::Closed);
+    }
+
+    #[test]
+    fn 中止に当たった失敗だけを積み直しの対象にする() {
+        // Arrange: ドライバの Cancelled と、Oracle の番号がそのまま届く場合の両方
+        let 中止 = DbError::cancelled();
+        let 番号 = DbError::new(
+            DbErrorKind::Execute,
+            "ORA-01013: 取消しがリクエストされました",
+        );
+        let 別の失敗 = DbError::new(DbErrorKind::Execute, "ORA-00942: 表が存在しません");
+
+        // Act & Assert
+        assert!(is_cancelled_by_break(&中止));
+        assert!(is_cancelled_by_break(&番号));
+        assert!(!is_cancelled_by_break(&別の失敗));
+    }
+
+    #[test]
     fn 手放したタブへの中止はプールの側からは送らない() {
         // Arrange: 手放しの片付け中に遅れて届いた `⌘.` が、片付けの後に同じ接続を
         // 引き継いだ別のタブへ当たらないようにする
-        let (pool, 記録) = 止めるプールを組む(1, false);
+        let (pool, 記録) = 止めるプールを組む(1, 止め方::default());
         pool.execute("A", "select 1 from dual", &[]).unwrap();
         pool.release("A").unwrap();
 
