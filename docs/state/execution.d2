@@ -2,7 +2,12 @@
 #
 # byTab にタブの項目が無い状態を「なし」として描く。
 # succeeded の中は、結果セットのカーソルが開いているあいだの取り出しの段階である。
-# 赤の破線は、待ちの後で項目の有無を確かめずに書き戻すため起こりうる遷移。
+#
+# 項目を作るのは execute() / executeScript() を始めたときだけである。
+# 始めるたびにタブの世代を採番し、待ちの後の書き戻しは控えた世代が今も同じとき
+# だけ行う。releaseTab() と clear() は世代ごと捨てるため、閉じたタブへ遅れて
+# 返った応答（実行・スクリプトの各文・続きの取り出し）は項目を作り直さない。
+# スクリプト実行は、閉じられたら残りの文を投げない。
 
 vars: {
   d2-config: {
@@ -22,11 +27,6 @@ classes: {
   }
   state: {
     style.border-radius: 8
-  }
-  unguarded: {
-    style.stroke: "#c33"
-    style.stroke-dash: 4
-    style.font-color: "#c33"
   }
 }
 
@@ -90,6 +90,5 @@ none <- failed: "releaseTab()"
 none <- discarded: "releaseTab()"
 none <- succeeded: "releaseTab()"
 
-# patchTab は項目が無ければ空の実行状態から作り直すため、
-# releaseTab() の後に返った fetchMore が idle の項目を蘇らせる。
-none -> none: "fetchMore の遅れた応答\n項目が作り直される" {class: unguarded}
+# 実行中のタブも閉じられる（closeTabAndRelease は走っているかを見ない）。
+none <- running: "releaseTab()\n待っている応答は捨てる"
