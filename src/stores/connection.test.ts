@@ -450,6 +450,64 @@ describe('接続断からの回復（ADR 0026）', () => {
 })
 
 describe('接続の試行の関所', () => {
+  it('繋がったときだけ接続は真を返す', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    const 繋がった = await useConnectionStore.getState().connect('dev', params)
+
+    // Assert
+    expect(繋がった).toBe(true)
+  })
+
+  it('接続に失敗すると偽を返す', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({ connectError: { kind: 'connect', message: 'ORA-12541' } })
+    setDbApi(api)
+
+    // Act
+    const 繋がった = await useConnectionStore.getState().connect('dev', params)
+
+    // Assert
+    expect(繋がった).toBe(false)
+  })
+
+  it('繋ぎに行っている最中に断られた接続は前の接続が残っていても偽を返す', async () => {
+    // Arrange: 呼び出し側が connection を読むと、残っている前の接続を成功と読み違える
+    const { api, 試行 } = 保留の接続()
+    setDbApi(api)
+    const 最初 = useConnectionStore.getState().connect('dev', params)
+    試行[0].成功させる()
+    await 最初
+    const 切り替え = useConnectionStore.getState().connect('stg', params)
+
+    // Act
+    const 繋がった = await useConnectionStore.getState().connect('prod', params)
+
+    // Assert
+    expect(繋がった).toBe(false)
+    expect(useConnectionStore.getState().connection?.name).toBe('dev')
+    試行[1].成功させる()
+    await 切り替え
+  })
+
+  it('待っている間に切断された接続は遅れて成功しても偽を返す', async () => {
+    // Arrange
+    const { api, 試行 } = 保留の接続()
+    setDbApi(api)
+    const 接続 = useConnectionStore.getState().connect('dev', params)
+    await useConnectionStore.getState().disconnect()
+
+    // Act
+    試行[0].成功させる()
+    const 繋がった = await 接続
+
+    // Assert
+    expect(繋がった).toBe(false)
+  })
+
   it('繋ぎに行っている最中にもう一度接続を頼んでも 2 本目は走らない', async () => {
     // Arrange: どちらが後に返るか約束できず、先に返ったプールが迷子になる
     const { api, 試行 } = 保留の接続()

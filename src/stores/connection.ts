@@ -83,8 +83,15 @@ interface ConnectionState {
    * **繋ぎに行っている最中は何もしない**（`reconnect` と同じ）。2 本目を走らせると
    * どちらが後に返るか約束できず、先に返ったほうのプールが Rust 側に迷子で残る。
    * 押せなくするのは `ConnectionForm` の見た目の手当てであり、関所はここにある。
+   *
+   * **この呼び出しで繋がったかを返す。**関所で断ったときも、失敗したときも、
+   * 待っている間に切断されたときも偽である。呼び出し側が待ちの後に
+   * `connection` を読んで判断すると、関所で断った場合に残っている前の接続
+   * （試行を始めた時点で既に手放してある）を成功と読み違える。
+   *
+   * @returns この呼び出しで接続が確立し、段階が `connected` になったか
    */
-  connect: (name: string, params: ConnectionParams, profile?: ConnectionProfile) => Promise<void>
+  connect: (name: string, params: ConnectionParams, profile?: ConnectionProfile) => Promise<boolean>
   /**
    * 切断する。接続していなければ何もしない。
    *
@@ -219,7 +226,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   connect: async (name, params, profile = {}) => {
     if (get().status === 'connecting') {
-      return
+      return false
     }
 
     const {
@@ -243,16 +250,18 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       if (締めくくる(id, false)) {
         set({ status: 'failed', connection: null, error: toErrorMessage(error) })
       }
-      return
+      return false
     }
 
-    if (締めくくる(id, true)) {
-      set({
-        status: 'connected',
-        connection: { id, savedId, name, params, completion, color, group },
-        error: null,
-      })
+    if (!締めくくる(id, true)) {
+      return false
     }
+    set({
+      status: 'connected',
+      connection: { id, savedId, name, params, completion, color, group },
+      error: null,
+    })
+    return true
   },
 
   disconnect: async () => {
