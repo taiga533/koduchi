@@ -152,6 +152,7 @@ afterEach(() => {
   // 解く前に画面を片付ける。
   cleanup()
   clearMocks()
+  delete (globalThis as { isTauri?: boolean }).isTauri
   resetDbApi()
   resetPendingDialogs()
   resetCloseTabDialog()
@@ -210,6 +211,8 @@ describe('App', () => {
 
   it('メニューバーの「設定…」のイベントが届くと設定画面を開く', async () => {
     // Arrange
+    // `mockWindows` は `isTauri()` の印を立てないため、Tauri の中にいることを自分で示す。
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
     mockWindows('main')
     mockIPC(() => {}, { shouldMockEvents: true })
     const { api } = createFakeDbApi()
