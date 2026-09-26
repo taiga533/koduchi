@@ -454,6 +454,9 @@ impl ConnectionPool {
             let lease = table.leases.remove(index);
             // 表を握ったまま積む。離してから積むと、この接続を引き継いだ別のタブの
             // 実行が先に積まれ、そのタブのカーソルを閉じてしまう。
+            //
+            // 積めなかったときも割り当ては戻さない。タブは閉じられており、戻すと
+            // 終わったアクタースレッドの接続を閉じたタブが握り続ける。
             self.handles[lease.slot].send_close_cursor()?
         };
         self.表を離した();
@@ -483,15 +486,24 @@ impl ConnectionPool {
 
         let (pending, serial, discarded_tab) = {
             let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            // 積めなかったときに戻すための控え。割り当ての数は接続の本数（既定 4）
+            // までなので、写しても安い。
+            let 積む前 = table.leases.clone();
             let (handle, serial, discarded_tab) = self.acquire(&mut table, tab_id)?;
             // 剥がしたタブのカーソルは、同じ接続を使い回す前に閉じておく必要がある。
             // 実行そのものが前のカーソルを閉じるため、ここでは表からの削除だけでよい。
             // 積むのは表を握ったまま行う（`leases` の説明を参照）。
-            (
-                handle.send_execute(sql, binds, self.chunk_size)?,
-                serial,
-                discarded_tab,
-            )
+            match handle.send_execute(sql, binds, self.chunk_size) {
+                Ok(pending) => (pending, serial, discarded_tab),
+                Err(error) => {
+                    // 積めないのはアクタースレッドが終わっているときである。命令は
+                    // どの接続にも届いていないため、剥がしたタブのカーソルも手付かずで
+                    // ある。割り当てだけが書き換わったまま残ると、剥がしたタブは
+                    // 「破棄された」と読み、このタブには届いていない実行の割り当てが残る。
+                    table.leases = 積む前;
+                    return Err(error);
+                }
+            }
         };
         self.表を離した();
 
@@ -537,6 +549,9 @@ impl ConnectionPool {
             })?;
             // 表を握ったまま積む。離してから積むと、この割り当てを剥がした別のタブの
             // 実行が先に積まれ、そのタブの行を読んでしまう。
+            //
+            // 積めなかったときも表は戻さない。`touch` が動かすのは使った順だけで
+            // あり、割り当ての有無は変わっていない。
             (handle.send_fetch_more(self.chunk_size)?, serial)
         };
         self.表を離した();
@@ -1370,6 +1385,12 @@ mod tests {
     /// 続きの取り出しを待った後に割り当てを外す経路を通すためにある。
     const 続きで尽きる: &str = "（続きで尽きる）";
 
+    /// この札で実行すると、アクタースレッドが落ちる。
+    ///
+    /// 以後その接続へ命令を積めなくなる。`send_*` が失敗する経路を、実データベース
+    /// 抜きで通すためにある。
+    const アクターを落とす: &str = "（アクターを落とす）";
+
     /// 札を載せた 1 行ぶんのかたまりを作る。
     ///
     /// # 引数
@@ -1394,6 +1415,7 @@ mod tests {
             _binds: &[Bind],
             _chunk_size: usize,
         ) -> DbResult<ExecuteOutcome> {
+            assert_ne!(sql, アクターを落とす, "アクタースレッドを落とす");
             *self.開いている.lock().unwrap() = Some(sql.to_string());
             Ok(ExecuteOutcome::Query {
                 columns: vec![Column {
@@ -1641,6 +1663,25 @@ mod tests {
         assert!(pool.leased("A").is_some());
         assert_eq!(開いている.lock().unwrap().as_deref(), Some("A2"));
         assert_eq!(pool.fetch_more("A").unwrap().rows[0][0].text, "A2");
+    }
+
+    #[test]
+    fn 実行を積めなかったときは割り当ての表を書き換えない() {
+        // Arrange: A の実行でアクタースレッドが落ち、A の割り当てだけが残る。
+        // 1 本しかないので、B の実行は A の割り当てを剥がそうとする
+        let (pool, _) = 一本のプールを組む();
+        assert_eq!(
+            pool.execute("A", アクターを落とす, &[]).unwrap_err().kind,
+            DbErrorKind::Closed
+        );
+
+        // Act
+        let 実行 = pool.execute("B", "B", &[]);
+
+        // Assert: B には届いていない実行の割り当てを残さず、A からも剥がさない
+        assert_eq!(実行.unwrap_err().kind, DbErrorKind::Closed);
+        assert!(pool.leased("B").is_none());
+        assert!(pool.leased("A").is_some());
     }
 
     #[test]
