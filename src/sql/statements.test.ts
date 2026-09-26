@@ -150,7 +150,7 @@ describe('splitStatements', () => {
     const statements = splitStatements(sql)
 
     // Assert
-    expect(statements.map((s) => s.text)).toEqual(['begin null; null; end'])
+    expect(statements.map((s) => s.text)).toEqual(['begin null; null; end;'])
   })
 
   it('DECLARE 部のセミコロンでは切らない', () => {
@@ -223,7 +223,76 @@ describe('splitStatements', () => {
     const statements = splitStatements(sql)
 
     // Assert
-    expect(statements.map((s) => s.text)).toEqual(['begin null; end', 'select 1 from dual'])
+    expect(statements.map((s) => s.text)).toEqual(['begin null; end;', 'select 1 from dual'])
+  })
+
+  it('CREATE OR REPLACE PROCEDURE は END のセミコロンまでを本文に含める', () => {
+    // Arrange
+    const sql = 'create or replace procedure p is\nbegin\n  null;\nend;\nselect 1 from dual;'
+
+    // Act
+    const statements = splitStatements(sql)
+
+    // Assert
+    expect(statements.map((s) => s.text)).toEqual([
+      'create or replace procedure p is\nbegin\n  null;\nend;',
+      'select 1 from dual',
+    ])
+  })
+
+  it('PL_SQL ブロックの位置は END のセミコロンまでを指す', () => {
+    // Arrange
+    const sql = 'begin null; end;  select 1 from dual'
+
+    // Act
+    const [block] = splitStatements(sql)
+
+    // Assert
+    expect(sql.slice(block.start, block.end)).toBe('begin null; end;')
+  })
+
+  it('セミコロンで終わる複数の SQL はどれも末尾のセミコロンを落とす', () => {
+    // Arrange
+    const sql = 'select 1 from dual;\nselect 2 from dual;\nselect 3 from dual;'
+
+    // Act
+    const statements = splitStatements(sql)
+
+    // Assert
+    expect(statements.map((s) => s.text)).toEqual([
+      'select 1 from dual',
+      'select 2 from dual',
+      'select 3 from dual',
+    ])
+  })
+
+  it.each([
+    ['文字列リテラル', "select 'a;' from dual;", "select 'a;' from dual"],
+    ['引用符リテラル', "select q'[a;\nb;]' from dual;", "select q'[a;\nb;]' from dual"],
+    ['行コメント', 'select 1 -- a;\nfrom dual;', 'select 1 -- a;\nfrom dual'],
+    ['ブロックコメント', 'select 1 /* a; */ from dual;', 'select 1 /* a; */ from dual'],
+  ])('%s の中のセミコロンは残し、末尾のセミコロンだけを落とす', (_, sql, expected) => {
+    // Arrange（sql と expected は引数で受け取る）
+
+    // Act
+    const statements = splitStatements(sql)
+
+    // Assert
+    expect(statements.map((s) => s.text)).toEqual([expected])
+  })
+
+  it('PL_SQL ブロックの中の文字列や引用符リテラルのセミコロンでは切らない', () => {
+    // Arrange
+    const sql = "begin dbms_output.put_line(q'[x;]' || 'y;'); end;\nselect 1 from dual;"
+
+    // Act
+    const statements = splitStatements(sql)
+
+    // Assert
+    expect(statements.map((s) => s.text)).toEqual([
+      "begin dbms_output.put_line(q'[x;]' || 'y;'); end;",
+      'select 1 from dual',
+    ])
   })
 
   it('CASE 式を含む問い合わせでも切れ目を誤らない', () => {

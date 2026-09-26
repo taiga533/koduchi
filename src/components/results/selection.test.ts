@@ -11,6 +11,7 @@ import {
   selectionEdges,
   selectionRange,
   selectionShadow,
+  startsSelection,
 } from './selection'
 
 /** 2 列 3 行の結果。NULL と空文字列を 1 つずつ含む。 */
@@ -300,5 +301,51 @@ describe('buildCopyText と切り詰め', () => {
 
     // Assert
     expect(文字列).toBe('10\t{"id":1')
+  })
+})
+
+describe('startsSelection', () => {
+  it('主ボタンの押し下げは選択を始める', () => {
+    // Arrange
+    const press = { button: 0, ctrlKey: false }
+
+    // Act
+    const result = startsSelection(press)
+
+    // Assert
+    expect(result).toBe(true)
+  })
+
+  it('右ボタンの押し下げは選択を始めない', () => {
+    // Arrange
+    const press = { button: 2, ctrlKey: false }
+
+    // Act
+    const result = startsSelection(press)
+
+    // Assert
+    expect(result).toBe(false)
+  })
+
+  it('⌃ + クリックは右クリックの代わりなので選択を始めない', () => {
+    // Arrange
+    const press = { button: 0, ctrlKey: true }
+
+    // Act
+    const result = startsSelection(press)
+
+    // Assert
+    expect(result).toBe(false)
+  })
+
+  it('中ボタンの押し下げは選択を始めない', () => {
+    // Arrange
+    const press = { button: 1, ctrlKey: false }
+
+    // Act
+    const result = startsSelection(press)
+
+    // Assert
+    expect(result).toBe(false)
   })
 })

@@ -16,6 +16,7 @@ import {
   useExecutionStore,
 } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
+import { ErrorCopyButton } from './ErrorCopyButton'
 import { ResultTable } from './ResultTable'
 
 /** タブの表示名。 */
@@ -180,8 +181,9 @@ function PlanView({ plan }: { plan: TabPlan | null }) {
 
   if (plan.status === 'failed') {
     return (
-      <div className="flex-1 flex items-center justify-center px-24px">
+      <div className="flex-1 flex flex-col items-center justify-center gap-9px px-24px">
         <p className="text-12px text-err text-center m-0 max-w-560px break-words">{plan.error}</p>
+        {plan.error ? <ErrorCopyButton text={plan.error} /> : null}
       </div>
     )
   }
@@ -268,6 +270,7 @@ function FailureNotice({
         </p>
       ) : null}
       <p className="text-12px text-err text-center m-0 max-w-560px break-words">{error}</p>
+      {error ? <ErrorCopyButton text={error} /> : null}
       <p className="text-11.5px text-fg4 m-0">詳細はメッセージタブに残ります</p>
     </div>
   )
@@ -277,8 +280,9 @@ function FailureNotice({
 function MessageLog({ log, error }: { log: LogEntry[]; error: string | null }) {
   if (log.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-12.5px text-fg4">
+      <div className="flex-1 flex flex-col items-center justify-center gap-9px text-12.5px text-fg4">
         {error ?? '実行のログがここに残ります'}
+        {error ? <ErrorCopyButton text={error} /> : null}
       </div>
     )
   }
@@ -303,9 +307,14 @@ function MessageLog({ log, error }: { log: LogEntry[]; error: string | null }) {
             {entry.sql}
           </pre>
           {entry.error ? (
-            <pre className="m-0 whitespace-pre-wrap break-words text-err leading-[1.6]">
-              {entry.error}
-            </pre>
+            <>
+              <pre className="m-0 whitespace-pre-wrap break-words text-err leading-[1.6]">
+                {entry.error}
+              </pre>
+              <div>
+                <ErrorCopyButton text={entry.error} />
+              </div>
+            </>
           ) : null}
           {entry.notices.map((notice, index) => (
             <pre

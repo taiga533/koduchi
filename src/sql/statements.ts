@@ -28,7 +28,14 @@ import {
 
 /** 切り出された 1 文。 */
 export interface SqlStatement {
-  /** 前後の空白を落とした本文。末尾のセミコロンは含まない。 */
+  /**
+   * 前後の空白を落とした、そのまま Oracle へ渡せる本文（issue #55）。
+   *
+   * 通常の SQL は末尾のセミコロンを含まない（付けたまま渡すと `ORA-00933` /
+   * `ORA-03048` になる）。PL/SQL 単位は `END;` のセミコロンまで含む（落とすと
+   * 無名ブロックは `PLS-00103` になり、`CREATE PROCEDURE` は黙って無効な
+   * オブジェクトを作る）。
+   */
   text: string
   /** 元の文字列における開始位置。 */
   start: number
@@ -170,6 +177,10 @@ function canTerminate(state: BlockState): boolean {
  * 空白とコメントだけからなる断片は結果に含めない。末尾のセミコロンが無くても
  * 最後の文として扱う。
  *
+ * 実行の経路（`⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎` / 実行計画）はどれもここを通った `text`
+ * を Rust へ渡す。セミコロンを落とすかどうかを経路ごとに決めると、PL/SQL の
+ * 見立てが経路によって割れるためである。
+ *
  * @param sql 対象の SQL 全文
  *
  * @returns 文の一覧。元の文字列における位置を伴う。
@@ -232,7 +243,9 @@ export function splitStatements(sql: string): SqlStatement[] {
     }
 
     if (character === ';' && canTerminate(state)) {
-      pushSegment(cursor)
+      // 区切りのセミコロンが文の一部かどうかは、ここでしか分からない。PL/SQL の
+      // `END;` は構文の一部であり、SQL の `;` は SQL*Plus 流の区切りにすぎない。
+      pushSegment(state.isPlSql ? cursor + 1 : cursor)
       cursor += 1
       segmentStart = cursor
       state = createBlockState()

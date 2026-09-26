@@ -98,6 +98,17 @@ describe('currentSql', () => {
     expect(sql).toBe('select 2 from dual')
   })
 
+  it('カーソル位置の PL_SQL ブロックは END のセミコロンまでを取り出す', () => {
+    // Arrange
+    SQLタブを一枚にする({ content: 'select 1 from dual;\nbegin null; end;' })
+
+    // Act
+    const sql = currentSql({ offset: 25, selectedText: null }, false)
+
+    // Assert
+    expect(sql).toBe('begin null; end;')
+  })
+
   it('定義タブを選んでいるときは SQL が無い', () => {
     // Arrange
     SQLタブを一枚にする()
@@ -169,6 +180,61 @@ describe('runSelection', () => {
     // Assert
     await expect.poll(() => calls.execute.map((call) => call.sql)).toEqual(['select 1'])
   })
+
+  it('選択した文の末尾のセミコロンは渡さない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'select 1 from dual;' })
+
+    // Act
+    runSelection(画面({ offset: 0, selectedText: 'select 1 from dual;' }))
+
+    // Assert
+    await expect.poll(() => calls.execute.map((call) => call.sql)).toEqual(['select 1 from dual'])
+  })
+
+  it('セミコロンで終わる複数の文を選ぶと 1 文ずつ順に実行する', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    const content = 'select 1 from dual;\nselect 2 from dual;'
+    SQLタブを一枚にする({ content })
+
+    // Act
+    runSelection(画面({ offset: content.length, selectedText: content }))
+
+    // Assert
+    await expect
+      .poll(() => calls.execute.map((call) => call.sql))
+      .toEqual(['select 1 from dual', 'select 2 from dual'])
+  })
+
+  it('選択した PL_SQL ブロックは END のセミコロンまで渡す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'begin null; end;' })
+
+    // Act
+    runSelection(画面({ offset: 0, selectedText: 'begin null; end;' }))
+
+    // Assert
+    await expect.poll(() => calls.execute.map((call) => call.sql)).toEqual(['begin null; end;'])
+  })
+
+  it('コメントだけを選んでも何もしない', () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    SQLタブを一枚にする({ content: '-- memo' })
+
+    // Act
+    runSelection(画面({ offset: 0, selectedText: '-- memo' }))
+
+    // Assert
+    expect(calls.execute).toEqual([])
+  })
 })
 
 describe('runScript', () => {
@@ -185,6 +251,21 @@ describe('runScript', () => {
     await expect
       .poll(() => calls.execute.map((call) => call.sql))
       .toEqual(['create table t (n number)', 'insert into t values (1)'])
+  })
+
+  it('PL_SQL ブロックは END のセミコロンまで、SQL はセミコロンを落として渡す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'begin null; end;\nselect 1 from dual;' })
+
+    // Act
+    runScript(画面(先頭))
+
+    // Assert
+    await expect
+      .poll(() => calls.execute.map((call) => call.sql))
+      .toEqual(['begin null; end;', 'select 1 from dual'])
   })
 })
 
@@ -309,6 +390,20 @@ describe('runPlan', () => {
 
     // Assert
     expect(calls.explainPlan.map((call) => call.sql)).toEqual(['select 2 from dual'])
+  })
+
+  it('選択に複数の文があれば最初の文の実行計画をセミコロン抜きで取る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const content = 'select 1 from dual;\nselect 2 from dual;'
+    SQLタブを一枚にする({ content })
+
+    // Act
+    await runPlan(false, 画面({ offset: 0, selectedText: content }))
+
+    // Assert
+    expect(calls.explainPlan.map((call) => call.sql)).toEqual(['select 1 from dual'])
   })
 })
 

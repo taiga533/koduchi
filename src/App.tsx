@@ -52,6 +52,7 @@ import { SessionsPanel } from './components/sessions/SessionsPanel'
 import { SourceSearchPanel } from './components/source/SourceSearchPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
+import { onOpenSettingsRequested } from './appMenu'
 import { onConnectionLost } from './connection/lost'
 import type { Command, CommandScreen } from './mediator/commands'
 import { resolveKeybindings } from './keybindings/bindings'
@@ -235,6 +236,10 @@ function AppWindow() {
     })
   }, [ask])
 
+  // メニューバーの「設定…」（⌘,）から設定画面を開く（ADR 0036）。書き換えるのは
+  // `ui` ストアだけであり、仲介者を通さずに繋ぐ。
+  useEffect(() => onOpenSettingsRequested(openSettings), [openSettings])
+
   // サーバ側で接続が切れたことを各ストアへ配る（ADR 0026）。
   useEffect(() => onConnectionLost(relayConnectionLost), [])
 
@@ -319,7 +324,7 @@ function AppWindow() {
 
   if (clientStatus.status === 'unavailable') {
     return (
-      <Shell onOpenSettings={openSettings} onDisconnect={onDisconnect} overlay={settings}>
+      <Shell onDisconnect={onDisconnect} overlay={settings}>
         <CenteredPanel>
           <InstantClientNotice
             message={clientStatus.message}
@@ -332,7 +337,7 @@ function AppWindow() {
 
   if (!connection) {
     return (
-      <Shell onOpenSettings={openSettings} onDisconnect={onDisconnect} overlay={settings}>
+      <Shell onDisconnect={onDisconnect} overlay={settings}>
         <CenteredPanel>
           {connectionView.mode === 'picker' ? (
             <ConnectionPicker
@@ -405,7 +410,6 @@ function AppWindow() {
 
   return (
     <Shell
-      onOpenSettings={openSettings}
       onDisconnect={onDisconnect}
       onOpenSessions={openSessions}
       onOpenSourceSearch={openSourceSearch}
