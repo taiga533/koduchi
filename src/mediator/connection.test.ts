@@ -34,6 +34,8 @@ beforeEach(() => {
     confirmCommit: async () => 確認の答え.shift() ?? false,
   }))
   useExecutionStore.getState().clear()
+  // 応答待ちの文は clear では消えない。前のテストの要求を持ち越さない。
+  useExecutionStore.setState({ pendingRequests: [] })
   useSchemaStore.getState().clear()
   useDefinitionStore.getState().clear()
   useUiStore.setState({ sessionsOpen: false, sourceSearchOpen: false })
@@ -179,6 +181,22 @@ describe('disconnectAndReset', () => {
     expect(calls.disconnect).toEqual([])
     expect(calls.cancel).toEqual([])
     expect(useConnectionStore.getState().connection).not.toBeNull()
+  })
+
+  it('閉じたタブの文が応答待ちのままなら切断しない', async () => {
+    // Arrange: 閉じたタブの項目は消えているが、文はまだデータベースで走っている
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    useExecutionStore.setState({ byTab: {}, pendingRequests: ['閉じたタブの要求'] })
+    const { ask, 尋ねた } = 尋ね方('dismiss')
+
+    // Act
+    const 切断した = await disconnectAndReset(ask)
+
+    // Assert
+    expect(切断した).toBe(false)
+    expect(尋ねた).toEqual([{ kind: 'disconnectBlocked' }])
+    expect(calls.disconnect).toEqual([])
   })
 
   it('告げた知らせで中止を選ぶと実行中の文を中止し、切断はしない', async () => {

@@ -44,7 +44,9 @@ export async function closeTabAndRelease(tabId: string): Promise<void> {
     const execution = useExecutionStore.getState()
     // 実行中なら先に中止の命令を送る。手放すだけでは走っている文がデータベース
     // の上で最後まで走り続け、閉じたタブの文が接続を握ったままになる。走って
-    // いないタブへは送らない（`cancel` の関所が弾く）。
+    // いないタブへは送らない（`cancel` の関所が弾く）。順序は中止が先である。
+    // 手放すとプールはそのタブの割り当てを外すため、後から送った中止は届かない
+    // （ADR 0003）。
     void execution.cancel(connection.id, tabId)
     void execution.releaseTab(connection.id, tabId)
   }
