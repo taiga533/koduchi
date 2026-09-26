@@ -1,0 +1,77 @@
+# 接続の段階の遷移（src/stores/connection.ts の ConnectionStatus）
+#
+# 実線はストアが受け付け、画面からも起こせる遷移。
+# 赤の破線は「ストアは受け付けるが、画面が入口を出していないだけで守っている」遷移。
+# 関所がビューの側にしか無いものを目に見えるようにするために分けてある。
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+classes: {
+  initial: {
+    shape: circle
+    width: 16
+    height: 16
+    label: ""
+    style.fill: "#444"
+  }
+  state: {
+    style.border-radius: 8
+  }
+  unguarded: {
+    style.stroke: "#c33"
+    style.stroke-dash: 4
+    style.font-color: "#c33"
+  }
+}
+
+start.class: initial
+
+disconnected: {
+  class: state
+  label: "disconnected\n未接続"
+}
+connecting: {
+  class: state
+  label: "connecting\n接続中"
+}
+connected: {
+  class: state
+  label: "connected\n接続済み"
+}
+failed: {
+  class: state
+  label: "failed\n接続に失敗"
+}
+lost: {
+  class: state
+  label: "lost\nサーバ側で切れた（ADR 0026）"
+}
+
+start -> disconnected
+
+disconnected -> connecting: "connect()"
+failed -> connecting: "connect()"
+connected -> connecting: "connect()\n別の接続へ切り替え"
+lost -> connecting: "reconnect()\n押した瞬間に動かす（ADR 0030）"
+
+connecting -> connected: "connect 成功"
+connecting -> failed: "connect 失敗\n（connect() から）"
+connecting -> lost: "connect 失敗\n（reconnect() から。押し直せる形を残す）"
+
+connected -> lost: "markLost()\n段階が変わったときだけ true"
+connected -> disconnected: "disconnect()"
+lost -> disconnected: "disconnect()"
+
+# ストアに関所が無く、ConnectionForm が押せなくしているだけの遷移。
+connecting -> connecting: "connect()\n前の接続の完了を待たずに 2 本目が走る" {class: unguarded}
+
+# reconnect() の待ちの最中に disconnect() が通ると、遅れて返った成功が
+# connected と接続を書き戻し、片付け済みの画面に接続が蘇る。
+# 今はステータスバーが connecting 中に「切断」を出さないため起きない。
+connecting -> disconnected: "disconnect()\n待ちの後で connected へ書き戻される" {class: unguarded}

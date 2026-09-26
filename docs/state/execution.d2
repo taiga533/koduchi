@@ -1,0 +1,95 @@
+# タブ 1 枚ぶんの実行の段階（src/stores/execution.ts の ExecutionStatus）
+#
+# byTab にタブの項目が無い状態を「なし」として描く。
+# succeeded の中は、結果セットのカーソルが開いているあいだの取り出しの段階である。
+# 赤の破線は、待ちの後で項目の有無を確かめずに書き戻すため起こりうる遷移。
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+classes: {
+  initial: {
+    shape: circle
+    width: 16
+    height: 16
+    label: ""
+    style.fill: "#444"
+  }
+  state: {
+    style.border-radius: 8
+  }
+  unguarded: {
+    style.stroke: "#c33"
+    style.stroke-dash: 4
+    style.font-color: "#c33"
+  }
+}
+
+start.class: initial
+
+none: {
+  class: state
+  label: "なし\nbyTab に項目が無い"
+}
+running: {
+  class: state
+  label: "running\n実行中"
+}
+failed: {
+  class: state
+  label: "failed\n失敗・中止"
+}
+discarded: {
+  class: state
+  label: "discarded\n結果セットを閉じられた（ADR 0003）"
+}
+
+succeeded: {
+  label: "succeeded\n成功"
+
+  open: {
+    class: state
+    label: "続きがある\nexhausted = false"
+  }
+  fetching: {
+    class: state
+    label: "取り出し中\nloadingMore = true"
+  }
+  exhausted: {
+    class: state
+    label: "尽きた\nexhausted = true"
+  }
+
+  open -> fetching: "fetchMore()"
+  fetching -> open: "かたまりを受け取る"
+  fetching -> exhausted: "最後のかたまり"
+  open -> exhausted: "markExhausted()"
+}
+
+start -> none
+
+none -> running: "execute() / executeScript()"
+failed -> running: "execute() / executeScript()"
+discarded -> running: "execute() / executeScript()"
+succeeded -> running: "execute() / executeScript()"
+running -> running: "execute()\n実行中は無視する"
+
+running -> succeeded.open: "結果セットを受け取る"
+running -> succeeded.exhausted: "全行を受け取った・問い合わせ以外の文"
+running -> failed: "失敗\ncancel() は running のときだけ効く"
+
+succeeded.open -> discarded: "別タブの実行が接続を明け渡させた\nnoteConnectionLost()"
+succeeded.fetching -> discarded: "fetchMore 失敗"
+
+none <- failed: "releaseTab()"
+none <- discarded: "releaseTab()"
+none <- succeeded: "releaseTab()"
+
+# patchTab は項目が無ければ空の実行状態から作り直すため、
+# releaseTab() の後に返った fetchMore が idle の項目を蘇らせる。
+none -> none: "fetchMore の遅れた応答\n項目が作り直される" {class: unguarded}
