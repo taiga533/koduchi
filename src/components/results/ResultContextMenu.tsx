@@ -3,10 +3,20 @@
  *
  * 項目は「コピー」「見出し付きでコピー」「この列をコピー」の 3 つ。編集や貼り付けは
  * 対象外である。
+ *
+ * メニューは焦点を奪わない。暗幕も項目も押し下げの既定動作を止めてあり、閉じた後も
+ * 焦点は表に残る。奪うと焦点が `<body>` へ抜け、選択が見えたまま `⌘A` / `⌘C` /
+ * 矢印が表へ届かなくなる（issue #53）。
  */
 
 import { Columns3, Copy, TableProperties } from 'lucide-react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useEscapeKey } from '../../input/useEscapeKey'
+
+/** 押し下げで焦点が動かないようにする。 */
+function keepFocus(event: ReactMouseEvent) {
+  event.preventDefault()
+}
 
 interface ResultContextMenuProps {
   /** 画面上の表示位置（`clientX` / `clientY`）。 */
@@ -39,13 +49,20 @@ export function ResultContextMenu({
       <div
         data-testid="result-context-menu-backdrop"
         className="fixed inset-0 z-20"
-        onMouseDown={onClose}
-        onContextMenu={onClose}
+        onMouseDown={(event) => {
+          keepFocus(event)
+          onClose()
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          onClose()
+        }}
       />
       <div
         role="menu"
         data-testid="result-context-menu"
         style={{ left: x, top: y }}
+        onMouseDown={keepFocus}
         className="fixed z-30 w-186px p-4px rounded-9px bg-panel border border-line shadow-[0_8px_24px_rgba(24,28,38,.16)] flex flex-col gap-1px"
       >
         <MenuItem label="コピー" icon={<Copy size={13} />} onSelect={onCopy} />

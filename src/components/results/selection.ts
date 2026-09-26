@@ -250,3 +250,24 @@ export function buildCopyText(
 
   return lines.join('\n')
 }
+
+/** 押し下げのうち、選択の判定に要るものだけ。 */
+export interface PointerPress {
+  /** `MouseEvent.button`。0 が主ボタン。 */
+  button: number
+  ctrlKey: boolean
+}
+
+/**
+ * 押し下げがセルの選択を始め直すものかを判定する。
+ *
+ * 右クリックは `contextmenu` より先に `mousedown`（`button` が 2）を起こす。これで
+ * 選択を始め直すと、複数セルを選んだまま右クリックしたときに範囲が押したセル 1 つへ
+ * 潰れ、メニューの「コピー」が 1 セルしか載せない（issue #53）。macOS の `⌃` +
+ * クリックも主ボタンのまま `contextmenu` を起こすため、同じく除く。
+ *
+ * @param press 押し下げ
+ */
+export function startsSelection(press: PointerPress): boolean {
+  return press.button === 0 && !press.ctrlKey
+}

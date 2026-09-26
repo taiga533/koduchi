@@ -166,6 +166,20 @@ function 選択中のセル(): string[] {
   )
 }
 
+/**
+ * 右クリックを実際のブラウザと同じ順で起こす。
+ *
+ * ブラウザは `contextmenu` の前に `mousedown`（`button` が 2）を、後に `mouseup` を
+ * 起こす。`contextmenu` だけを起こすと、押し下げが選択を潰す取りこぼし（issue #53）を
+ * テストが見逃す。
+ */
+function 右クリック(element: HTMLElement, options: { ctrlKey?: boolean } = {}) {
+  const init = { button: options.ctrlKey ? 0 : 2, ctrlKey: options.ctrlKey ?? false }
+  fireEvent.mouseDown(element, init)
+  fireEvent.contextMenu(element, init)
+  fireEvent.mouseUp(element, init)
+}
+
 describe('ResultTable のセル選択とコピー', () => {
   /** 3 行 2 列。NULL を 1 つ含む。 */
   const 選択用の結果: TabExecution = {
@@ -381,7 +395,7 @@ describe('ResultTable のセル選択とコピー', () => {
     render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
 
     // Act
-    fireEvent.contextMenu(screen.getByTestId('result-cell-1-0'))
+    右クリック(screen.getByTestId('result-cell-1-0'))
 
     // Assert
     expect(screen.getByTestId('result-context-menu')).toBeInTheDocument()
@@ -391,7 +405,7 @@ describe('ResultTable のセル選択とコピー', () => {
   it('メニューの「見出し付きでコピー」は列名を添える', () => {
     // Arrange
     render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
-    fireEvent.contextMenu(screen.getByTestId('result-cell-0-1'))
+    右クリック(screen.getByTestId('result-cell-0-1'))
 
     // Act
     fireEvent.click(screen.getByText('見出し付きでコピー'))
@@ -403,7 +417,7 @@ describe('ResultTable のセル選択とコピー', () => {
   it('メニューの「この列をコピー」は表示中の全行を載せる', () => {
     // Arrange
     render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
-    fireEvent.contextMenu(screen.getByTestId('result-cell-0-0'))
+    右クリック(screen.getByTestId('result-cell-0-0'))
 
     // Act
     fireEvent.click(screen.getByText('この列をコピー'))
@@ -412,10 +426,89 @@ describe('ResultTable のセル選択とコピー', () => {
     expect(クリップボード.last()).toBe('10\n20\n30')
   })
 
+  it('複数行×複数列を選んだまま右クリックの「コピー」で範囲のセルがすべて載る', () => {
+    // Arrange: 3 行 × 2 列を選び、範囲の中を右クリックする
+    render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+    fireEvent.mouseDown(screen.getByTestId('result-cell-2-1'), { shiftKey: true })
+    右クリック(screen.getByTestId('result-cell-1-1'))
+
+    // Act
+    fireEvent.click(screen.getByText('コピー'))
+
+    // Assert: 選択が保たれ、6 つのセルが行と列の形のまま載る
+    expect(選択中のセル()).toHaveLength(6)
+    const セル = (クリップボード.last() ?? '').split('\n').map((line) => line.split('\t'))
+    expect(セル).toEqual([
+      ['10', 'あ'],
+      ['20', 'い'],
+      ['30', 'NULL'],
+    ])
+  })
+
+  it('複数行×複数列を選んだまま ⌃ + クリックの「見出し付きでコピー」で範囲のセルがすべて載る', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+    fireEvent.mouseDown(screen.getByTestId('result-cell-2-1'), { shiftKey: true })
+    右クリック(screen.getByTestId('result-cell-2-0'), { ctrlKey: true })
+
+    // Act
+    fireEvent.click(screen.getByText('見出し付きでコピー'))
+
+    // Assert
+    const セル = (クリップボード.last() ?? '').split('\n').map((line) => line.split('\t'))
+    expect(セル).toEqual([
+      ['ID', 'LABEL'],
+      ['10', 'あ'],
+      ['20', 'い'],
+      ['30', 'NULL'],
+    ])
+  })
+
+  it('行番号を右クリックしても行の選択は潰れない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-row-number-0'))
+    fireEvent.mouseDown(screen.getByTestId('result-row-number-1'), { shiftKey: true })
+
+    // Act
+    fireEvent.mouseDown(screen.getByTestId('result-row-number-2'), { button: 2 })
+
+    // Assert
+    expect(選択中のセル()).toHaveLength(4)
+  })
+
+  it('セルを選んだ後の ⌘A で全セルが選択される', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-1-1'))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'a', metaKey: true })
+
+    // Assert
+    expect(選択中のセル()).toHaveLength(6)
+  })
+
+  it('メニューの暗幕と項目の押し下げは表から焦点を奪わない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
+    右クリック(screen.getByTestId('result-cell-0-0'))
+
+    // Act: 既定動作が止められていれば `fireEvent` は偽を返す
+    const 項目の既定動作 = fireEvent.mouseDown(screen.getByText('コピー'))
+    const 暗幕の既定動作 = fireEvent.mouseDown(screen.getByTestId('result-context-menu-backdrop'))
+
+    // Assert
+    expect(項目の既定動作).toBe(false)
+    expect(暗幕の既定動作).toBe(false)
+  })
+
   it('メニューの外を押すと閉じる', () => {
     // Arrange
     render(<ResultTable tabId="tab-1" execution={選択用の結果} onRequestMore={() => {}} />)
-    fireEvent.contextMenu(screen.getByTestId('result-cell-0-0'))
+    右クリック(screen.getByTestId('result-cell-0-0'))
 
     // Act
     fireEvent.mouseDown(screen.getByTestId('result-context-menu-backdrop'))
@@ -585,13 +678,27 @@ describe('ResultTable の列幅と詳細表示', () => {
     expect(screen.queryByTestId('cell-detail-panel')).not.toBeInTheDocument()
   })
 
+  it('詳細パネルを閉じるボタンで閉じると焦点が表へ戻る', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    fireEvent.doubleClick(screen.getByTestId('result-cell-0-0'))
+    const 閉じる = screen.getByLabelText('詳細を閉じる')
+    閉じる.focus()
+
+    // Act
+    fireEvent.click(閉じる)
+
+    // Assert
+    expect(document.activeElement).toBe(screen.getByTestId('result-table-body'))
+  })
+
   it('右クリックのメニューは詳細パネルを開いていても出る', () => {
     // Arrange
     render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
     fireEvent.doubleClick(screen.getByTestId('result-cell-0-0'))
 
     // Act
-    fireEvent.contextMenu(screen.getByTestId('result-cell-0-1'))
+    右クリック(screen.getByTestId('result-cell-0-1'))
 
     // Assert
     expect(screen.getByTestId('result-context-menu')).toBeInTheDocument()
