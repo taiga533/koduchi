@@ -1,8 +1,8 @@
 /**
  * 整形をエディタの本文へ当てる（ADR 0024）。
  *
- * **この入口の持ち主はここ 1 つ**である。どの打鍵で始まるか（`⇧⌥F`）と、
- * その結果として本文のどこをどう書き換えるかを決める。整形そのものは
+ * 整形の結果として本文のどこをどう書き換えるかを決める。どの打鍵で始まるかは
+ * コマンドの表と `editorKeys.ts` が持つ（ADR 0037）。整形そのものは
  * `src/sql/format.ts` が持ち、ここは「どこへ当てるか」だけを担う。
  *
  * 書き換えは**差分**として返す。本文を丸ごと置き換えるとカーソルが末尾へ飛び、
@@ -38,31 +38,6 @@ export type FormatEditOutcome =
   | { status: 'unchanged' }
   /** 整形できなかった。**本文には触れないこと。** */
   | { status: 'failed'; reason: FormatFailureReason; message: string }
-
-/**
- * `⇧⌥F`（整形）の打鍵かどうかを判定する。
- *
- * **`event.key` ではなく `event.code` で見る。**macOS では `⌥` を伴う打鍵が
- * 文字そのものを変えてしまう（US 配列でも JIS 配列でも `⇧⌥F` は `Ï` になる）。
- * CodeMirror の keymap も、mac で `⌥` だけが付いた組み合わせについては配列に
- * 依らない名前へ戻す道を**わざと閉じている**（`Alt` 付きの打鍵は文字入力である
- * ことが多いため）。そのため `Shift-Alt-f` という名前では捕まらない。
- *
- * `code` は打った物理キーであり配列に依らないので、US でも JIS でも同じに効く。
- * `⌥⌘F`（置換）や `⇧⌘F`（ソース検索）と食い合わないよう、`⌘` と `⌃` が
- * 付いているものは除く。
- *
- * @param event 判定する打鍵
- */
-export function isFormatShortcut(event: {
-  code: string
-  altKey: boolean
-  shiftKey: boolean
-  ctrlKey: boolean
-  metaKey: boolean
-}): boolean {
-  return event.code === 'KeyF' && event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey
-}
 
 /**
  * 選択範囲を整形するときの、行頭の下げ幅を求める。

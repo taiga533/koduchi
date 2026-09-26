@@ -9,7 +9,8 @@ use crate::config::{self, SavedConnection};
 use crate::csv::CsvOptions;
 use crate::db::error::{DbError, DbResult};
 use crate::keychain;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 
 /// 接続設定ファイルの名前。
 const CONNECTIONS_FILE_NAME: &str = "connections.toml";
@@ -87,6 +88,51 @@ pub struct AppSettings {
     /// CSV 保存ダイアログで前回選ばれた書式。
     #[serde(default)]
     pub csv: CsvOptions,
+    /// 利用者が割り当て直したキー（ADR 0037）。コマンドの `id` から保存の書き方
+    /// （`cmd+shift+p`）。既定との差分だけを持ち、中身はフロントエンドが解釈する。
+    #[serde(
+        default,
+        deserialize_with = "lenient_keybindings",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub keybindings: BTreeMap<String, String>,
+}
+
+/// `[keybindings]` の 1 行。文字列でない値は読んで捨てる。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum KeybindingEntry {
+    Text(String),
+    Other(serde::de::IgnoredAny),
+}
+
+/// `[keybindings]` の表そのもの。表でなければ読んで捨てる。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum KeybindingTable {
+    Table(BTreeMap<String, KeybindingEntry>),
+    Other(serde::de::IgnoredAny),
+}
+
+/// `[keybindings]` を寛容に読む。
+///
+/// 手で書かれうる表であり、1 行の書き損じ（`commit = 1`）で `AppSettings` の
+/// 読み取りごと失敗すると、`load_app_settings` がテーマや CSV の書式まで既定へ
+/// 戻してしまう。文字列でない行と、表でない `keybindings` だけを捨てる。
+fn lenient_keybindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let KeybindingTable::Table(table) = KeybindingTable::deserialize(deserializer)? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(table
+        .into_iter()
+        .filter_map(|(id, entry)| match entry {
+            KeybindingEntry::Text(text) => Some((id, text)),
+            KeybindingEntry::Other(_) => None,
+        })
+        .collect())
 }
 
 /// 保存済みの接続を読む。
@@ -252,6 +298,10 @@ rowHeight = \"comfortable\"
                 editor_font_size: String::from("xlarge"),
             },
             csv: CsvOptions::default(),
+            keybindings: BTreeMap::from([
+                (String::from("palette"), String::from("cmd+k")),
+                (String::from("commit"), String::new()),
+            ]),
         };
 
         // Act
@@ -272,5 +322,76 @@ rowHeight = \"comfortable\"
 
         // Assert
         assert_eq!(settings, AppSettings::default());
+    }
+
+    #[test]
+    fn キーの割り当てを持たない古い設定でも他の項目が保たれ割り当ては空になる() {
+        // Arrange
+        let old = "\
+[appearance]
+theme = \"dark\"
+";
+
+        // Act
+        let settings: AppSettings = toml::from_str(old).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance.theme, "dark");
+        assert!(settings.keybindings.is_empty());
+    }
+
+    #[test]
+    fn キーの割り当ての文字列でない行だけを捨て他の行とテーマは保たれる() {
+        // Arrange
+        let text = "\
+[appearance]
+theme = \"dark\"
+
+[keybindings]
+palette = \"cmd+k\"
+commit = 1
+rollback = \"\"
+";
+
+        // Act
+        let settings: AppSettings = toml::from_str(text).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance.theme, "dark");
+        assert_eq!(
+            settings.keybindings,
+            BTreeMap::from([
+                (String::from("palette"), String::from("cmd+k")),
+                (String::from("rollback"), String::new()),
+            ])
+        );
+    }
+
+    #[test]
+    fn キーの割り当てが表でなくても他の項目は保たれる() {
+        // Arrange
+        let text = "keybindings = 3\n\n[appearance]\ntheme = \"light\"\n";
+
+        // Act
+        let settings: AppSettings = toml::from_str(text).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance.theme, "light");
+        assert!(settings.keybindings.is_empty());
+    }
+
+    #[test]
+    fn キーの割り当てはフロントエンドと同じ鍵の形で読める() {
+        // Arrange: フロントエンドへは camelCase の `keybindings` で渡る
+        let settings = AppSettings {
+            keybindings: BTreeMap::from([(String::from("save-file-as"), String::from("f12"))]),
+            ..AppSettings::default()
+        };
+
+        // Act
+        let json = serde_json::to_value(&settings).unwrap();
+
+        // Assert
+        assert_eq!(json["keybindings"]["save-file-as"], "f12");
     }
 }

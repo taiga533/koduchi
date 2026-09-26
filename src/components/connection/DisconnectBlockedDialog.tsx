@@ -11,6 +11,7 @@
 
 import { CircleAlert } from 'lucide-react'
 import { useEscapeKey } from '../../input/useEscapeKey'
+import { useShortcutLabel } from '../../keybindings/context'
 
 interface DisconnectBlockedDialogProps {
   /** 実行中の文を中止する（`⌘.` と同じ）。 */
@@ -23,6 +24,7 @@ export function DisconnectBlockedDialog({
   onCancelExecution,
   onClose,
 }: DisconnectBlockedDialogProps) {
+  const cancelKey = useShortcutLabel('cancel')
   // `esc` で閉じる。打鍵は器ではなく `window` で受ける（ADR 0031）。
   useEscapeKey(onClose)
 
@@ -39,7 +41,12 @@ export function DisconnectBlockedDialog({
         </h2>
         <p className="text-12px text-fg2 leading-[1.6] m-0">
           実行中の文があります（閉じたタブで走っている文も含みます）。
-          <code className="text-fg">⌘.</code> で中止するか、終わるのを待ってから切断してください。
+          {cancelKey !== '' ? (
+            <>
+              <code className="text-fg">{cancelKey}</code> で
+            </>
+          ) : null}
+          中止するか、終わるのを待ってから切断してください。
         </p>
         <div className="flex justify-end gap-8px">
           <button

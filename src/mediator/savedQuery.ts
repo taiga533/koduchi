@@ -13,7 +13,7 @@ import type { Ask } from './ask'
 import type { EditorCursor } from './execution'
 
 /**
- * `⇧⌘S`。今のタブの内容を保存済みクエリにする（ADR 0018）。
+ * `⌃⌘S`。今のタブの内容を保存済みクエリにする（ADR 0018）。
  *
  * 選択範囲があればその中だけを保存する。名前の既定値はタブの名前から
  * `.sql` を落としたものである。空白だけの SQL は保存しない。

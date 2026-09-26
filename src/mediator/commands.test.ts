@@ -4,8 +4,11 @@ import { createFakeDbApi } from '../test/fakeDbApi'
 import { SQLタブを一枚にする, 接続済みにする, 未接続にする } from '../test/activeConnection'
 import { useTabStore } from '../stores/tab'
 import type { Ask } from './ask'
-import type { Command, CommandScreen, KeyPress } from './commands'
-import { formatChord } from '../components/palette/commandEntries'
+import type { Command, CommandScreen } from './commands'
+import type { KeyPress } from '../keybindings/chord'
+import { resolveKeybindings } from '../keybindings/bindings'
+import { serializeChord } from '../keybindings/chord'
+import { EDITOR_ACTIONS } from '../components/editor/editorKeys'
 import {
   COMMANDS,
   commandById,
@@ -22,6 +25,9 @@ beforeEach(() => {
 afterEach(() => {
   resetDbApi()
 })
+
+/** 既定の割り当て。 */
+const 既定 = resolveKeybindings(COMMANDS, {}).chords
 
 /** 画面の口がどれだけ呼ばれたか。 */
 interface 画面の記録 {
@@ -61,6 +67,7 @@ function 打鍵(
 ): KeyPress & { defaultPrevented: boolean; preventDefault: () => void; 止めた: boolean } {
   const press = {
     key,
+    code: /^[a-z]$/i.test(key) ? `Key${key.toUpperCase()}` : '',
     metaKey: true,
     shiftKey: false,
     altKey: false,
@@ -77,59 +84,75 @@ function 打鍵(
 
 describe('findCommandForKey', () => {
   it.each([
-    ['e', {}, 'explain'],
-    ['E', { shiftKey: true }, 'explain-actual'],
-    ['e', { altKey: true }, 'explain'],
-    ['c', { altKey: true }, 'commit'],
-    ['r', { altKey: true }, 'rollback'],
-    ['s', { altKey: true }, 'csv'],
-    ['S', { shiftKey: true }, 'save-query'],
+    ['e', { ctrlKey: true }, 'explain'],
+    ['E', { ctrlKey: true, shiftKey: true }, 'explain-actual'],
+    ['c', { ctrlKey: true }, 'commit'],
+    ['r', { ctrlKey: true }, 'rollback'],
+    ['ß', { altKey: true, code: 'KeyS' }, 'csv'],
+    ['s', { ctrlKey: true }, 'save-query'],
     ['s', {}, 'save-file'],
-    ['s', { ctrlKey: true }, 'save-file'],
-    ['S', { shiftKey: true, altKey: true }, 'csv'],
+    ['S', { shiftKey: true }, 'save-file-as'],
     ['o', {}, 'open-file'],
-    ['t', {}, 'new-tab'],
+    ['n', {}, 'new-tab'],
+    ['N', { shiftKey: true }, 'new-window'],
     ['w', {}, 'close-tab'],
-    ['n', { ctrlKey: true }, 'new-window'],
     ['F', { shiftKey: true }, 'source-search'],
-    ['k', {}, 'palette'],
+    ['P', { shiftKey: true }, 'palette'],
   ] as const)('%s %o は %s に当たる', (key, modifiers, id) => {
     // Arrange
     const press = 打鍵(key, modifiers)
 
     // Act
-    const command = findCommandForKey(press)
+    const command = findCommandForKey(press, 既定)
 
     // Assert
     expect(command?.id).toBe(id)
   })
 
   it.each([
-    ['c', {}],
-    ['r', {}],
-    ['n', {}],
-    ['f', {}],
-    ['enter', {}],
+    ['k', {}],
+    ['t', {}],
+    ['e', {}],
+    ['c', { altKey: true }],
+    ['r', { altKey: true }],
+    ['s', { ctrlKey: true, altKey: true }],
+    ['s', { shiftKey: true, altKey: true }],
+    ['Enter', {}],
+    ['.', {}],
   ] as const)('%s %o には何も当たらない', (key, modifiers) => {
-    // Arrange: 表が振り分けないキーは、CodeMirror などの置き場所のまま残す
+    // Arrange: 修飾は完全に一致したときだけ当てる。エディタの行（`⌘⏎` など）は表が振り分けない
     const press = 打鍵(key, modifiers)
 
     // Act
-    const command = findCommandForKey(press)
+    const command = findCommandForKey(press, 既定)
 
     // Assert
     expect(command).toBeNull()
   })
 
-  it('⌘ を伴わない打鍵には何も当てない', () => {
+  it('割り当て直したキーで当たり、元のキーでは当たらない', () => {
     // Arrange
-    const press = 打鍵('s', { metaKey: false })
+    const 割り当て = resolveKeybindings(COMMANDS, { palette: 'cmd+k' }).chords
 
     // Act
-    const command = findCommandForKey(press)
+    const 新しいキー = findCommandForKey(打鍵('k'), 割り当て)
+    const 元のキー = findCommandForKey(打鍵('P', { shiftKey: true }), 割り当て)
 
     // Assert
-    expect(command).toBeNull()
+    expect(新しいキー?.id).toBe('palette')
+    expect(元のキー).toBeNull()
+  })
+
+  it('⌘ を伴わないキーでも割り当てたなら当たる', () => {
+    // Arrange
+    const 割り当て = resolveKeybindings(COMMANDS, { explain: 'f10' }).chords
+    const press = { ...打鍵('F10', { metaKey: false }), code: 'F10' }
+
+    // Act
+    const command = findCommandForKey(press, 割り当て)
+
+    // Assert
+    expect(command?.id).toBe('explain')
   })
 })
 
@@ -137,10 +160,10 @@ describe('dispatchCommandKey', () => {
   it('当たったキーは既定の動作を止めて実行する', () => {
     // Arrange
     const screen = 画面を作る()
-    const press = 打鍵('s', { altKey: true })
+    const press = 打鍵('ß', { altKey: true, code: 'KeyS' })
 
     // Act
-    dispatchCommandKey(press, screen)
+    dispatchCommandKey(press, screen, 既定)
 
     // Assert
     expect(press.止めた).toBe(true)
@@ -150,10 +173,10 @@ describe('dispatchCommandKey', () => {
   it('既に処理された打鍵は二重に扱わない', () => {
     // Arrange: エディタが先に拾ったものである
     const screen = 画面を作る()
-    const press = { ...打鍵('k'), defaultPrevented: true }
+    const press = { ...打鍵('P', { shiftKey: true }), defaultPrevented: true }
 
     // Act
-    dispatchCommandKey(press, screen)
+    dispatchCommandKey(press, screen, 既定)
 
     // Assert
     expect(screen.記録.パレット).toBe(0)
@@ -163,10 +186,10 @@ describe('dispatchCommandKey', () => {
     // Arrange: パレットは繋がっていなければ開かない（ADR 0018）
     未接続にする()
     const screen = 画面を作る()
-    const press = 打鍵('k')
+    const press = 打鍵('P', { shiftKey: true })
 
     // Act
-    dispatchCommandKey(press, screen)
+    dispatchCommandKey(press, screen, 既定)
 
     // Assert
     expect(press.止めた).toBe(true)
@@ -179,18 +202,18 @@ describe('dispatchCommandKey', () => {
     const press = 打鍵('c')
 
     // Act
-    dispatchCommandKey(press, screen)
+    dispatchCommandKey(press, screen, 既定)
 
     // Assert
     expect(press.止めた).toBe(false)
   })
 
-  it('⌘T で新しいタブを開く', () => {
+  it('⌘N で新しいタブを開く', () => {
     // Arrange
     const screen = 画面を作る()
 
     // Act
-    dispatchCommandKey(打鍵('t'), screen)
+    dispatchCommandKey(打鍵('n'), screen, 既定)
 
     // Assert
     expect(useTabStore.getState().tabs).toHaveLength(2)
@@ -260,10 +283,10 @@ describe('COMMANDS', () => {
     expect(重なりのない数).toBe(ids.length)
   })
 
-  it('ウィンドウで振り分けるキーは重ならない', () => {
-    // Arrange: 同じ組み合わせが 2 行にあると、どちらが勝つかが表の並びに隠れる
+  it('既定のキーは重ならない', () => {
+    // Arrange: 同じ組み合わせが 2 行にあると、下の行のキーが黙って効かなくなる
     const chords = COMMANDS.flatMap((command) =>
-      command.key?.owner === 'window' ? [formatChord(command.key.chord)] : [],
+      command.defaultKey ? [serializeChord(command.defaultKey)] : [],
     )
 
     // Act
@@ -271,5 +294,30 @@ describe('COMMANDS', () => {
 
     // Assert
     expect(重なりのない数).toBe(chords.length)
+  })
+})
+
+describe('既定のキー', () => {
+  it('固定のキーとも他の行とも重ならず、すべて解決できる', () => {
+    // Arrange & Act
+    const { issues } = resolveKeybindings(COMMANDS, {})
+
+    // Assert
+    expect(issues).toEqual([])
+  })
+})
+
+describe('エディタの行', () => {
+  it('エディタが振り分ける操作と表の editor の行が一致する', () => {
+    // Arrange: 片方にだけ足すと、パレットには出るのにキーが効かない行ができる
+    const 表の行 = COMMANDS.filter((command) => command.scope === 'editor').map(
+      (command) => command.id,
+    )
+
+    // Act
+    const エディタ = [...EDITOR_ACTIONS]
+
+    // Assert
+    expect(new Set(エディタ)).toEqual(new Set(表の行))
   })
 })

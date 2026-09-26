@@ -48,6 +48,7 @@ import { useConnectionHealth } from '../../connection/useConnectionHealth'
 import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { connectionColorVar } from '../../theme/connectionColors'
+import { useShortcutLabel } from '../../keybindings/context'
 
 interface StatusBarProps {
   /** 設定画面を開く。 */
@@ -70,9 +71,9 @@ interface StatusBarProps {
    * ためである。
    */
   onOpenSourceSearch?: () => void
-  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
+  /** `⌃⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
-  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
+  /** `⌃⌘R`。トランザクションをロールバックする（ADR 0012）。 */
   onRollback?: () => void
   /**
    * 同じ接続先へ繋ぎ直す（ADR 0026）。
@@ -104,6 +105,8 @@ export function StatusBar({
   onRollback,
   onReconnect,
 }: StatusBarProps) {
+  const commitKey = useShortcutLabel('commit')
+  const rollbackKey = useShortcutLabel('rollback')
   const status = useConnectionStore((state) => state.status)
   const connection = useConnectionStore((state) => state.connection)
   const cursor = useUiStore((state) => state.cursor)
@@ -152,10 +155,10 @@ export function StatusBar({
       {手動コミット && inTransaction ? <span className="text-warn">未コミット</span> : null}
       {手動コミット ? (
         <span className="flex items-center gap-10px">
-          <TransactionButton label="コミット" shortcut="⌥⌘C" onClick={onCommit}>
+          <TransactionButton label="コミット" shortcut={commitKey} onClick={onCommit}>
             <Check size={12} />
           </TransactionButton>
-          <TransactionButton label="ロールバック" shortcut="⌥⌘R" onClick={onRollback}>
+          <TransactionButton label="ロールバック" shortcut={rollbackKey} onClick={onRollback}>
             <Undo2 size={12} />
           </TransactionButton>
         </span>

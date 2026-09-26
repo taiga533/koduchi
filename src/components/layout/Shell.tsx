@@ -14,13 +14,13 @@ interface ShellProps {
    * 接続中の画面だけが渡す。
    */
   onOpenSourceSearch?: () => void
-  /** `⌥⌘C`。トランザクションをコミットする（ADR 0012）。 */
+  /** `⌃⌘C`。トランザクションをコミットする（ADR 0012）。 */
   onCommit?: () => void
-  /** `⌥⌘R`。トランザクションをロールバックする（ADR 0012）。 */
+  /** `⌃⌘R`。トランザクションをロールバックする（ADR 0012）。 */
   onRollback?: () => void
   /** 同じ接続先へ繋ぎ直す（ADR 0026）。接続中の画面だけが渡す。 */
   onReconnect?: () => void
-  /** `⌘K`。コマンドパレットを開く（ADR 0018）。接続中の画面だけが渡す。 */
+  /** `⇧⌘P`。コマンドパレットを開く（ADR 0018）。接続中の画面だけが渡す。 */
   onOpenPalette?: () => void
   overlay?: ReactNode
 }

@@ -54,6 +54,8 @@ import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { onConnectionLost } from './connection/lost'
 import type { Command, CommandScreen } from './mediator/commands'
+import { resolveKeybindings } from './keybindings/bindings'
+import { KeybindingsContext, useKeybindings } from './keybindings/context'
 import { COMMANDS, commandById, dispatchCommandKey, runCommand } from './mediator/commands'
 import { exportActiveResult } from './mediator/csv'
 import { createAskChannel } from './mediator/ask'
@@ -110,7 +112,25 @@ const INITIAL_POSITION: EditorPosition = {
  */
 type ConnectionView = { mode: 'picker' } | { mode: 'form'; connection: SavedConnection | null }
 
+/**
+ * アプリのルート。キーの割り当て（ADR 0037）を解決して部品へ配る。
+ *
+ * 解決にはコマンドの表（仲介者の値）が要り、部品は仲介者の値を import しない
+ * ため、解決はここで 1 度だけ行う。
+ */
 export function App() {
+  const overrides = useUiStore((state) => state.keybindings)
+  const keybindings = useMemo(() => resolveKeybindings(COMMANDS, overrides), [overrides])
+  return (
+    <KeybindingsContext value={keybindings}>
+      <AppWindow />
+    </KeybindingsContext>
+  )
+}
+
+/** 1 つのウィンドウの中身。 */
+function AppWindow() {
+  const keybindings = useKeybindings()
   const [clientStatus, setClientStatus] = useState<ClientStatus | null>(null)
   const [connectionView, setConnectionView] = useState<ConnectionView>({ mode: 'picker' })
   const [csvOpen, setCsvOpen] = useState(false)
@@ -255,7 +275,7 @@ export function App() {
     [commandScreen],
   )
 
-  /** `⌘K` と同じ裁定と判定を、タイトルバーのボタンからも通す。 */
+  /** パレットのキーと同じ裁定と判定を、タイトルバーのボタンからも通す。 */
   const openPalette = useCallback(
     () => runCommand(commandById('palette'), commandScreen),
     [commandScreen],
@@ -264,10 +284,11 @@ export function App() {
   // ウィンドウ全体で効くキーバインド（ADR の「キーバインド」節）。振り分けは
   // コマンドの表が持つ。
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => dispatchCommandKey(event, commandScreen)
+    const onKeyDown = (event: KeyboardEvent) =>
+      dispatchCommandKey(event, commandScreen, keybindings.chords)
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [commandScreen])
+  }, [commandScreen, keybindings])
 
   /** 接続できたらフィルタを当ててスキーマの読み込みを始める（ADR 0007）。 */
   const onConnected = useCallback(
@@ -292,6 +313,7 @@ export function App() {
     <SettingsPanel
       clientUnavailable={clientStatus.status === 'unavailable'}
       onClose={closeSettings}
+      commands={COMMANDS}
     />
   ) : null
 
@@ -370,6 +392,7 @@ export function App() {
       {paletteOpen ? (
         <TableCommandPalette
           commands={COMMANDS}
+          keybindings={keybindings}
           onRunCommand={executeCommand}
           connectionName={connection.name}
           onUseSql={putSqlIntoEditor}

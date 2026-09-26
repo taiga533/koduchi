@@ -1,6 +1,6 @@
 //! 実行計画の生成（ADR の「実行計画」節）。
 //!
-//! `⌘E` は `EXPLAIN PLAN FOR` で見積りだけを取り、`⇧⌘E` は
+//! `⌃⌘E` は `EXPLAIN PLAN FOR` で見積りだけを取り、`⌃⇧⌘E` は
 //! `/*+ GATHER_PLAN_STATISTICS */` を注入して実際に実行してから
 //! `DBMS_XPLAN.DISPLAY_CURSOR` で実測付きの計画を取る。E-Rows と A-Rows の
 //! 乖離が見えるのは後者だけである。
@@ -161,7 +161,7 @@ fn fetch_plan_text(connection: &Connection, sql: &str) -> DbResult<String> {
     Ok(lines.join("\n"))
 }
 
-/// 見積りだけの実行計画を取る（`⌘E`）。
+/// 見積りだけの実行計画を取る（`⌃⌘E`）。
 ///
 /// `EXPLAIN PLAN` は `PLAN_TABLE` への書き込みを伴う。読み取り専用トランザクションの
 /// 最中は実行できないため、呼び出し側があらかじめ解除しておく必要がある。
@@ -192,7 +192,7 @@ pub fn explain(connection: &Connection, sql: &str, binds: &[Bind]) -> DbResult<S
     )
 }
 
-/// 実測付きの実行計画を取る（`⇧⌘E`）。
+/// 実測付きの実行計画を取る（`⌃⇧⌘E`）。
 ///
 /// SQL を実際に最後まで実行する。行は捨てるが、副作用のある文ではその副作用が
 /// 起きる。呼び出し側は `SELECT` 以外に対して事前に確認を取る必要がある。

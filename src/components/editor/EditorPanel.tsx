@@ -7,6 +7,7 @@
  * 移動が目に見えて遅れる。
  */
 
+import { useKeybindings } from '../../keybindings/context'
 import type { Ref } from 'react'
 import { useCallback, useMemo } from 'react'
 import { useConnectionStore } from '../../stores/connection'
@@ -56,6 +57,8 @@ export function EditorPanel({
   onCancel,
   onFormatFailed,
 }: EditorPanelProps) {
+  // 実行・中止・整形のキー（ADR 0037）。`App.tsx` が解決したものを受け取る。
+  const keybindings = useKeybindings().chords
   // 定義タブを選んでいるときは何も描かない。定義タブにエディタは無い（ADR 0022）。
   const activeTab = useTabStore(selectActiveSqlTab)
   const updateContent = useTabStore((state) => state.updateContent)
@@ -111,6 +114,7 @@ export function EditorPanel({
       onRunScript={onRunScript}
       onCancel={onCancel}
       onFormatFailed={onFormatFailed}
+      keybindings={keybindings}
     />
   )
 }

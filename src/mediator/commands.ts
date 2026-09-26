@@ -6,16 +6,22 @@
  * 持つ。入口がキーとパレットの 2 つあっても裁定が 1 つであることを、注意力では
  * なく構造で保つためである。
  *
- * **表が振り分けるキーは、以前 `App.tsx` の `keydown` に置いていたものだけである。**
- * CodeMirror の keymap・`ResultTable`・`SchemaTree`・`TabBar` の中でしか効かない
- * キーは今の置き場所のまま動かさない（ADR README「キーバインド」）。そのうち
- * パレットに並ぶもの（`⌘⏎` など）は、表記だけを `editor` の行として持つ。
+ * 表が持つのは**既定の**キーである。利用者が割り当て直したキー（ADR 0037）は
+ * `src/keybindings/` が既定と差分から解決し、振り分けとパレットはその結果を
+ * 受け取る。
+ *
+ * **表がウィンドウで振り分けるのは `window` の行だけである。**`editor` の行
+ * （`⌘⏎` など）は CodeMirror の keymap が同じ解決の結果から作る。
+ * `ResultTable`・`SchemaTree`・`TabBar` の中でしか効かないキーは表に載せず、
+ * 割り当て直せない（ADR 0037 の「固定のキー」）。
  *
  * パレットの一覧への組み立て（表記の作り方を含む）は画面の側
  * （`components/palette/commandEntries.ts`）が持つ。部品が仲介者の値を
  * import しないためである。
  */
 
+import type { Chord, KeyPress } from '../keybindings/chord'
+import { matchesChord } from '../keybindings/chord'
 import { useConnectionStore } from '../stores/connection'
 import { useTabStore } from '../stores/tab'
 import { useUiStore } from '../stores/ui'
@@ -23,35 +29,20 @@ import type { Ask } from './ask'
 import { openNewConnectionWindow } from './connection'
 import type { EditorCursor, RunScreen } from './execution'
 import { cancelExecution, runPlan, runScript, runSelection, runStatement } from './execution'
-import { openSqlFile, saveActiveTab } from './files'
+import { openSqlFile, saveActiveTab, saveActiveTabAs } from './files'
 import { saveQueryFromEditor } from './savedQuery'
 import { reloadSchemas } from './schema'
 import { closeActiveTab } from './tabs'
 import { commitTransaction, rollbackTransaction } from './transaction'
 
 /**
- * `⌘` を伴う打鍵の組み合わせ。`⌘` は常に要るため書かない。
+ * キーをどこで振り分けるか。
  *
- * ここに書いた修飾は「押されていなければならない」ものであり、書いていない修飾が
- * 押されていても当たる。`⌃⌘S` が `⌘S` として保存に当たるのは以前からの振る舞いである。
+ * - `window`: ウィンドウ全体の `keydown` でこの表が振り分ける。
+ * - `editor`: CodeMirror の keymap が振り分ける（置き場所の決定は ADR README
+ *   「キーバインド」）。エディタの中でしか意味を持たないためである。
  */
-export interface Chord {
-  /** `event.key` を小文字にしたもの。 */
-  key: string
-  shift?: boolean
-  alt?: boolean
-  ctrl?: boolean
-}
-
-/** コマンドのキー。 */
-export type CommandKey =
-  /** ウィンドウ全体の `keydown` でこの表が振り分ける。 */
-  | { owner: 'window'; chord: Chord }
-  /**
-   * CodeMirror の keymap が持つ。表はパレットに出す表記だけを持ち、振り分けない
-   * （置き場所の決定は ADR README「キーバインド」）。
-   */
-  | { owner: 'editor'; label: string }
+export type CommandScope = 'window' | 'editor'
 
 /** コマンドの実行に要る、画面にしか無いもの。 */
 export interface CommandScreen {
@@ -73,8 +64,10 @@ export interface Command {
   id: string
   /** パレットに出す名前。 */
   label: string
-  /** キー。割り当てていなければ `null`。 */
-  key: CommandKey | null
+  /** キーをどこで振り分けるか。 */
+  scope: CommandScope
+  /** 既定のキー（ADR 0037）。割り当てていなければ `null`。 */
+  defaultKey: Chord | null
   /**
    * パレットに並べるか。パレットを開くことそのものと、タブを閉じること
    * （`✕` がタブの上にある）は並べない。
@@ -106,126 +99,155 @@ function runScreenOf(screen: CommandScreen): RunScreen {
 /**
  * コマンドの表。**並びはパレットに出す順でもある。**
  *
- * 修飾の重なる `⌥⌘S` と `⇧⌘S` を同時に押したときは、上にある行が勝つ（以前の
- * `keydown` が `⌥` の枝を先に見ていたためである）。
+ * 既定のキーは VSCode の mac 版に寄せてある（ADR 0037）。VSCode に同じ操作が
+ * あればそのキー、VSCode では別の操作に使われているキーで SQL を流すか取り消せ
+ * ない操作は `⌃⌘` へ置く。同じ組み合わせが重なったときは表の上の行が勝つ。
  */
 export const COMMANDS: readonly Command[] = [
   {
     id: 'run',
     label: '実行（カーソル位置の文）',
-    key: { owner: 'editor', label: '⌘⏎' },
+    scope: 'editor',
+    defaultKey: { key: 'enter', meta: true },
     inPalette: true,
     run: (screen) => runStatement(runScreenOf(screen)),
   },
   {
     id: 'run-selection',
     label: '選択範囲のみ実行',
-    key: { owner: 'editor', label: '⇧⌘⏎' },
+    scope: 'editor',
+    defaultKey: { key: 'enter', meta: true, shift: true },
     inPalette: true,
     run: (screen) => runSelection(runScreenOf(screen)),
   },
   {
     id: 'run-script',
     label: 'すべて実行',
-    key: { owner: 'editor', label: '⌥⌘⏎' },
+    scope: 'editor',
+    defaultKey: { key: 'enter', meta: true, alt: true },
     inPalette: true,
     run: (screen) => runScript(runScreenOf(screen)),
   },
   {
     id: 'explain',
     label: '実行計画を生成',
-    key: { owner: 'window', chord: { key: 'e' } },
+    scope: 'window',
+    defaultKey: { key: 'e', ctrl: true, meta: true },
     inPalette: true,
     run: (screen) => void runPlan(false, runScreenOf(screen)),
   },
   {
     id: 'explain-actual',
     label: '実測付きで実行計画を生成',
-    key: { owner: 'window', chord: { key: 'e', shift: true } },
+    scope: 'window',
+    defaultKey: { key: 'e', ctrl: true, shift: true, meta: true },
     inPalette: true,
     run: (screen) => void runPlan(true, runScreenOf(screen)),
   },
   {
     id: 'cancel',
     label: '実行を中止',
-    key: { owner: 'editor', label: '⌘.' },
+    scope: 'editor',
+    defaultKey: { key: '.', meta: true },
     inPalette: true,
     run: () => cancelExecution(),
   },
   {
     id: 'format',
     label: 'SQL を整形',
-    key: { owner: 'editor', label: '⇧⌥F' },
+    scope: 'editor',
+    defaultKey: { key: 'f', alt: true, shift: true },
     inPalette: true,
     run: (screen) => screen.formatEditor(),
   },
   {
     id: 'csv',
     label: '結果を CSV で保存',
-    key: { owner: 'window', chord: { key: 's', alt: true } },
+    scope: 'window',
+    defaultKey: { key: 's', alt: true, meta: true },
     inPalette: true,
     run: (screen) => screen.openCsvDialog(),
   },
   {
     id: 'commit',
     label: 'コミット',
-    key: { owner: 'window', chord: { key: 'c', alt: true } },
+    scope: 'window',
+    defaultKey: { key: 'c', ctrl: true, meta: true },
     inPalette: true,
     run: () => commitTransaction(),
   },
   {
     id: 'rollback',
     label: 'ロールバック',
-    key: { owner: 'window', chord: { key: 'r', alt: true } },
+    scope: 'window',
+    defaultKey: { key: 'r', ctrl: true, meta: true },
     inPalette: true,
     run: () => rollbackTransaction(),
   },
   {
+    // `⇧⌘S` は VSCode の「名前を付けて保存」に譲った。VSCode に対応する操作が
+    // 無いため、DB 固有の操作を集める `⌃⌘` へ置く（ADR 0037）。
     id: 'save-query',
     label: 'クエリを保存済みへ追加',
-    key: { owner: 'window', chord: { key: 's', shift: true } },
+    scope: 'window',
+    defaultKey: { key: 's', ctrl: true, meta: true },
     inPalette: true,
     run: (screen) => void saveQueryFromEditor(screen.cursor(), screen.ask),
   },
   {
     id: 'save-file',
     label: 'ファイルに保存',
-    key: { owner: 'window', chord: { key: 's' } },
+    scope: 'window',
+    defaultKey: { key: 's', meta: true },
     inPalette: true,
     run: () => void saveActiveTab(),
   },
   {
+    // VSCode の「名前を付けて保存」と同じキーに置く（ADR 0037）。
+    id: 'save-file-as',
+    label: '名前を付けて保存',
+    scope: 'window',
+    defaultKey: { key: 's', shift: true, meta: true },
+    inPalette: true,
+    run: () => void saveActiveTabAs(),
+  },
+  {
     id: 'open-file',
     label: 'ファイルを開く',
-    key: { owner: 'window', chord: { key: 'o' } },
+    scope: 'window',
+    defaultKey: { key: 'o', meta: true },
     inPalette: true,
     run: () => void openSqlFile(),
   },
   {
     id: 'new-tab',
     label: '新しいタブ',
-    key: { owner: 'window', chord: { key: 't' } },
+    scope: 'window',
+    defaultKey: { key: 'n', meta: true },
     inPalette: true,
     run: () => useTabStore.getState().openNewTab(),
   },
   {
     id: 'new-window',
     label: '別の接続を新しいウィンドウで開く',
-    key: { owner: 'window', chord: { key: 'n', ctrl: true } },
+    scope: 'window',
+    defaultKey: { key: 'n', shift: true, meta: true },
     inPalette: true,
     run: () => openNewConnectionWindow(),
   },
   {
     id: 'source-search',
     label: 'オブジェクトのソースを検索',
-    key: { owner: 'window', chord: { key: 'f', shift: true } },
+    scope: 'window',
+    defaultKey: { key: 'f', shift: true, meta: true },
     inPalette: true,
     run: () => useUiStore.getState().openSourceSearch(),
   },
   {
     id: 'sessions',
     label: 'セッションとロックを開く',
-    key: null,
+    scope: 'window',
+    defaultKey: null,
     inPalette: true,
     run: () => useUiStore.getState().openSessions(),
   },
@@ -235,7 +257,8 @@ export const COMMANDS: readonly Command[] = [
     // 再読み込みと重なるためキーは割り当てない。
     id: 'reload-schemas',
     label: 'スキーマを再読み込み',
-    key: null,
+    scope: 'window',
+    defaultKey: null,
     inPalette: true,
     run: () => reloadSchemas(),
     available: isConnected,
@@ -243,7 +266,8 @@ export const COMMANDS: readonly Command[] = [
   {
     id: 'settings',
     label: '設定を開く',
-    key: null,
+    scope: 'window',
+    defaultKey: null,
     inPalette: true,
     run: () => useUiStore.getState().openSettings(),
   },
@@ -251,75 +275,51 @@ export const COMMANDS: readonly Command[] = [
     // タブを閉じる経路は `closeTabAndRelease` 1 つである（ADR 0023）。
     id: 'close-tab',
     label: 'タブを閉じる',
-    key: { owner: 'window', chord: { key: 'w' } },
+    scope: 'window',
+    defaultKey: { key: 'w', meta: true },
     inPalette: false,
     run: () => closeActiveTab(),
   },
   {
+    // `⌘K` は VSCode の 2 打鍵の前置キーであるため空けておく（ADR 0037）。
     id: 'palette',
     label: 'コマンドパレットを開く',
-    key: { owner: 'window', chord: { key: 'k' } },
+    scope: 'window',
+    defaultKey: { key: 'p', shift: true, meta: true },
     inPalette: false,
     run: (screen) => screen.openPalette(),
     available: isConnected,
   },
 ]
 
-/** 振り分けに要る打鍵の中身。`KeyboardEvent` はこの形を満たす。 */
-export interface KeyPress {
-  key: string
-  metaKey: boolean
-  shiftKey: boolean
-  altKey: boolean
-  ctrlKey: boolean
-}
-
-/**
- * 組み合わせが求める修飾の数。多いほど絞りが強い。
- *
- * @param chord 組み合わせ
- */
-function specificity(chord: Chord): number {
-  return Number(chord.shift === true) + Number(chord.alt === true) + Number(chord.ctrl === true)
-}
-
 /**
  * 打鍵に当たるコマンドを探す。
  *
- * 修飾の重なる組み合わせ（`⌘S` / `⇧⌘S` / `⌥⌘S`）は、**求める修飾の多い、絞りの
- * 強い行から先に見る**（ADR README「キーバインド」）。同じ強さなら表の上にある行が
- * 勝つ。`⌘` を伴わない打鍵には何も当てない。
+ * 当てるのは `window` の行だけで、キーは既定ではなく**解決した割り当て**
+ * （`chords`）から引く。修飾は完全に一致したときだけ当てる（ADR 0037）。
+ * 解決の時点で組み合わせの重なりは取り除いてあるため、当たりは高々 1 つである。
  *
  * @param press 打鍵
+ * @param chords 操作の `id` から今のキー
  * @param commands 探す表
  *
  * @returns 当たったコマンド。無ければ `null`
  */
 export function findCommandForKey(
   press: KeyPress,
+  chords: ReadonlyMap<string, Chord>,
   commands: readonly Command[] = COMMANDS,
 ): Command | null {
-  if (!press.metaKey) {
-    return null
-  }
-  const key = press.key.toLowerCase()
-
-  let best: { command: Command; specificity: number } | null = null
   for (const command of commands) {
-    if (command.key?.owner !== 'window') {
+    if (command.scope !== 'window') {
       continue
     }
-    const { chord } = command.key
-    const matches =
-      chord.key === key &&
-      (!chord.shift || press.shiftKey) &&
-      (!chord.alt || press.altKey) &&
-      (!chord.ctrl || press.ctrlKey)
-    if (matches && (best === null || specificity(chord) > best.specificity)) {
-      best = { command, specificity: specificity(chord) }
+    const chord = chords.get(command.id)
+    if (chord && matchesChord(press, chord)) {
+      return command
     }
   }
-  return best?.command ?? null
+  return null
 }
 
 /**
@@ -343,17 +343,19 @@ export function runCommand(command: Command, screen: CommandScreen): void {
  *
  * @param event 打鍵
  * @param screen 画面にしか無いもの
+ * @param chords 操作の `id` から今のキー
  * @param commands 振り分ける表
  */
 export function dispatchCommandKey(
   event: KeyPress & { defaultPrevented: boolean; preventDefault: () => void },
   screen: CommandScreen,
+  chords: ReadonlyMap<string, Chord>,
   commands: readonly Command[] = COMMANDS,
 ): void {
   if (event.defaultPrevented) {
     return
   }
-  const command = findCommandForKey(event, commands)
+  const command = findCommandForKey(event, chords, commands)
   if (command === null) {
     return
   }
