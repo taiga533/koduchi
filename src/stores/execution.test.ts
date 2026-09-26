@@ -8,6 +8,7 @@ import {
   formatStatementOutcome,
   selectExecution,
   selectResultTabs,
+  selectStatementsInFlight,
   useExecutionStore,
 } from './execution'
 import type { TabExecution } from './execution'
@@ -78,6 +79,8 @@ function 手で返す<T>(): {
 
 beforeEach(() => {
   useExecutionStore.getState().clear()
+  // 応答待ちの文は clear では消えない。前のテストが返さずに残した要求を持ち越さない。
+  useExecutionStore.setState({ pendingRequests: [] })
 })
 
 afterEach(() => {
@@ -590,6 +593,102 @@ describe('cancel と releaseTab', () => {
     // Assert
     expect(calls.releaseTab).toEqual([{ id: 'c1', tabId: TAB }])
     expect(useExecutionStore.getState().byTab[TAB]).toBeUndefined()
+  })
+})
+
+describe('selectStatementsInFlight', () => {
+  it('実行中のタブを閉じても応答が返るまでは走っている文として数える', async () => {
+    // Arrange: 閉じたタブの項目は先に消えるが、文はまだデータベースで走っている
+    const 応答 = 保留の応答()
+    const { api } = createFakeDbApi({ onExecute: () => 応答.promise })
+    setDbApi(api)
+    const 実行 = useExecutionStore.getState().execute('c1', TAB, 'update t set a = 1', '開発', [])
+    await 応答.呼ばれるまで待つ()
+
+    // Act
+    await useExecutionStore.getState().releaseTab('c1', TAB)
+
+    // Assert
+    expect(useExecutionStore.getState().byTab[TAB]).toBeUndefined()
+    expect(selectStatementsInFlight(useExecutionStore.getState())).toBe(true)
+    応答.応える(emptyResponse)
+    await 実行
+  })
+
+  it('応答が返れば走っている文として数えない', async () => {
+    // Arrange
+    const 応答 = 保留の応答()
+    const { api } = createFakeDbApi({ onExecute: () => 応答.promise })
+    setDbApi(api)
+    const 実行 = useExecutionStore.getState().execute('c1', TAB, 'update t set a = 1', '開発', [])
+    await 応答.呼ばれるまで待つ()
+    await useExecutionStore.getState().releaseTab('c1', TAB)
+
+    // Act
+    応答.応える(emptyResponse)
+    await 実行
+
+    // Assert
+    expect(selectStatementsInFlight(useExecutionStore.getState())).toBe(false)
+  })
+
+  it('失敗が返っても走っている文として数えない', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => Promise.reject({ kind: 'execute', message: 'ORA-00942' }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発', [])
+
+    // Assert
+    expect(selectStatementsInFlight(useExecutionStore.getState())).toBe(false)
+  })
+
+  it('結果を捨てても応答待ちの文は数え続ける', async () => {
+    // Arrange: 接続を捨てても文はデータベースで走り続けている
+    const 応答 = 保留の応答()
+    const { api } = createFakeDbApi({ onExecute: () => 応答.promise })
+    setDbApi(api)
+    const 実行 = useExecutionStore.getState().execute('c1', TAB, 'update t set a = 1', '開発', [])
+    await 応答.呼ばれるまで待つ()
+
+    // Act
+    useExecutionStore.getState().clear()
+
+    // Assert
+    expect(selectStatementsInFlight(useExecutionStore.getState())).toBe(true)
+    応答.応える(emptyResponse)
+    await 実行
+  })
+
+  it('スクリプト実行の文と文の間も実行中のタブとして数える', () => {
+    // Arrange: 文と文の間には応答待ちの要求が無い
+    useExecutionStore.setState({
+      byTab: { [TAB]: { ...emptyExecution, status: 'running' } },
+      pendingRequests: [],
+    })
+
+    // Act
+    const 走っている = selectStatementsInFlight(useExecutionStore.getState())
+
+    // Assert
+    expect(走っている).toBe(true)
+  })
+
+  it('何も走っていなければ偽を返す', () => {
+    // Arrange
+    useExecutionStore.setState({
+      byTab: { [TAB]: { ...emptyExecution, status: 'succeeded' } },
+      pendingRequests: [],
+    })
+
+    // Act
+    const 走っている = selectStatementsInFlight(useExecutionStore.getState())
+
+    // Assert
+    expect(走っている).toBe(false)
   })
 })
 

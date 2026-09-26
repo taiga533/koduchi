@@ -179,6 +179,19 @@ interface ExecutionState {
    * 1 つであるため、タブごとではなくウィンドウに 1 つ持つ。
    */
   inTransaction: boolean
+  /**
+   * 応答を待っている文の要求 ID（ADR 0003 への 2026-09-27 の追記）。
+   *
+   * `byTab` とは別に持つ。実行中のタブは閉じられ（`closeTabAndRelease` は走って
+   * いるかを見ない）、`releaseTab` はその項目を先に消す。項目だけを見ていると、
+   * 文がまだデータベースで走っている最中に切断の関所を通してしまい、ログオフの
+   * 暗黙のロールバックで変更が黙って消える（ADR 0012）。応答がまだ無いため
+   * `inTransaction` も偽のままで、未コミットの確認も出ない。
+   *
+   * 数ではなく ID で持つのは、同じ要求を 2 度数えも 2 度引きもしないためである。
+   * **`clear` では消さない。**文は接続を捨てても走り続けている。
+   */
+  pendingRequests: string[]
 
   /**
    * SQL を実行する。
@@ -330,11 +343,13 @@ let 次の世代 = 1
  * ストア全体の区切り。`clear` のたびに進める。
  *
  * タブの世代は書き戻す先の項目を守るが、未コミットの表示とログはウィンドウに
- * 1 つであり、タブの世代では守れない。閉じた実行中のタブは項目が先に消える
- * ため、実行中の文があっても切断の関所（`selectAnyRunning`）を通れる。その文の
- * 応答が切断の後に返ると、捨てたはずの接続の `inTransaction` とログが、次の
- * 接続の画面へ書き戻される。`runStatement` は始めたときの区切りを控え、
- * `clear` をまたいだ応答ではこの 2 つに触れない。
+ * 1 つであり、タブの世代では守れない。`runStatement` は始めたときの区切りを
+ * 控え、`clear` をまたいだ応答ではこの 2 つに触れない。
+ *
+ * 切断の関所（`selectStatementsInFlight`）は、閉じたタブの文も含めて走っている
+ * 間は切断を止めるため、ふつうはまたがない。これはその関所の外から `clear` が
+ * 呼ばれた場合の守りであり、捨てた接続の `inTransaction` とログを次の接続の
+ * 画面へ戻さない。
  */
 let 区切り = 0
 
@@ -458,6 +473,8 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     const entryId = crypto.randomUUID()
     const 控えた区切り = 区切り
 
+    set((state) => ({ pendingRequests: [...state.pendingRequests, entryId] }))
+
     try {
       const response = await getDbApi().execute(connectionId, tabId, sql, binds)
 
@@ -550,6 +567,11 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       })
 
       return { ok: false, message, elapsedMs }
+    } finally {
+      // 成功でも失敗でも、応答が返れば文はもう走っていない。
+      set((state) => ({
+        pendingRequests: state.pendingRequests.filter((id) => id !== entryId),
+      }))
     }
   }
 
@@ -558,6 +580,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     planByTab: {},
     log: [],
     inTransaction: false,
+    pendingRequests: [],
 
     execute: async (connectionId, tabId, sql, connectionName, binds) => {
       if (get().byTab[tabId]?.status === 'running') {
@@ -944,15 +967,24 @@ export function selectExecution(state: ExecutionState, tabId: string | null): Ta
 }
 
 /**
- * 実行中のタブが 1 つでもあるかを返す。
+ * データベースで走っている文が 1 つでもあるかを返す。
  *
  * 切断してよいかの判定に使う。接続を閉じると走っている文は道半ばで
- * 打ち切られるため、先に中止させる（`⌘.`）。
+ * 打ち切られ、ログオフの暗黙のロールバックで変更も消える（ADR 0012）ため、
+ * 先に中止させる（`⌘.`）。
+ *
+ * **閉じたタブの文も数える。**閉じたタブの項目は `releaseTab` が先に消すため、
+ * `byTab` だけを見ると走っている文を見落とす（`pendingRequests` を参照）。
+ * `running` のタブも併せて見るのは、スクリプト実行の文と文の間には応答待ちの
+ * 要求が無いためである。
  *
  * @param state 実行ストアの状態
  */
-export function selectAnyRunning(state: ExecutionState): boolean {
-  return Object.values(state.byTab).some((execution) => execution.status === 'running')
+export function selectStatementsInFlight(state: ExecutionState): boolean {
+  return (
+    state.pendingRequests.length > 0 ||
+    Object.values(state.byTab).some((execution) => execution.status === 'running')
+  )
 }
 
 /**
