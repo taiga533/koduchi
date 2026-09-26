@@ -9,7 +9,9 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { editorThemeSpec } from './theme'
+import { EditorState } from '@codemirror/state'
+import { EditorView } from '@codemirror/view'
+import { editorThemeSpec, koduchiEditorTheme } from './theme'
 
 /** 箱の大きさを決める property。`&` にはどれも書いてはならない。 */
 const 寸法のproperty = [
@@ -76,5 +78,55 @@ describe('editorThemeSpec', () => {
 
     // Act & Assert
     expect(高さを持つ).toEqual(['&.cm-editor'])
+  })
+})
+
+describe('選択の描き方（issue #54）', () => {
+  it('テーマ一式を載せたエディタは選択を層として描く', () => {
+    // Arrange
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+
+    // Act
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: 'select 1\nfrom dual',
+        selection: { anchor: 0, head: 18 },
+        extensions: [koduchiEditorTheme],
+      }),
+      parent,
+    })
+
+    // Assert
+    expect(view.dom.querySelector('.cm-selectionLayer')).not.toBeNull()
+    view.destroy()
+    parent.remove()
+  })
+
+  it('横の余白は `.cm-content` ではなく行が持つ（選択が文字の左へはみ出さないため）', () => {
+    // Arrange
+    const 本文 = editorThemeSpec['.cm-content'] as Record<string, unknown>
+    const 行 = editorThemeSpec['.cm-line'] as Record<string, unknown>
+
+    // Act
+    const [, 本文の横] = String(本文.padding).split(' ')
+
+    // Assert
+    expect(本文の横).toBe('0')
+    expect(行.padding).toBe('0 16px 0 20px')
+  })
+
+  it('焦点のある選択の色は基底テーマと同じ強さの選択子で決める', () => {
+    // Arrange
+    const 焦点のある選択 =
+      '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground'
+
+    // Act
+    const 当たる規則 = Object.entries(editorThemeSpec).find(([selector]) =>
+      selector.split(',').some((part) => part.trim() === 焦点のある選択),
+    )
+
+    // Assert
+    expect(当たる規則?.[1]).toMatchObject({ backgroundColor: 'var(--fill2)' })
   })
 })

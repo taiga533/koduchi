@@ -18,10 +18,13 @@
  * | ---------------------- | -------------------------------- |
  * | セルを単クリック       | そのセルを選ぶ（ドラッグで矩形） |
  * | セルをダブルクリック   | 詳細パネルを開く                 |
- * | セルを右クリック       | コピーのメニュー                 |
+ * | セルを右クリック       | コピーのメニュー（選択は保つ）   |
  * | 行番号を単クリック     | 行全体を選ぶ                     |
  * | 見出しの右端をドラッグ | 列幅を変える                     |
  * | 見出しをダブルクリック | 列幅を内容に合わせる             |
+ *
+ * 右クリック（と `⌃` + クリック）の押し下げでは選択を始め直さない（`startsSelection`）。
+ * 始め直すと、選んだ範囲がメニューの開く前に押したセル 1 つへ潰れる（issue #53）。
  *
  * 列幅の勘定は `columnSizing.ts`、詳細パネルは `CellDetailPanel.tsx`、検索の当たり
  * 判定は `resultSearch.ts` にある。
@@ -64,6 +67,7 @@ import {
   selectionEdges,
   selectionRange,
   selectionShadow,
+  startsSelection,
 } from './selection'
 import type { SearchOutcome } from './resultSearch'
 import {
@@ -492,7 +496,16 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
     return { column, cell, rowNumber: detail.row + 1 }
   }, [columns, detail, rows])
 
-  const closeDetail = useCallback(() => setDetail(null), [])
+  /**
+   * 詳細パネルを閉じ、焦点を表へ戻す。
+   *
+   * パネルの閉じるボタンを押すと焦点は表の外へ出る。戻さないと、選択が見えたまま
+   * `⌘A` / `⌘C` / 矢印が表へ届かない（issue #53。検索バーを閉じたときと同じ扱い）。
+   */
+  const closeDetail = useCallback(() => {
+    setDetail(null)
+    scrollRef.current?.focus({ preventScroll: true })
+  }, [])
 
   const range = selection ? selectionRange(selection) : null
 
@@ -564,7 +577,11 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                   >
                     <div
                       data-testid={`result-row-number-${virtualRow.index}`}
-                      onMouseDown={(event) => selectRow(virtualRow.index, event.shiftKey)}
+                      onMouseDown={(event) => {
+                        if (startsSelection(event)) {
+                          selectRow(virtualRow.index, event.shiftKey)
+                        }
+                      }}
                       className="text-right text-fg6 border-r border-gl bg-panel2 cursor-pointer"
                       style={{ padding: 'var(--rp)' }}
                     >
@@ -587,9 +604,11 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                           data-testid={`result-cell-${virtualRow.index}-${cellIndex}`}
                           data-selected={selected ? 'true' : undefined}
                           data-match={hit ? 'true' : undefined}
-                          onMouseDown={(event) =>
-                            beginSelect(virtualRow.index, cellIndex, event.shiftKey)
-                          }
+                          onMouseDown={(event) => {
+                            if (startsSelection(event)) {
+                              beginSelect(virtualRow.index, cellIndex, event.shiftKey)
+                            }
+                          }}
                           onMouseEnter={() => extendSelect(virtualRow.index, cellIndex)}
                           onDoubleClick={() =>
                             setDetail({ row: virtualRow.index, column: cellIndex })

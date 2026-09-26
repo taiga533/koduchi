@@ -1,0 +1,21 @@
+/*
+ * 部品の土台（design-sync）。
+ *
+ * `src/app.css` はアプリの 1 画面を前提に document のスクロールを止めている
+ * （ADR 0031）。デザインの描画環境では縦に長い画面も組むため、その宣言は持ち込まず、
+ * 地の色・文字・box-sizing とタブ帯のスクロールバーを隠す規則だけを写す。
+ */
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.tab-scroller::-webkit-scrollbar {
+  display: none;
+}
