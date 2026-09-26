@@ -23,6 +23,7 @@ use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,6 +41,12 @@ pub const DEFAULT_CHUNK_SIZE: usize = 1_000;
 /// 往復せずにその場で返す。切れていると分かっている接続へ投げ直しても、
 /// 待たされたうえで同じ番号が返るだけである。
 pub const CONNECTION_LOST_MESSAGE: &str = "接続が切れています。再接続してください";
+
+/// 手放したタブから実行を求められたときの文言（ADR 0003）。
+///
+/// 閉じたタブの応答であり、フロントエンドはタブの世代で捨てる。利用者の目に
+/// 触れることは無いが、何が起きたかは読めるようにしておく。
+const RELEASED_TAB_MESSAGE: &str = "このタブは既に閉じられています";
 
 /// ステータスバーへ返す接続の様子（ADR 0030）。
 ///
@@ -80,6 +87,24 @@ struct Lease {
     slot: usize,
 }
 
+/// 割り当ての表。
+///
+/// 割り当ての並びと手放したタブを 1 つのロックの下に置く。別々のロックにすると、
+/// 「手放した」の書き込みと割り当ての間に別の操作が挟まりうる。
+#[derive(Debug, Default)]
+struct LeaseTable {
+    /// 割り当ての一覧。先頭ほど長く使われていない。
+    leases: Vec<Lease>,
+    /// 手放したタブ（ADR 0003 への 2026-09-27 の追記）。
+    ///
+    /// Tauri のコマンドは `run_blocking` で別々のスレッドに載るため、タブを閉じる
+    /// 前に送った実行が手放しより後に届くことがある。覚えておかないと、閉じた
+    /// タブに接続が割り当てられ、LRU で剥がされるまで接続とカーソルを握り続ける。
+    /// タブの ID は使い回されず（UUID）、接続を張り直せばプールごと作り直すため、
+    /// 1 つのプールの中で「手放したタブがまた使われる」ことは無い。
+    released: HashSet<String>,
+}
+
 /// 実行の結果と、その巻き添えで結果セットを閉じられたタブ。
 #[derive(Debug)]
 pub struct ExecuteResponse {
@@ -93,8 +118,14 @@ pub struct ExecuteResponse {
 /// ウィンドウ 1 つぶんの接続プール。
 pub struct ConnectionPool {
     handles: Vec<Arc<ConnectionHandle>>,
-    /// 割り当ての一覧。先頭ほど長く使われていない。
-    leases: Mutex<Vec<Lease>>,
+    /// 割り当ての表。
+    ///
+    /// **カーソルに触れる命令（実行・続きの取り出し・カーソルを閉じる）は、
+    /// この表を握ったままアクタースレッドへ積む。**アクタースレッドは積まれた順に
+    /// 処理するため、そうすれば接続ごとの処理の順が表の書き換えの順と揃う。
+    /// 表を離してから積むと、同じ接続を引き継いだ別のタブの命令と追い越し合い、
+    /// そのタブのカーソルを閉じたり、そのタブの行を読んだりする。
+    leases: Mutex<LeaseTable>,
     chunk_size: usize,
     /// サーバ側で接続が切れたか（ADR 0026）。
     ///
@@ -106,6 +137,13 @@ pub struct ConnectionPool {
     /// `見張る` が成功したときにだけ進める。往復していない操作で進めると、
     /// 「いつまで確かだったか」の表示が実際より新しくなる。
     last_round_trip: AtomicU64,
+    /// 割り当ての表を離した直後に 1 度だけ呼ぶ差し込み口（テスト専用）。
+    ///
+    /// 表を離してから返事を待つまでの間へ別のタブの操作を割り込ませ、Tauri の
+    /// コマンドが別々のスレッドで走ったときに起こりうる順序を決まった形で
+    /// 再現するためにある。本番の組み立てには存在しない。
+    #[cfg(test)]
+    表を離した直後: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl ConnectionPool {
@@ -131,11 +169,13 @@ impl ConnectionPool {
 
         Ok(ConnectionPool {
             handles,
-            leases: Mutex::new(Vec::new()),
+            leases: Mutex::new(LeaseTable::default()),
             chunk_size,
             lost: AtomicBool::new(false),
             // 接続の確立そのものが往復である。
             last_round_trip: AtomicU64::new(now_ms()),
+            #[cfg(test)]
+            表を離した直後: Mutex::new(None),
         })
     }
 
@@ -150,10 +190,29 @@ impl ConnectionPool {
     pub fn from_handles(handles: Vec<Arc<ConnectionHandle>>, chunk_size: usize) -> Self {
         ConnectionPool {
             handles,
-            leases: Mutex::new(Vec::new()),
+            leases: Mutex::new(LeaseTable::default()),
             chunk_size,
             lost: AtomicBool::new(false),
             last_round_trip: AtomicU64::new(now_ms()),
+            #[cfg(test)]
+            表を離した直後: Mutex::new(None),
+        }
+    }
+
+    /// 割り当ての表を離したことをテストの差し込み口へ知らせる。
+    ///
+    /// 本番の組み立てでは何もしない。
+    fn 表を離した(&self) {
+        #[cfg(test)]
+        {
+            let 差し込み = self
+                .表を離した直後
+                .lock()
+                .expect("差し込み口のロックが壊れている")
+                .take();
+            if let Some(差し込み) = 差し込み {
+                差し込み();
+            }
         }
     }
 
@@ -168,8 +227,8 @@ impl ConnectionPool {
     /// 表に残しておくと「続きを取れる」と読める嘘になる。
     fn mark_lost(&self) {
         self.lost.store(true, Ordering::SeqCst);
-        let mut leases = self.leases.lock().expect("割り当て表のロックが壊れている");
-        leases.clear();
+        let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+        table.leases.clear();
     }
 
     /// データベースへの往復を見張る（ADR 0026）。
@@ -253,8 +312,9 @@ impl ConnectionPool {
     ///
     /// * `tab_id` - 対象のタブ
     fn leased(&self, tab_id: &str) -> Option<Arc<ConnectionHandle>> {
-        let leases = self.leases.lock().expect("割り当て表のロックが壊れている");
-        leases
+        let table = self.leases.lock().expect("割り当て表のロックが壊れている");
+        table
+            .leases
             .iter()
             .find(|lease| lease.tab_id == tab_id)
             .map(|lease| Arc::clone(&self.handles[lease.slot]))
@@ -267,80 +327,93 @@ impl ConnectionPool {
     ///
     /// # 引数
     ///
+    /// * `table` - 握っている割り当ての表
     /// * `tab_id` - 対象のタブ
-    fn touch(&self, tab_id: &str) -> Option<Arc<ConnectionHandle>> {
-        let mut leases = self.leases.lock().expect("割り当て表のロックが壊れている");
-        let index = leases.iter().position(|lease| lease.tab_id == tab_id)?;
-        let lease = leases.remove(index);
+    fn touch(&self, table: &mut LeaseTable, tab_id: &str) -> Option<Arc<ConnectionHandle>> {
+        let index = table
+            .leases
+            .iter()
+            .position(|lease| lease.tab_id == tab_id)?;
+        let lease = table.leases.remove(index);
         let handle = Arc::clone(&self.handles[lease.slot]);
-        leases.push(lease);
+        table.leases.push(lease);
         Some(handle)
     }
 
     /// タブに接続を割り当てる。
     ///
     /// 既に割り当てがあればそれを最近使ったものとして扱い直す。空きが無ければ、
-    /// 最も長く使われていないタブの割り当てを剥がす。
+    /// 最も長く使われていないタブの割り当てを剥がす。手放したタブには割り当てない。
     ///
     /// # 引数
     ///
+    /// * `table` - 握っている割り当ての表
     /// * `tab_id` - 対象のタブ
     ///
     /// # 戻り値
     ///
     /// 割り当てた接続と、剥がされたタブ。
-    fn acquire(&self, tab_id: &str) -> (Arc<ConnectionHandle>, Option<String>) {
-        let mut leases = self.leases.lock().expect("割り当て表のロックが壊れている");
+    fn acquire(
+        &self,
+        table: &mut LeaseTable,
+        tab_id: &str,
+    ) -> DbResult<(Arc<ConnectionHandle>, Option<String>)> {
+        if table.released.contains(tab_id) {
+            return Err(DbError::new(DbErrorKind::Closed, RELEASED_TAB_MESSAGE));
+        }
 
         // 既にこのタブが持っている接続は、そのまま使い続ける。
-        if let Some(index) = leases.iter().position(|lease| lease.tab_id == tab_id) {
-            let lease = leases.remove(index);
-            let handle = Arc::clone(&self.handles[lease.slot]);
-            leases.push(lease);
-            return (handle, None);
+        if let Some(handle) = self.touch(table, tab_id) {
+            return Ok((handle, None));
         }
 
         // 空いている接続があればそれを使う。
-        let used: Vec<usize> = leases.iter().map(|lease| lease.slot).collect();
+        let used: Vec<usize> = table.leases.iter().map(|lease| lease.slot).collect();
         if let Some(slot) = (0..self.handles.len()).find(|slot| !used.contains(slot)) {
-            leases.push(Lease {
+            table.leases.push(Lease {
                 tab_id: tab_id.to_string(),
                 slot,
             });
-            return (Arc::clone(&self.handles[slot]), None);
+            return Ok((Arc::clone(&self.handles[slot]), None));
         }
 
         // 空きが無ければ、最も長く使われていない割り当てを剥がす。
-        let 剥がす = leases.remove(0);
+        let 剥がす = table.leases.remove(0);
         let handle = Arc::clone(&self.handles[剥がす.slot]);
-        leases.push(Lease {
+        table.leases.push(Lease {
             tab_id: tab_id.to_string(),
             slot: 剥がす.slot,
         });
 
-        (handle, Some(剥がす.tab_id))
+        Ok((handle, Some(剥がす.tab_id)))
     }
 
     /// タブの割り当てを外す。
     ///
-    /// タブを閉じたときに呼ぶ。カーソルも一緒に閉じる。
+    /// タブを閉じたときに呼ぶ。カーソルも一緒に閉じる。以後このタブの実行には
+    /// 接続を割り当てない（割り当てが無かったときも覚える。実行より先に手放しが
+    /// 届いた場合こそ、覚えておかないと閉じたタブに接続を握らせる）。
     ///
     /// # 引数
     ///
     /// * `tab_id` - 対象のタブ
     pub fn release(&self, tab_id: &str) -> DbResult<()> {
-        let handle = {
-            let mut leases = self.leases.lock().expect("割り当て表のロックが壊れている");
-            let Some(index) = leases.iter().position(|lease| lease.tab_id == tab_id) else {
+        let pending = {
+            let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            table.released.insert(tab_id.to_string());
+            let Some(index) = table.leases.iter().position(|lease| lease.tab_id == tab_id) else {
                 return Ok(());
             };
-            let lease = leases.remove(index);
-            Arc::clone(&self.handles[lease.slot])
+            let lease = table.leases.remove(index);
+            // 表を握ったまま積む。離してから積むと、この接続を引き継いだ別のタブの
+            // 実行が先に積まれ、そのタブのカーソルを閉じてしまう。
+            self.handles[lease.slot].send_close_cursor()?
         };
+        self.表を離した();
 
         // 割り当てがあるときだけカーソルを閉じに行く。往復するのはここからで
         // あるため、`見張る` を通すのもここだけでよい（ADR 0026・0030）。
-        self.見張る(|| handle.close_cursor())
+        self.見張る(|| pending.wait())
     }
 
     /// SQL を 1 文実行する。
@@ -361,11 +434,20 @@ impl ConnectionPool {
             return Err(DbError::connection_lost(CONNECTION_LOST_MESSAGE));
         }
 
-        let (handle, discarded_tab) = self.acquire(tab_id);
+        let (pending, discarded_tab) = {
+            let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            let (handle, discarded_tab) = self.acquire(&mut table, tab_id)?;
+            // 剥がしたタブのカーソルは、同じ接続を使い回す前に閉じておく必要がある。
+            // 実行そのものが前のカーソルを閉じるため、ここでは表からの削除だけでよい。
+            // 積むのは表を握ったまま行う（`leases` の説明を参照）。
+            (
+                handle.send_execute(sql, binds, self.chunk_size)?,
+                discarded_tab,
+            )
+        };
+        self.表を離した();
 
-        // 剥がしたタブのカーソルは、同じ接続を使い回す前に閉じておく必要がある。
-        // 実行そのものが前のカーソルを閉じるため、ここでは表からの削除だけでよい。
-        let outcome = self.見張る(|| handle.execute(sql, binds, self.chunk_size))?;
+        let outcome = self.見張る(|| pending.wait())?;
 
         let 保持し続ける = matches!(
             &outcome,
@@ -373,8 +455,8 @@ impl ConnectionPool {
         );
 
         if !保持し続ける {
-            let mut leases = self.leases.lock().expect("割り当て表のロックが壊れている");
-            leases.retain(|lease| lease.tab_id != tab_id);
+            let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            table.leases.retain(|lease| lease.tab_id != tab_id);
         }
 
         Ok(ExecuteResponse {
@@ -397,19 +479,26 @@ impl ConnectionPool {
             return Err(DbError::connection_lost(CONNECTION_LOST_MESSAGE));
         }
 
-        let handle = self.touch(tab_id).ok_or_else(|| {
-            DbError::new(
-                crate::db::error::DbErrorKind::Closed,
-                "結果は破棄されました。再実行してください",
-            )
-        })?;
+        let pending = {
+            let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            let handle = self.touch(&mut table, tab_id).ok_or_else(|| {
+                DbError::new(
+                    DbErrorKind::Closed,
+                    "結果は破棄されました。再実行してください",
+                )
+            })?;
+            // 表を握ったまま積む。離してから積むと、この割り当てを剥がした別のタブの
+            // 実行が先に積まれ、そのタブの行を読んでしまう。
+            handle.send_fetch_more(self.chunk_size)?
+        };
+        self.表を離した();
 
-        let chunk = self.見張る(|| handle.fetch_more(self.chunk_size))?;
+        let chunk = self.見張る(|| pending.wait())?;
 
         // 尽きたら接続を明け渡す。
         if chunk.exhausted {
-            let mut leases = self.leases.lock().expect("割り当て表のロックが壊れている");
-            leases.retain(|lease| lease.tab_id != tab_id);
+            let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            table.leases.retain(|lease| lease.tab_id != tab_id);
         }
 
         Ok(chunk)
@@ -421,12 +510,12 @@ impl ConnectionPool {
     /// 表には載せない。空きが無ければ最も長く使われていない接続を借りる（その
     /// 接続のカーソルは閉じない。問い合わせが 1 つ増えるだけである）。
     fn background_handle(&self) -> DbResult<Arc<ConnectionHandle>> {
-        let leases = self.leases.lock().expect("割り当て表のロックが壊れている");
+        let table = self.leases.lock().expect("割り当て表のロックが壊れている");
 
-        let used: Vec<usize> = leases.iter().map(|lease| lease.slot).collect();
+        let used: Vec<usize> = table.leases.iter().map(|lease| lease.slot).collect();
         let slot = (0..self.handles.len())
             .find(|slot| !used.contains(slot))
-            .or_else(|| leases.first().map(|lease| lease.slot))
+            .or_else(|| table.leases.first().map(|lease| lease.slot))
             .ok_or_else(DbError::closed)?;
 
         Ok(Arc::clone(&self.handles[slot]))
@@ -588,6 +677,13 @@ impl ConnectionPool {
     }
 
     /// 実行中の文を中止する（`⌘.`）。
+    ///
+    /// 中止は命令の列を通らない（塞がっているアクタースレッドへ届かせるため。
+    /// ADR 0002）。そのため「表を握ったまま積む」決まりでは順序を揃えられず、
+    /// 割り当てを覗いてから中止が届くまでの間に同じ接続で別のタブの文が
+    /// 走り始めれば、そちらを中止しうる。表を握ったまま中止を送ると、切れた
+    /// 回線で中止が返らないときにプールの全操作が止まるため、そうはしていない
+    /// （ADR 0003 への 2026-09-27 の追記）。
     ///
     /// # 引数
     ///
@@ -1197,6 +1293,253 @@ mod tests {
 
         // Assert
         assert!(!pool.is_lost());
+    }
+
+    /// 開いているカーソルがどの文のものかを覚えているドライバ。
+    ///
+    /// 命令がアクタースレッドへ届く順を、実データベース抜きで見分けるために
+    /// ある。取り出した行には、そのカーソルを開いた SQL をそのまま載せる。
+    /// 別のタブの行を読んだり、別のタブのカーソルを閉じたりすれば、行の中身と
+    /// 「カーソルが無い」のエラーで分かる。
+    struct 札を付けるドライバ {
+        /// 開いているカーソルを開いた SQL。閉じていれば `None`。
+        ///
+        /// 割り当ての表に載っていないカーソルが残っていないかを、テストの側から
+        /// 覗けるように共有してある。
+        開いている: Arc<Mutex<Option<String>>>,
+    }
+
+    /// 札を付けるドライバが、カーソルの無いところから取り出そうとしたときの文言。
+    const カーソルが無い: &str = "カーソルが開いていない";
+
+    /// 札を載せた 1 行ぶんのかたまりを作る。
+    ///
+    /// # 引数
+    ///
+    /// * `札` - カーソルを開いた SQL
+    fn 札の付いたかたまり(札: &str) -> Chunk {
+        Chunk {
+            rows: vec![vec![crate::db::value::Cell::new(CellKind::Text, 札)]],
+            exhausted: false,
+        }
+    }
+
+    impl Driver for 札を付けるドライバ {
+        fn canceller(&self) -> Box<dyn Canceller> {
+            Box::new(何もしない中止経路)
+        }
+
+        fn execute(
+            &mut self,
+            sql: &str,
+            _binds: &[Bind],
+            _chunk_size: usize,
+        ) -> DbResult<ExecuteOutcome> {
+            *self.開いている.lock().unwrap() = Some(sql.to_string());
+            Ok(ExecuteOutcome::Query {
+                columns: vec![Column {
+                    name: String::from("札"),
+                    type_name: String::from("VARCHAR2"),
+                    kind: CellKind::Text,
+                }],
+                chunk: 札の付いたかたまり(sql),
+                elapsed_ms: 0,
+                notices: Vec::new(),
+                in_transaction: false,
+            })
+        }
+
+        fn fetch_more(&mut self, _chunk_size: usize) -> DbResult<Chunk> {
+            match self.開いている.lock().unwrap().as_deref() {
+                Some(札) => Ok(札の付いたかたまり(札)),
+                None => Err(DbError::new(DbErrorKind::Closed, カーソルが無い)),
+            }
+        }
+
+        fn close_cursor(&mut self) -> DbResult<()> {
+            *self.開いている.lock().unwrap() = None;
+            Ok(())
+        }
+
+        fn schema_overview(&mut self, _filter: &SchemaFilter) -> DbResult<Vec<SchemaNode>> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn commit(&mut self) -> DbResult<()> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn rollback(&mut self) -> DbResult<()> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn explain_plan(&mut self, _sql: &str, _binds: &[Bind]) -> DbResult<String> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn actual_plan(&mut self, _sql: &str, _binds: &[Bind]) -> DbResult<String> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn object_definition(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<ObjectDefinition> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn object_ddl(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<ObjectDdl> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn list_sessions(&mut self) -> DbResult<SessionOverview> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn kill_session(&mut self, _sid: u32, _serial: u32) -> DbResult<()> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn search_source(
+            &mut self,
+            _request: &SourceSearchRequest,
+        ) -> DbResult<SourceSearchResult> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn source_context(
+            &mut self,
+            _target: &SourceTarget,
+            _line: u32,
+        ) -> DbResult<Vec<SourceLine>> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+    }
+
+    /// 札を付けるドライバを 1 本だけ載せたプールと、そのカーソルの様子を返す。
+    ///
+    /// 1 本にするのは、別のタブが必ず同じ接続を引き継ぐようにするためである。
+    fn 一本のプールを組む() -> (Arc<ConnectionPool>, Arc<Mutex<Option<String>>>) {
+        let 開いている = Arc::new(Mutex::new(None));
+        let 共有 = Arc::clone(&開いている);
+        let drivers = vec![move || {
+            Ok(札を付けるドライバ {
+                開いている: 共有
+            })
+        }];
+        let pool = Arc::new(pool_from_drivers(drivers, DEFAULT_CHUNK_SIZE).unwrap());
+        (pool, 開いている)
+    }
+
+    /// 次にプールが割り当ての表を離した直後に、`割り込み` を走らせる。
+    ///
+    /// Tauri のコマンドは `run_blocking` で別々のスレッドに載るため、ある操作が
+    /// 表を離してから返事を待つまでの間に、別の操作がまるごと走りうる。その順を
+    /// 決まった形で再現する。
+    ///
+    /// # 引数
+    ///
+    /// * `pool` - 割り込ませる先のプール
+    /// * `割り込み` - 割り込ませる操作
+    fn 表を離した直後に割り込ませる(
+        pool: &ConnectionPool,
+        割り込み: impl FnOnce() + Send + 'static,
+    ) {
+        *pool.表を離した直後.lock().unwrap() = Some(Box::new(割り込み));
+    }
+
+    #[test]
+    fn 閉じたタブの実行が手放しより後に届いても割り当ては残らない() {
+        // Arrange: コマンドは run_blocking で走るため、閉じる前に送った実行が
+        // 手放しより後に処理されることがある（ADR 0003）
+        let (pool, 開いている) = 一本のプールを組む();
+        pool.release("閉じたタブ").unwrap();
+
+        // Act
+        let 実行 = pool.execute("閉じたタブ", "A", &[]);
+
+        // Assert: 閉じたタブに接続もカーソルも握らせない
+        assert_eq!(実行.unwrap_err().kind, DbErrorKind::Closed);
+        assert!(pool.leased("閉じたタブ").is_none());
+        assert_eq!(*開いている.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn 閉じたタブの続きの取り出しは破棄されたものとして断る() {
+        // Arrange: 手放しの後に届いた続きの取り出しも、閉じたタブのものである
+        let (pool, _) = 一本のプールを組む();
+        pool.execute("閉じたタブ", "A", &[]).unwrap();
+        pool.release("閉じたタブ").unwrap();
+
+        // Act
+        let 続き = pool.fetch_more("閉じたタブ");
+
+        // Assert
+        assert_eq!(続き.unwrap_err().kind, DbErrorKind::Closed);
+    }
+
+    #[test]
+    fn 実行の最中に手放されたタブのカーソルは開いたまま残らない() {
+        // Arrange: 実行が表を離した直後に、同じタブの手放しが割り込む
+        let (pool, 開いている) = 一本のプールを組む();
+        let 手放す側 = Arc::clone(&pool);
+        表を離した直後に割り込ませる(&pool, move || {
+            手放す側.release("A").unwrap();
+        });
+
+        // Act
+        pool.execute("A", "A", &[]).unwrap();
+
+        // Assert: 割り当ての無いカーソルは、誰も閉じに来ない
+        assert!(pool.leased("A").is_none());
+        assert_eq!(*開いている.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn 手放しの直後に別のタブが同じ接続で実行しても別のタブのカーソルは閉じられない() {
+        // Arrange: 1 本しかないので、B は A が手放した接続を引き継ぐ
+        let (pool, _) = 一本のプールを組む();
+        pool.execute("A", "A", &[]).unwrap();
+        let 実行する側 = Arc::clone(&pool);
+        表を離した直後に割り込ませる(&pool, move || {
+            実行する側.execute("B", "B", &[]).unwrap();
+        });
+
+        // Act
+        pool.release("A").unwrap();
+
+        // Assert: B の割り当てがある以上、B のカーソルは開いたままである
+        let 続き = pool.fetch_more("B").unwrap();
+        assert_eq!(続き.rows[0][0].text, "B");
+    }
+
+    #[test]
+    fn 続きの取り出しの直後に割り当てを剥がされても別のタブの行を取らない() {
+        // Arrange: 1 本しかないので、B の実行は A の割り当てを剥がす
+        let (pool, _) = 一本のプールを組む();
+        pool.execute("A", "A", &[]).unwrap();
+        let 実行する側 = Arc::clone(&pool);
+        表を離した直後に割り込ませる(&pool, move || {
+            実行する側.execute("B", "B", &[]).unwrap();
+        });
+
+        // Act
+        let 続き = pool.fetch_more("A").unwrap();
+
+        // Assert: A が受け取るのは A の行であり、B の行を 1 かたまり奪ってもいない
+        assert_eq!(続き.rows[0][0].text, "A");
+        assert_eq!(pool.fetch_more("B").unwrap().rows[0][0].text, "B");
     }
 
     #[test]
