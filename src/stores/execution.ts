@@ -327,6 +327,18 @@ const 世代 = new Map<string, number>()
 let 次の世代 = 1
 
 /**
+ * ストア全体の区切り。`clear` のたびに進める。
+ *
+ * タブの世代は書き戻す先の項目を守るが、未コミットの表示とログはウィンドウに
+ * 1 つであり、タブの世代では守れない。閉じた実行中のタブは項目が先に消える
+ * ため、実行中の文があっても切断の関所（`selectAnyRunning`）を通れる。その文の
+ * 応答が切断の後に返ると、捨てたはずの接続の `inTransaction` とログが、次の
+ * 接続の画面へ書き戻される。`runStatement` は始めたときの区切りを控え、
+ * `clear` をまたいだ応答ではこの 2 つに触れない。
+ */
+let 区切り = 0
+
+/**
  * タブの世代を採番し直す。
  *
  * @param tabId 実行を始めるタブ
@@ -427,6 +439,12 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
    * @param connectionName 履歴に残す接続名
    * @param binds バインド変数の値。文に無い名前は Rust 側で捨てられる
    * @param progress スクリプト実行の何文目か。単発の実行では `null`
+   *
+   * **`clear` をまたいで返った応答は、未コミットの表示とログへ書かない。**
+   * どちらも捨てた接続のものであり、次の接続の画面に出すと嘘になる。
+   * **履歴には残す。**履歴は接続をまたいで残す「実際に何を流したか」の記録で
+   * あり（ADR 0005）、文はデータベースで実際に走っている。消すと、閉じたタブで
+   * 何が流れたのかを後から確かめる道が無くなる。
    */
   const runStatement = async (
     connectionId: string,
@@ -438,6 +456,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
   ): Promise<StatementOutcome> => {
     const startedAt = new Date()
     const entryId = crypto.randomUUID()
+    const 控えた区切り = 区切り
 
     try {
       const response = await getDbApi().execute(connectionId, tabId, sql, binds)
@@ -464,22 +483,26 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       // 後から履歴を読み返したときに空振りした DML と区別が付かない（ADR 0034）。
       const rowCount = execution.isStatement ? execution.affectedRows : execution.rows.length
 
-      set((state) => ({
-        inTransaction: response.inTransaction,
-        log: [
-          ...state.log,
-          {
-            id: entryId,
-            startedAt,
-            sql,
-            elapsedMs: response.elapsedMs,
-            rowCount,
-            error: null,
-            notices: response.notices,
-            statement: progress,
-          },
-        ],
-      }))
+      set((state) =>
+        控えた区切り !== 区切り
+          ? state
+          : {
+              inTransaction: response.inTransaction,
+              log: [
+                ...state.log,
+                {
+                  id: entryId,
+                  startedAt,
+                  sql,
+                  elapsedMs: response.elapsedMs,
+                  rowCount,
+                  error: null,
+                  notices: response.notices,
+                  statement: progress,
+                },
+              ],
+            },
+      )
 
       await recordHistory({
         sql,
@@ -496,21 +519,25 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       const message = toErrorMessage(error)
       const elapsedMs = Date.now() - startedAt.getTime()
 
-      set((state) => ({
-        log: [
-          ...state.log,
-          {
-            id: entryId,
-            startedAt,
-            sql,
-            elapsedMs,
-            rowCount: null,
-            error: message,
-            notices: [],
-            statement: progress,
-          },
-        ],
-      }))
+      set((state) =>
+        控えた区切り !== 区切り
+          ? state
+          : {
+              log: [
+                ...state.log,
+                {
+                  id: entryId,
+                  startedAt,
+                  sql,
+                  elapsedMs,
+                  rowCount: null,
+                  error: message,
+                  notices: [],
+                  statement: progress,
+                },
+              ],
+            },
+      )
 
       await recordHistory({
         sql,
@@ -839,6 +866,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     clear: () => {
       cancelRequests.clear()
       世代.clear()
+      区切り += 1
       set({ byTab: {}, planByTab: {}, log: [], inTransaction: false })
     },
   }

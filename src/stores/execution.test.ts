@@ -594,6 +594,116 @@ describe('cancel と releaseTab', () => {
 })
 
 describe('閉じたタブへの遅れた応答', () => {
+  it('閉じた実行中のタブの応答が切断の後に返っても未コミットの表示とログを書き戻さない', async () => {
+    // Arrange: 閉じたタブの項目は先に消えるため、実行中の文があっても切断の関所を通れる
+    const 応答 = 保留の応答()
+    const { api, calls } = createFakeDbApi({ onExecute: () => 応答.promise })
+    setDbApi(api)
+    const 実行 = useExecutionStore.getState().execute('c1', TAB, 'update t set a = 1', '開発', [])
+    await 応答.呼ばれるまで待つ()
+    await useExecutionStore.getState().releaseTab('c1', TAB)
+    useExecutionStore.getState().clear()
+
+    // Act
+    応答.応える(statementResponse(1, { inTransaction: true }))
+    await 実行
+
+    // Assert: 文が走った事実は履歴に残す
+    const state = useExecutionStore.getState()
+    expect(state.inTransaction).toBe(false)
+    expect(state.log).toEqual([])
+    expect(state.byTab).toEqual({})
+    expect(calls.recordHistory.map((entry) => entry.sql)).toEqual(['update t set a = 1'])
+  })
+
+  it('閉じた実行中のタブの失敗が切断の後に返ってもログを書き戻さない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    let 失敗させる!: (error: unknown) => void
+    let 呼ばれた!: () => void
+    const 呼び出し = new Promise<void>((resolve) => {
+      呼ばれた = resolve
+    })
+    setDbApi({
+      ...api,
+      execute: () =>
+        new Promise<ExecuteResponse>((_, reject) => {
+          失敗させる = reject
+          呼ばれた()
+        }),
+    })
+    const 実行 = useExecutionStore.getState().execute('c1', TAB, 'select 1 from dual', '開発', [])
+    await 呼び出し
+    await useExecutionStore.getState().releaseTab('c1', TAB)
+    useExecutionStore.getState().clear()
+
+    // Act
+    失敗させる({ kind: 'execute', message: 'ORA-01013' })
+    await 実行
+
+    // Assert
+    expect(useExecutionStore.getState().log).toEqual([])
+    expect(calls.recordHistory).toHaveLength(1)
+  })
+
+  it('手放した後に同じタブで実行し直すと古い実行の応答は新しい実行を上書きしない', async () => {
+    // Arrange: 項目の有無ではなく世代で見ていることを確かめる。新しい実行が
+    // 項目を作り直しているため、有無だけでは古い応答を通してしまう
+    const 古い = 保留の応答()
+    const 新しい = 保留の応答()
+    const 応答 = [古い, 新しい]
+    const { api } = createFakeDbApi({ onExecute: () => 応答.shift()!.promise })
+    setDbApi(api)
+    const 古い実行 = useExecutionStore.getState().execute('c1', TAB, '古い文', '開発', [])
+    await 古い.呼ばれるまで待つ()
+    await useExecutionStore.getState().releaseTab('c1', TAB)
+    const 新しい実行 = useExecutionStore.getState().execute('c1', TAB, '新しい文', '開発', [])
+    await 新しい.呼ばれるまで待つ()
+
+    // Act
+    古い.応える(queryResponse(列, 行を作る(5)))
+    await 古い実行
+
+    // Assert
+    expect(selectExecution(useExecutionStore.getState(), TAB).status).toBe('running')
+    新しい.応える(queryResponse(列, 行を作る(1)))
+    await 新しい実行
+    expect(selectExecution(useExecutionStore.getState(), TAB).rows).toHaveLength(1)
+  })
+
+  it('手放した後に同じタブで実行し直すと古いスクリプトは残りの文を投げない', async () => {
+    // Arrange: 項目の有無ではなく世代で見ていることを確かめる
+    const 一文目 = 保留の応答()
+    const 再実行 = 保留の応答()
+    const 実行した: string[] = []
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => {
+        実行した.push(sql)
+        if (sql === '文1') return 一文目.promise
+        if (sql === '再実行') return 再実行.promise
+        return emptyResponse
+      },
+    })
+    setDbApi(api)
+    const スクリプト = useExecutionStore
+      .getState()
+      .executeScript('c1', TAB, ['文1', '文2'], '開発', [])
+    await 一文目.呼ばれるまで待つ()
+    await useExecutionStore.getState().releaseTab('c1', TAB)
+    const 実行 = useExecutionStore.getState().execute('c1', TAB, '再実行', '開発', [])
+    await 再実行.呼ばれるまで待つ()
+
+    // Act
+    一文目.応える(emptyResponse)
+    await スクリプト
+
+    // Assert
+    expect(実行した).toEqual(['文1', '再実行'])
+    expect(selectExecution(useExecutionStore.getState(), TAB).status).toBe('running')
+    再実行.応える(emptyResponse)
+    await 実行
+  })
+
   it('手放した後に返った続きの取り出しは項目を作り直さない', async () => {
     // Arrange
     const 続き = 手で返す<Chunk>()
