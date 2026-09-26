@@ -392,6 +392,85 @@ fn plsqlブロックの結果は影響行数を持たない() {
     assert_eq!(影響, None);
 }
 
+/// フロントエンドの文の切り出し（`splitStatements`）が渡す形（issue #55）。
+///
+/// 通常の SQL は末尾のセミコロンを落とし、PL/SQL 単位は `END;` まで残す。
+/// Rust 側は受け取った本文に手を入れないため、この形のまま通ることを確かめる。
+const 切り出した文: [&str; 4] = [
+    "select 1 from dual",
+    "begin null; end;",
+    "create or replace procedure koduchi_issue55 is\nbegin\n  null;\nend;",
+    "select 2 from dual",
+];
+
+#[test]
+#[serial]
+fn 切り出した複数の文を順に実行できる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let results: Vec<_> = 切り出した文
+        .iter()
+        .map(|sql| pool.execute(TAB, sql, &[]).map_err(|error| error.message))
+        .collect();
+    let 状態 = 一つのセル(
+        &pool,
+        "select status from user_objects where object_name = 'KODUCHI_ISSUE55'",
+    );
+    pool.execute(TAB, "drop procedure koduchi_issue55", &[])
+        .unwrap();
+
+    // Assert
+    for (sql, result) in 切り出した文.iter().zip(&results) {
+        assert!(result.is_ok(), "{sql} が失敗した: {result:?}");
+    }
+    // `END;` を落とすとプロシージャは作られるが無効になり、実行して初めて気づく。
+    assert_eq!(状態.text, "VALID");
+}
+
+#[test]
+#[serial]
+fn 末尾にセミコロンの付いたsqlは拒まれる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.execute(TAB, "select 1 from dual;\nselect 2 from dual;", &[]);
+
+    // Assert
+    let error = result.expect_err("セミコロン付きのまま渡すとエラーになるはず");
+    assert!(
+        error.message.contains("ORA-"),
+        "想定と違うエラー: {}",
+        error.message
+    );
+}
+
+#[test]
+#[serial]
+fn endのセミコロンを落としたplsqlブロックは拒まれる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.execute(TAB, "begin null; end", &[]);
+
+    // Assert
+    let error = result.expect_err("END のセミコロンが無ければエラーになるはず");
+    assert!(
+        error.message.contains("PLS-00103"),
+        "想定と違うエラー: {}",
+        error.message
+    );
+}
+
 #[test]
 #[serial]
 fn 読み取り専用接続では書き込みが拒まれる() {
