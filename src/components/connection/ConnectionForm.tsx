@@ -231,15 +231,17 @@ export function ConnectionForm({ initial = null, onConnected, onBack }: Connecti
 
     const 整えたグループ = normalizeGroup(group)
 
-    await connect(name.trim(), buildParams(), {
+    const 繋がった = await connect(name.trim(), buildParams(), {
       savedId: remember ? id : null,
       completion: { identifierCase },
       color,
       group: 整えたグループ,
     })
 
+    // 繋がったかは戻り値で見る。`connection` だけを読むと、関所で断られた
+    // ときに残っている前の接続を成功と読み違え、保存までしてしまう。
     const connection = useConnectionStore.getState().connection
-    if (!connection) {
+    if (!繋がった || !connection) {
       return
     }
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
@@ -300,6 +300,62 @@ describe('ConnectionForm', () => {
     await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
     expect(calls.saveConnection[0].password).toBe('koduchi_dev')
     expect(calls.saveConnection[0].connection.name).toBe('開発')
+  })
+
+  it('繋ぎに行っている間に切断されたら、残っている別の接続を自分の接続として保存しない', async () => {
+    // Arrange: 送信ボタンは繋ぎに行っている最中は押せないため、関所で断られる形は
+    // 画面からは起こせない。待ちの後に connection だけを読むと読み違える形として、
+    // 待っている間に切断され、別の接続が繋がっている状態を作る
+    const fake = createFakeDbApi()
+    calls = fake.calls
+    let 成功させる!: () => void
+    setDbApi({
+      ...fake.api,
+      connect: () =>
+        new Promise<void>((resolve) => {
+          成功させる = resolve
+        }),
+    })
+    const onConnected = vi.fn()
+    render(<ConnectionForm onConnected={onConnected} />)
+    await userEvent.type(screen.getByLabelText('名前'), '開発')
+    await userEvent.type(screen.getByLabelText('サービス名'), 'FREEPDB1')
+    await userEvent.type(screen.getByLabelText('ユーザー'), 'koduchi')
+    await userEvent.type(screen.getByLabelText('パスワード'), 'koduchi_dev')
+    await userEvent.click(screen.getByRole('button', { name: '保存して接続' }))
+    await waitFor(() => expect(useConnectionStore.getState().status).toBe('connecting'))
+    await act(async () => {
+      await useConnectionStore.getState().disconnect()
+      useConnectionStore.setState({
+        status: 'connected',
+        connection: {
+          id: 'other',
+          savedId: 'saved-9',
+          name: '本番',
+          params: {
+            username: 'app',
+            password: 'x',
+            target: { method: 'ezConnect', host: 'prod', port: 1521, serviceName: 'PROD' },
+            readOnly: true,
+            autoCommit: false,
+          },
+          completion: { identifierCase: 'preserve' },
+          color: 'none',
+          group: null,
+        },
+        error: null,
+      })
+    })
+
+    // Act
+    await act(async () => {
+      成功させる()
+    })
+
+    // Assert
+    await waitFor(() => expect(calls.disconnect).toHaveLength(1))
+    expect(calls.saveConnection).toHaveLength(0)
+    expect(onConnected).not.toHaveBeenCalled()
   })
 
   it('保存のチェックを外すとボタンの文言が接続だけになる', async () => {

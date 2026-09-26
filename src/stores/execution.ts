@@ -179,6 +179,19 @@ interface ExecutionState {
    * 1 つであるため、タブごとではなくウィンドウに 1 つ持つ。
    */
   inTransaction: boolean
+  /**
+   * 応答を待っている文の要求 ID（ADR 0003 への 2026-09-27 の追記）。
+   *
+   * `byTab` とは別に持つ。実行中のタブは閉じられ（`closeTabAndRelease` は走って
+   * いるかを見ない）、`releaseTab` はその項目を先に消す。項目だけを見ていると、
+   * 文がまだデータベースで走っている最中に切断の関所を通してしまい、ログオフの
+   * 暗黙のロールバックで変更が黙って消える（ADR 0012）。応答がまだ無いため
+   * `inTransaction` も偽のままで、未コミットの確認も出ない。
+   *
+   * 数ではなく ID で持つのは、同じ要求を 2 度数えも 2 度引きもしないためである。
+   * **`clear` では消さない。**文は接続を捨てても走り続けている。
+   */
+  pendingRequests: string[]
 
   /**
    * SQL を実行する。
@@ -231,7 +244,14 @@ interface ExecutionState {
   commit: (connectionId: string) => Promise<void>
   /** トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。 */
   rollback: (connectionId: string) => Promise<void>
-  /** タブの結果セットを手放す。タブを閉じたときに呼ぶ。 */
+  /**
+   * タブの結果セットを手放す。タブを閉じたときに呼ぶ。
+   *
+   * **状態は待たずに捨てる。**実行中のタブも閉じられる（`closeTabAndRelease` は
+   * 走っているかを見ない）ため、そのタブへ向けた待ちの応答はこの時点で無効に
+   * する。手放しに失敗しても閉じたタブの項目を残さない。残すと `running` の
+   * まま居座り、切断が「実行中の文があります」で止まり続ける。
+   */
   releaseTab: (connectionId: string, tabId: string) => Promise<void>
   /**
    * タブのカーソルを尽きたものとして扱う。
@@ -304,6 +324,67 @@ export function discardOpenCursors(
  */
 const cancelRequests = new Set<string>()
 
+/**
+ * タブごとの実行の世代。
+ *
+ * `execute` / `executeScript` が始めるたびに採番し、`releaseTab` と `clear` で
+ * 捨てる。待ちの後の書き戻しは、控えた世代が今も同じときだけ行う。項目の
+ * 有無だけを見ると、手放した後に同じタブで実行し直した場合（切断して繋ぎ
+ * 直した後など）に古い応答が新しい実行へ混ざるためである。続きの取り出しは
+ * 同じ結果セットの続きであり、新しい世代を採番しない。描画には関わらないため
+ * ストアの状態には持たせない。
+ */
+const 世代 = new Map<string, number>()
+
+/** 次に採番する世代。 */
+let 次の世代 = 1
+
+/**
+ * ストア全体の区切り。`clear` のたびに進める。
+ *
+ * タブの世代は書き戻す先の項目を守るが、未コミットの表示とログはウィンドウに
+ * 1 つであり、タブの世代では守れない。`runStatement` は始めたときの区切りを
+ * 控え、`clear` をまたいだ応答ではこの 2 つに触れない。
+ *
+ * 切断の関所（`selectStatementsInFlight`）は、閉じたタブの文も含めて走っている
+ * 間は切断を止めるため、ふつうはまたがない。これはその関所の外から `clear` が
+ * 呼ばれた場合の守りであり、捨てた接続の `inTransaction` とログを次の接続の
+ * 画面へ戻さない。
+ */
+let 区切り = 0
+
+/**
+ * タブの世代を採番し直す。
+ *
+ * @param tabId 実行を始めるタブ
+ *
+ * @returns 採番した世代。待ちの後に `まだ有効か` へ渡す
+ */
+function 世代を改める(tabId: string): number {
+  const 採番 = 次の世代
+  次の世代 += 1
+  世代.set(tabId, 採番)
+  return 採番
+}
+
+/**
+ * 待ちの前に控えた世代が今も有効かを返す。
+ *
+ * 手放されたタブ・捨てられた結果・実行し直されたタブへ、古い応答を書き戻さない
+ * ための判定である。
+ *
+ * @param byTab 現在のタブごとの状態
+ * @param tabId 対象のタブ
+ * @param 控え 待ちの前に控えた世代。テストなどで世代を持たない項目では `undefined`
+ */
+function まだ有効か(
+  byTab: Record<string, TabExecution>,
+  tabId: string,
+  控え: number | undefined,
+): boolean {
+  return byTab[tabId] !== undefined && 世代.get(tabId) === 控え
+}
+
 /** 1 文を実行した結末。 */
 type StatementOutcome =
   | {
@@ -324,6 +405,9 @@ type StatementOutcome =
 /**
  * タブの状態を差し替える。
  *
+ * **項目が無ければ何もしない。**項目を作るのは実行を始めたときだけである。
+ * ここで作り直すと、手放したタブの項目が遅れて返った応答で `idle` から蘇る。
+ *
  * @param byTab 現在のタブごとの状態
  * @param tabId 対象のタブ
  * @param patch 差し替える項目
@@ -333,7 +417,11 @@ function patchTab(
   tabId: string,
   patch: Partial<TabExecution>,
 ): Record<string, TabExecution> {
-  return { ...byTab, [tabId]: { ...(byTab[tabId] ?? emptyExecution), ...patch } }
+  const current = byTab[tabId]
+  if (!current) {
+    return byTab
+  }
+  return { ...byTab, [tabId]: { ...current, ...patch } }
 }
 
 /**
@@ -366,6 +454,12 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
    * @param connectionName 履歴に残す接続名
    * @param binds バインド変数の値。文に無い名前は Rust 側で捨てられる
    * @param progress スクリプト実行の何文目か。単発の実行では `null`
+   *
+   * **`clear` をまたいで返った応答は、未コミットの表示とログへ書かない。**
+   * どちらも捨てた接続のものであり、次の接続の画面に出すと嘘になる。
+   * **履歴には残す。**履歴は接続をまたいで残す「実際に何を流したか」の記録で
+   * あり（ADR 0005）、文はデータベースで実際に走っている。消すと、閉じたタブで
+   * 何が流れたのかを後から確かめる道が無くなる。
    */
   const runStatement = async (
     connectionId: string,
@@ -377,6 +471,9 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
   ): Promise<StatementOutcome> => {
     const startedAt = new Date()
     const entryId = crypto.randomUUID()
+    const 控えた区切り = 区切り
+
+    set((state) => ({ pendingRequests: [...state.pendingRequests, entryId] }))
 
     try {
       const response = await getDbApi().execute(connectionId, tabId, sql, binds)
@@ -403,22 +500,26 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       // 後から履歴を読み返したときに空振りした DML と区別が付かない（ADR 0034）。
       const rowCount = execution.isStatement ? execution.affectedRows : execution.rows.length
 
-      set((state) => ({
-        inTransaction: response.inTransaction,
-        log: [
-          ...state.log,
-          {
-            id: entryId,
-            startedAt,
-            sql,
-            elapsedMs: response.elapsedMs,
-            rowCount,
-            error: null,
-            notices: response.notices,
-            statement: progress,
-          },
-        ],
-      }))
+      set((state) =>
+        控えた区切り !== 区切り
+          ? state
+          : {
+              inTransaction: response.inTransaction,
+              log: [
+                ...state.log,
+                {
+                  id: entryId,
+                  startedAt,
+                  sql,
+                  elapsedMs: response.elapsedMs,
+                  rowCount,
+                  error: null,
+                  notices: response.notices,
+                  statement: progress,
+                },
+              ],
+            },
+      )
 
       await recordHistory({
         sql,
@@ -435,21 +536,25 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       const message = toErrorMessage(error)
       const elapsedMs = Date.now() - startedAt.getTime()
 
-      set((state) => ({
-        log: [
-          ...state.log,
-          {
-            id: entryId,
-            startedAt,
-            sql,
-            elapsedMs,
-            rowCount: null,
-            error: message,
-            notices: [],
-            statement: progress,
-          },
-        ],
-      }))
+      set((state) =>
+        控えた区切り !== 区切り
+          ? state
+          : {
+              log: [
+                ...state.log,
+                {
+                  id: entryId,
+                  startedAt,
+                  sql,
+                  elapsedMs,
+                  rowCount: null,
+                  error: message,
+                  notices: [],
+                  statement: progress,
+                },
+              ],
+            },
+      )
 
       await recordHistory({
         sql,
@@ -462,6 +567,11 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       })
 
       return { ok: false, message, elapsedMs }
+    } finally {
+      // 成功でも失敗でも、応答が返れば文はもう走っていない。
+      set((state) => ({
+        pendingRequests: state.pendingRequests.filter((id) => id !== entryId),
+      }))
     }
   }
 
@@ -470,19 +580,26 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     planByTab: {},
     log: [],
     inTransaction: false,
+    pendingRequests: [],
 
     execute: async (connectionId, tabId, sql, connectionName, binds) => {
       if (get().byTab[tabId]?.status === 'running') {
         return
       }
 
+      const 控え = 世代を改める(tabId)
       set((state) => ({
-        byTab: patchTab(state.byTab, tabId, { ...emptyExecution, status: 'running' }),
+        byTab: { ...state.byTab, [tabId]: { ...emptyExecution, status: 'running' } },
       }))
 
       const outcome = await runStatement(connectionId, tabId, sql, connectionName, binds, null)
 
       set((state) => {
+        // 待っている間にタブを閉じられていたら書き戻さない。ログと未コミットの
+        // 表示は `runStatement` が既に反映しており、文が走った事実はそちらに残る。
+        if (!まだ有効か(state.byTab, tabId, 控え)) {
+          return state
+        }
         if (!outcome.ok) {
           return {
             byTab: patchTab(state.byTab, tabId, {
@@ -512,12 +629,12 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
       const total = statements.length
       cancelRequests.delete(tabId)
 
+      const 控え = 世代を改める(tabId)
       set((state) => ({
-        byTab: patchTab(state.byTab, tabId, {
-          ...emptyExecution,
-          status: 'running',
-          progress: { index: 1, total },
-        }),
+        byTab: {
+          ...state.byTab,
+          [tabId]: { ...emptyExecution, status: 'running', progress: { index: 1, total } },
+        },
       }))
 
       /** 最後に結果セットを返した文の結果。無ければ影響行数を足し上げる。 */
@@ -561,6 +678,13 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
           binds,
           progress,
         )
+
+        // 待っている間にタブを閉じられていたら、残りの文も投げない。閉じた
+        // タブの文が見えないところで走り続けると、何が書き換わったのかを
+        // 利用者が知る道が無い。
+        if (!まだ有効か(get().byTab, tabId, 控え)) {
+          return
+        }
 
         if (!outcome.ok) {
           // 途中で失敗したら以降の文は実行しない。何文目で止まったかを残す。
@@ -609,12 +733,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     },
 
     generatePlan: async (connectionId, tabId, sql, mode, binds) => {
-      set((state) => ({
-        planByTab: {
-          ...state.planByTab,
-          [tabId]: { status: 'running', mode, text: '', error: null },
-        },
-      }))
+      const 実行中: TabPlan = { status: 'running', mode, text: '', error: null }
+      set((state) => ({ planByTab: { ...state.planByTab, [tabId]: 実行中 } }))
+
+      /**
+       * 書き戻してよいか。項目そのものを試行の印に使う。手放されれば消え、
+       * 取り直されれば別の項目に置き換わるため、どちらの応答も捨てられる。
+       */
+      const 書き戻せる = (plans: Record<string, TabPlan>) => plans[tabId] === 実行中
 
       try {
         const api = getDbApi()
@@ -623,19 +749,27 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
             ? await api.explainPlan(connectionId, sql, binds)
             : await api.actualPlan(connectionId, sql, binds)
 
-        set((state) => ({
-          planByTab: {
-            ...state.planByTab,
-            [tabId]: { status: 'succeeded', mode, text, error: null },
-          },
-        }))
+        set((state) =>
+          書き戻せる(state.planByTab)
+            ? {
+                planByTab: {
+                  ...state.planByTab,
+                  [tabId]: { status: 'succeeded', mode, text, error: null },
+                },
+              }
+            : state,
+        )
       } catch (error) {
-        set((state) => ({
-          planByTab: {
-            ...state.planByTab,
-            [tabId]: { status: 'failed', mode, text: '', error: toErrorMessage(error) },
-          },
-        }))
+        set((state) =>
+          書き戻せる(state.planByTab)
+            ? {
+                planByTab: {
+                  ...state.planByTab,
+                  [tabId]: { status: 'failed', mode, text: '', error: toErrorMessage(error) },
+                },
+              }
+            : state,
+        )
       }
     },
 
@@ -645,12 +779,16 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         return
       }
 
+      const 控え = 世代.get(tabId)
       set((state) => ({ byTab: patchTab(state.byTab, tabId, { loadingMore: true }) }))
 
       try {
         const chunk = await getDbApi().fetchMore(connectionId, tabId)
         set((state) => {
-          const tab = state.byTab[tabId] ?? emptyExecution
+          if (!まだ有効か(state.byTab, tabId, 控え)) {
+            return state
+          }
+          const tab = state.byTab[tabId]
           return {
             byTab: patchTab(state.byTab, tabId, {
               rows: [...tab.rows, ...chunk.rows],
@@ -661,13 +799,18 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         })
       } catch (error) {
         // 結果セットが閉じられていた場合はここへ来る。再実行を促す状態にする。
-        set((state) => ({
-          byTab: patchTab(state.byTab, tabId, {
-            status: 'discarded',
-            loadingMore: false,
-            error: toErrorMessage(error),
-          }),
-        }))
+        // 手放した後の失敗は当然であり、閉じたタブにも新しい実行にも書かない。
+        set((state) =>
+          まだ有効か(state.byTab, tabId, 控え)
+            ? {
+                byTab: patchTab(state.byTab, tabId, {
+                  status: 'discarded',
+                  loadingMore: false,
+                  error: toErrorMessage(error),
+                }),
+              }
+            : state,
+        )
       }
     },
 
@@ -726,12 +869,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
     },
 
     releaseTab: async (connectionId, tabId) => {
-      await getDbApi().releaseTab(connectionId, tabId)
+      世代.delete(tabId)
+      cancelRequests.delete(tabId)
       set((state) => {
         const { [tabId]: _removed, ...rest } = state.byTab
         const { [tabId]: _removedPlan, ...restPlans } = state.planByTab
         return { byTab: rest, planByTab: restPlans }
       })
+      await getDbApi().releaseTab(connectionId, tabId)
     },
 
     markExhausted: (tabId) =>
@@ -743,6 +888,8 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
 
     clear: () => {
       cancelRequests.clear()
+      世代.clear()
+      区切り += 1
       set({ byTab: {}, planByTab: {}, log: [], inTransaction: false })
     },
   }
@@ -820,15 +967,24 @@ export function selectExecution(state: ExecutionState, tabId: string | null): Ta
 }
 
 /**
- * 実行中のタブが 1 つでもあるかを返す。
+ * データベースで走っている文が 1 つでもあるかを返す。
  *
  * 切断してよいかの判定に使う。接続を閉じると走っている文は道半ばで
- * 打ち切られるため、先に中止させる（`⌘.`）。
+ * 打ち切られ、ログオフの暗黙のロールバックで変更も消える（ADR 0012）ため、
+ * 先に中止させる（`⌘.`）。
+ *
+ * **閉じたタブの文も数える。**閉じたタブの項目は `releaseTab` が先に消すため、
+ * `byTab` だけを見ると走っている文を見落とす（`pendingRequests` を参照）。
+ * `running` のタブも併せて見るのは、スクリプト実行の文と文の間には応答待ちの
+ * 要求が無いためである。
  *
  * @param state 実行ストアの状態
  */
-export function selectAnyRunning(state: ExecutionState): boolean {
-  return Object.values(state.byTab).some((execution) => execution.status === 'running')
+export function selectStatementsInFlight(state: ExecutionState): boolean {
+  return (
+    state.pendingRequests.length > 0 ||
+    Object.values(state.byTab).some((execution) => execution.status === 'running')
+  )
 }
 
 /**

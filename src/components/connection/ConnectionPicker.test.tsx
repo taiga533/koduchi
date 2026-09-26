@@ -133,6 +133,39 @@ describe('ConnectionPicker', () => {
     expect(onConnected).toHaveBeenCalledWith(expect.any(String), 開発.schemaFilter)
   })
 
+  it('別の接続へ繋ぎに行っている最中に押しても前の接続を繋がったものとして渡さない', async () => {
+    // Arrange: 繋ぎに行っている間の connection は、既に手放した前の接続である
+    描く({ savedConnections: [開発], passwords: { 'saved-1': 'koduchi_dev' } })
+    useConnectionStore.setState({
+      status: 'connecting',
+      connection: {
+        id: 'released',
+        savedId: 'saved-2',
+        name: '本番',
+        params: {
+          username: 'app',
+          password: 'x',
+          target: { method: 'ezConnect', host: 'prod', port: 1521, serviceName: 'PROD' },
+          readOnly: true,
+          autoCommit: false,
+        },
+        completion: { identifierCase: 'preserve' },
+        color: 'none',
+        group: null,
+      },
+      error: null,
+    })
+    const 行 = await screen.findByText('開発')
+
+    // Act
+    await userEvent.click(行)
+
+    // Assert
+    await waitFor(() => expect(calls.loadConnectionPassword).toHaveLength(1))
+    expect(calls.connect).toHaveLength(0)
+    expect(onConnected).not.toHaveBeenCalled()
+  })
+
   it('パスワードが保存されていなければ入力欄を出してから繋ぐ', async () => {
     // Arrange
     描く({ savedConnections: [開発] })

@@ -67,7 +67,7 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
     setError(null)
     try {
       const target = await resolveTarget(connection.target)
-      await connect(
+      const 繋がった = await connect(
         connection.name,
         {
           username: connection.username,
@@ -84,8 +84,10 @@ export function ConnectionPicker({ onCreate, onEdit, onConnected }: ConnectionPi
         },
       )
 
+      // 繋がったかは戻り値で見る。`connection` だけを読むと、関所で断られた
+      // ときに残っている前の接続を成功と読み違える。
       const active = useConnectionStore.getState().connection
-      if (active) {
+      if (繋がった && active) {
         setAsking(null)
         setPassword('')
         onConnected?.(active.id, connection.schemaFilter)

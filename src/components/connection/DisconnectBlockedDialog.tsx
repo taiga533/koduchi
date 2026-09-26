@@ -4,6 +4,9 @@
  * 走っている文があるまま接続を閉じると、その文は道半ばで打ち切られる。
  * 何が起きたのか分からないまま結果を失わせないため、切断を進めずに
  * 先へ中止を促す。中止はここからも掛けられるようにしてある（`⌘.` と同じ）。
+ *
+ * 閉じたタブで走っている文も切断を止める（ADR 0003 への 2026-09-27 の追記）。
+ * そのタブはもう無く `⌘.` を押す先が無いため、「終わるのを待つ」道も書いておく。
  */
 
 import { CircleAlert } from 'lucide-react'
@@ -35,7 +38,8 @@ export function DisconnectBlockedDialog({
           実行中のため切断できません
         </h2>
         <p className="text-12px text-fg2 leading-[1.6] m-0">
-          実行中の文があります。<code className="text-fg">⌘.</code> で中止してから切断してください。
+          実行中の文があります（閉じたタブで走っている文も含みます）。
+          <code className="text-fg">⌘.</code> で中止するか、終わるのを待ってから切断してください。
         </p>
         <div className="flex justify-end gap-8px">
           <button

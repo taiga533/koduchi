@@ -69,7 +69,7 @@ import {
 } from './sql/statements'
 import { onConnectionLost } from './connection/lost'
 import { isManualCommit, useConnectionStore } from './stores/connection'
-import { selectAnyRunning, useExecutionStore } from './stores/execution'
+import { selectStatementsInFlight, useExecutionStore } from './stores/execution'
 import { useHistoryStore } from './stores/history'
 import { nodeKey, useSchemaStore } from './stores/schema'
 import { useSavedQueryStore } from './stores/savedQuery'
@@ -655,7 +655,7 @@ export function App() {
       return
     }
 
-    if (selectAnyRunning(useExecutionStore.getState())) {
+    if (selectStatementsInFlight(useExecutionStore.getState())) {
       setDisconnectBlocked(true)
       return
     }

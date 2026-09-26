@@ -77,9 +77,27 @@ interface ConnectionState {
   /** 接続に失敗したときのメッセージ。成功すると消える。 */
   error: string | null
 
-  /** 接続する。既に接続していれば先に切断する。 */
-  connect: (name: string, params: ConnectionParams, profile?: ConnectionProfile) => Promise<void>
-  /** 切断する。接続していなければ何もしない。 */
+  /**
+   * 接続する。既に接続していれば先に切断する。
+   *
+   * **繋ぎに行っている最中は何もしない**（`reconnect` と同じ）。2 本目を走らせると
+   * どちらが後に返るか約束できず、先に返ったほうのプールが Rust 側に迷子で残る。
+   * 押せなくするのは `ConnectionForm` の見た目の手当てであり、関所はここにある。
+   *
+   * **この呼び出しで繋がったかを返す。**関所で断ったときも、失敗したときも、
+   * 待っている間に切断されたときも偽である。呼び出し側が待ちの後に
+   * `connection` を読んで判断すると、関所で断った場合に残っている前の接続
+   * （試行を始めた時点で既に手放してある）を成功と読み違える。
+   *
+   * @returns この呼び出しで接続が確立し、段階が `connected` になったか
+   */
+  connect: (name: string, params: ConnectionParams, profile?: ConnectionProfile) => Promise<boolean>
+  /**
+   * 切断する。接続していなければ何もしない。
+   *
+   * **繋ぎに行っている最中でも効く。**待っている試行を無効にし、遅れて返った
+   * 成功が片付け済みの画面へ接続を書き戻さないようにする。
+   */
   disconnect: () => Promise<void>
   /**
    * サーバ側で接続が切れたことを記録する（ADR 0026）。
@@ -104,7 +122,7 @@ interface ConnectionState {
    * TCP のタイムアウトぶん待たされることがあり、その間「再接続」のボタンが
    * 押せる形で残っていると、押した回数だけプールが増えて迷子になる。
    *
-   * 既に繋ぎに行っている最中は何もしない。
+   * 既に繋ぎに行っている最中は何もしない（`connect` の最中も含む）。
    */
   reconnect: () => Promise<void>
 }
@@ -167,12 +185,50 @@ export function canReachDatabase(status: ConnectionStatus): boolean {
   return status === 'connected'
 }
 
+/**
+ * 今有効な接続の試行の識別子。繋ぎに行っていなければ `null`。
+ *
+ * `connect` / `reconnect` は待ちを挟むため、待っている間に `disconnect` が
+ * 通ると、遅れて返った成功が片付け済みの画面へ接続を蘇らせる。試行ごとに
+ * 採番する接続の識別子をそのまま控え、待ちの後に自分がまだ最新かを確かめる。
+ * 描画には関わらないためストアの状態には持たせない（`execution` ストアの
+ * `cancelRequests` と同じ扱い）。
+ */
+let 有効な試行: string | null = null
+
+/**
+ * 待ちの後に、その試行の結果を書き戻してよいかを決める。
+ *
+ * 無効になった試行が繋いでしまったプールは、誰も識別子を知らないまま Rust 側に
+ * 残る。書き戻さないだけでは漏れるため、ここで手放す。失敗した試行にはプールが
+ * 無いため、手放すのは成功したときだけである（呼び出し側が `succeeded` で伝える）。
+ *
+ * @param id 試行の識別子（その試行で採番した接続の識別子）
+ * @param succeeded 試行が接続に成功したか
+ *
+ * @returns 書き戻してよいか
+ */
+function 締めくくる(id: string, succeeded: boolean): boolean {
+  if (有効な試行 !== id) {
+    if (succeeded) {
+      手放す(id)
+    }
+    return false
+  }
+  有効な試行 = null
+  return true
+}
+
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
   status: 'disconnected',
   connection: null,
   error: null,
 
   connect: async (name, params, profile = {}) => {
+    if (get().status === 'connecting') {
+      return false
+    }
+
     const {
       savedId = null,
       completion = defaultCompletionSettings,
@@ -181,6 +237,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     } = profile
     const previous = get().connection
     const id = createConnectionId()
+    有効な試行 = id
     set({ status: 'connecting', error: null })
 
     if (previous) {
@@ -189,18 +246,36 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
     try {
       await getDbApi().connect(id, params)
-      set({
-        status: 'connected',
-        connection: { id, savedId, name, params, completion, color, group },
-        error: null,
-      })
     } catch (error) {
-      set({ status: 'failed', connection: null, error: toErrorMessage(error) })
+      if (締めくくる(id, false)) {
+        set({ status: 'failed', connection: null, error: toErrorMessage(error) })
+      }
+      return false
     }
+
+    if (!締めくくる(id, true)) {
+      return false
+    }
+    set({
+      status: 'connected',
+      connection: { id, savedId, name, params, completion, color, group },
+      error: null,
+    })
+    return true
   },
 
   disconnect: async () => {
-    const current = get().connection
+    const { connection: current, status } = get()
+
+    if (status === 'connecting') {
+      // 繋ぎに行っている試行を無効にする。遅れて返った成功のプールは試行の側が
+      // 手放す。ここで残っている `connection` は、試行を始めた時点で既に手放して
+      // ある前の接続であるため、もう一度は手放さない。
+      有効な試行 = null
+      set({ status: 'disconnected', connection: null, error: null })
+      return
+    }
+
     if (!current) {
       return
     }
@@ -230,18 +305,25 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     // 手間取っている間ボタンが押せるまま残り、押した回数だけプールが増える
     // （ADR 0030）。
     const id = createConnectionId()
+    有効な試行 = id
     set({ status: 'connecting', error: null })
 
     手放す(current.id)
 
     try {
       await getDbApi().connect(id, current.params)
-      set({ status: 'connected', connection: { ...current, id }, error: null })
     } catch (error) {
       // 繋ぎ直せなくても接続の情報は捨てない。`connect` と違って「切れている」へ
       // 戻すのは、もう一度押せる状態を残すためである。データベースが起き上がる
       // までの間、押すたびに接続を選び直させてはいけない。
-      set({ status: 'lost', connection: current, error: toErrorMessage(error) })
+      if (締めくくる(id, false)) {
+        set({ status: 'lost', connection: current, error: toErrorMessage(error) })
+      }
+      return
+    }
+
+    if (締めくくる(id, true)) {
+      set({ status: 'connected', connection: { ...current, id }, error: null })
     }
   },
 }))

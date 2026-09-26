@@ -106,6 +106,26 @@ struct ActorHandles {
     prober: Box<dyn Prober>,
 }
 
+/// 積んだ命令の返事を待つための札。
+///
+/// 命令を積むことと返事を待つことを分けるためにある。アクタースレッドは命令を
+/// 積まれた順に 1 つずつ処理するため、積んだ時点で処理の順は決まる。待つのは
+/// その後でよい（ADR 0002・0003）。
+#[must_use = "返事を待たないと、命令の成否が分からない"]
+pub struct Pending<T> {
+    response: Receiver<DbResult<T>>,
+}
+
+impl<T> Pending<T> {
+    /// 返事が届くまで待つ。
+    ///
+    /// 返事が届かないのはアクタースレッドが途中で終わった場合であり、接続は
+    /// 閉じられたものとして返す。
+    pub fn wait(self) -> DbResult<T> {
+        self.response.recv().map_err(|_| DbError::closed())?
+    }
+}
+
 /// 接続 1 本を表す手綱。
 ///
 /// 実体はアクタースレッドの上にあり、この構造体は命令を送る口と中止の経路だけを
@@ -189,18 +209,33 @@ impl ConnectionHandle {
         binds: &[Bind],
         chunk_size: usize,
     ) -> DbResult<ExecuteOutcome> {
-        let (respond, response) = mpsc::channel();
+        self.send_execute(sql, binds, chunk_size)?.wait()
+    }
 
-        self.commands
-            .send(Command::Execute {
-                sql: sql.to_string(),
-                binds: binds.to_vec(),
-                chunk_size,
-                respond,
-            })
-            .map_err(|_| DbError::closed())?;
-
-        response.recv().map_err(|_| DbError::closed())?
+    /// SQL を 1 文実行する命令を積み、返事は待たずに戻る。
+    ///
+    /// 積むことと待つことを分けてあるのは、接続プールが割り当ての表を握った
+    /// まま積めるようにするためである（ADR 0003）。表を離してから積むと、
+    /// 同じ接続を引き継いだ別のタブの命令と追い越し合い、そのタブのカーソルを
+    /// 閉じたり読んだりしてしまう。
+    ///
+    /// # 引数
+    ///
+    /// * `sql` - 実行する SQL
+    /// * `binds` - SQL 中のバインド変数へ与える値
+    /// * `chunk_size` - 一度に取り出す行数
+    pub fn send_execute(
+        &self,
+        sql: &str,
+        binds: &[Bind],
+        chunk_size: usize,
+    ) -> DbResult<Pending<ExecuteOutcome>> {
+        self.send(|respond| Command::Execute {
+            sql: sql.to_string(),
+            binds: binds.to_vec(),
+            chunk_size,
+            respond,
+        })
     }
 
     /// 開いているカーソルから続きを取り出す（ADR 0003）。
@@ -209,29 +244,56 @@ impl ConnectionHandle {
     ///
     /// * `chunk_size` - 一度に取り出す行数
     pub fn fetch_more(&self, chunk_size: usize) -> DbResult<Chunk> {
-        let (respond, response) = mpsc::channel();
+        self.send_fetch_more(chunk_size)?.wait()
+    }
 
-        self.commands
-            .send(Command::FetchMore {
-                chunk_size,
-                respond,
-            })
-            .map_err(|_| DbError::closed())?;
-
-        response.recv().map_err(|_| DbError::closed())?
+    /// 続きを取り出す命令を積み、返事は待たずに戻る。
+    ///
+    /// 分けてある理由は `send_execute` と同じである。
+    ///
+    /// # 引数
+    ///
+    /// * `chunk_size` - 一度に取り出す行数
+    pub fn send_fetch_more(&self, chunk_size: usize) -> DbResult<Pending<Chunk>> {
+        self.send(|respond| Command::FetchMore {
+            chunk_size,
+            respond,
+        })
     }
 
     /// 開いているカーソルを閉じる。
     ///
     /// タブを閉じたときや、結果セットを手放すときに呼ぶ。
     pub fn close_cursor(&self) -> DbResult<()> {
+        self.send_close_cursor()?.wait()
+    }
+
+    /// カーソルを閉じる命令を積み、返事は待たずに戻る。
+    ///
+    /// 分けてある理由は `send_execute` と同じである。
+    pub fn send_close_cursor(&self) -> DbResult<Pending<()>> {
+        self.send(|respond| Command::CloseCursor { respond })
+    }
+
+    /// 命令をアクタースレッドへ積む。
+    ///
+    /// 積めないのはアクタースレッドが既に終わっている場合であり、接続は
+    /// 閉じられたものとして返す。
+    ///
+    /// # 引数
+    ///
+    /// * `命令を作る` - 返信用の口を受け取って命令を組み立てる処理
+    fn send<T>(
+        &self,
+        命令を作る: impl FnOnce(Sender<DbResult<T>>) -> Command,
+    ) -> DbResult<Pending<T>> {
         let (respond, response) = mpsc::channel();
 
         self.commands
-            .send(Command::CloseCursor { respond })
+            .send(命令を作る(respond))
             .map_err(|_| DbError::closed())?;
 
-        response.recv().map_err(|_| DbError::closed())?
+        Ok(Pending { response })
     }
 
     /// スキーマツリーの段階 1 を取る（ADR 0007）。
@@ -959,6 +1021,33 @@ mod tests {
         // Assert
         assert!(chunk.rows.is_empty());
         assert!(chunk.exhausted);
+    }
+
+    #[test]
+    fn 積んだ命令は待つ順ではなく積んだ順に処理される() {
+        // Arrange: 接続プールは表を握って積み、離してから待つ（ADR 0003）。
+        // 処理の順が積んだ時点で決まっていなければ、この分け方は意味を持たない
+        let (mut driver, _, _) = ドライバを作る();
+        driver.用意した行 = 行を作る(2500);
+        let handle = ConnectionHandle::open(move || Ok(driver)).unwrap();
+        let 実行 = handle
+            .send_execute("select * from events", &[], 1000)
+            .unwrap();
+        let 閉じる = handle.send_close_cursor().unwrap();
+        let 続き = handle.send_fetch_more(1000).unwrap();
+
+        // Act: 積んだ順と逆に待つ
+        let 続き = 続き.wait().unwrap();
+        閉じる.wait().unwrap();
+        let 実行 = 実行.wait().unwrap();
+
+        // Assert: 実行 → 閉じる → 続きの順に処理されている
+        match 実行 {
+            ExecuteOutcome::Query { chunk, .. } => assert_eq!(chunk.rows.len(), 1000),
+            _ => panic!("問い合わせの結果になるはず"),
+        }
+        assert!(続き.rows.is_empty());
+        assert!(続き.exhausted);
     }
 
     #[test]

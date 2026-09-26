@@ -11,7 +11,7 @@ import { useConnectionStore } from './stores/connection'
 import { emptyExecution, useExecutionStore } from './stores/execution'
 import { useDefinitionStore } from './stores/definition'
 import { useSchemaStore } from './stores/schema'
-import type { SchemaFilter, SchemaNode } from './types/db'
+import type { ExecuteResponse, SchemaFilter, SchemaNode } from './types/db'
 import { selectActiveSqlTab, selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
 
@@ -131,6 +131,9 @@ beforeEach(() => {
   })
   useConnectionStore.setState({ status: 'disconnected', connection: null, error: null })
   useExecutionStore.getState().clear()
+  // 応答待ちの文は clear では消えない（走り続けている文を数えるため）。前のテストが
+  // 返さずに残した要求を持ち越さない。
+  useExecutionStore.setState({ pendingRequests: [] })
   useTabStore.setState({ bindValues: {} })
   useSchemaStore.getState().clear()
   useUiStore.setState({
@@ -642,6 +645,42 @@ describe('App', () => {
     expect(await screen.findByText('実行中のため切断できません')).toBeInTheDocument()
     expect(calls.disconnect).toEqual([])
     expect(useConnectionStore.getState().connection).not.toBeNull()
+  })
+
+  it('実行中のタブを閉じた直後の切断は止められる', async () => {
+    // Arrange: 閉じたタブの項目は先に消えるが、文はまだデータベースで走っている。
+    // 切断を通すとログオフの暗黙のロールバックで変更が黙って消える（ADR 0012）
+    let 応える!: (response: ExecuteResponse) => void
+    const { api, calls } = createFakeDbApi({
+      onExecute: () =>
+        new Promise<ExecuteResponse>((resolve) => {
+          応える = resolve
+        }),
+    })
+    setDbApi(api)
+    接続済みにする()
+    タブを初期化する()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const タブ = 選択中のタブ()
+    const 実行 = useExecutionStore.getState().execute('c1', タブ, 'update t set a = 1', '開発', [])
+    await waitFor(() => expect(calls.execute).toHaveLength(1))
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /を閉じる$/ }))
+    await waitFor(() => expect(calls.releaseTab).toEqual([{ id: 'c1', tabId: タブ }]))
+
+    // Act
+    await user.click(screen.getByRole('button', { name: '接続中' }))
+    await user.click(screen.getByRole('menuitem', { name: '切断' }))
+
+    // Assert
+    expect(await screen.findByText('実行中のため切断できません')).toBeInTheDocument()
+    expect(calls.disconnect).toEqual([])
+    expect(useConnectionStore.getState().connection).not.toBeNull()
+    await act(async () => {
+      応える({ ...emptyResponse, inTransaction: true })
+      await 実行
+    })
   })
 
   it('切断できない知らせから実行を中止できる', async () => {

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# d2 で描いた状態遷移の図（生成物）
+docs/state/*.svg

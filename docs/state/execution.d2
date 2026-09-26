@@ -1,0 +1,102 @@
+# タブ 1 枚ぶんの実行の段階（src/stores/execution.ts の ExecutionStatus）
+#
+# byTab にタブの項目が無い状態を「なし」として描く。
+# succeeded の中は、結果セットのカーソルが開いているあいだの取り出しの段階である。
+#
+# 項目を作るのは execute() / executeScript() を始めたときだけである。
+# 始めるたびにタブの世代を採番し、待ちの後の書き戻しは控えた世代が今も同じとき
+# だけ行う。releaseTab() と clear() は世代ごと捨てるため、閉じたタブへ遅れて
+# 返った応答（実行・スクリプトの各文・続きの取り出し）は項目を作り直さない。
+# スクリプト実行は、閉じられたら残りの文を投げない。
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+classes: {
+  initial: {
+    shape: circle
+    width: 16
+    height: 16
+    label: ""
+    style.fill: "#444"
+  }
+  state: {
+    style.border-radius: 8
+  }
+}
+
+start.class: initial
+
+none: {
+  class: state
+  label: "なし\nbyTab に項目が無い"
+}
+running: {
+  class: state
+  label: "running\n実行中"
+}
+failed: {
+  class: state
+  label: "failed\n失敗・中止"
+}
+discarded: {
+  class: state
+  label: "discarded\n結果セットを閉じられた（ADR 0003）"
+}
+
+succeeded: {
+  label: "succeeded\n成功"
+
+  open: {
+    class: state
+    label: "続きがある\nexhausted = false"
+  }
+  fetching: {
+    class: state
+    label: "取り出し中\nloadingMore = true"
+  }
+  exhausted: {
+    class: state
+    label: "尽きた\nexhausted = true"
+  }
+
+  open -> fetching: "fetchMore()"
+  fetching -> open: "かたまりを受け取る"
+  fetching -> exhausted: "最後のかたまり"
+  open -> exhausted: "markExhausted()"
+}
+
+start -> none
+
+none -> running: "execute() / executeScript()"
+failed -> running: "execute() / executeScript()"
+discarded -> running: "execute() / executeScript()"
+succeeded -> running: "execute() / executeScript()"
+running -> running: "execute()\n実行中は無視する"
+
+running -> succeeded.open: "結果セットを受け取る"
+running -> succeeded.exhausted: "全行を受け取った・問い合わせ以外の文"
+running -> failed: "失敗\ncancel() は running のときだけ効く"
+
+succeeded.open -> discarded: "別タブの実行が接続を明け渡させた\nnoteConnectionLost()"
+succeeded.fetching -> discarded: "fetchMore 失敗"
+succeeded.fetching -> discarded: "noteConnectionLost()\nカーソルが開いたまま"
+
+none <- failed: "releaseTab()"
+none <- discarded: "releaseTab()"
+none <- succeeded: "releaseTab()"
+
+# 実行中のタブも閉じられる（closeTabAndRelease は走っているかを見ない）。
+none <- running: "releaseTab()\n待っている応答は捨てる"
+
+# clear() はすべてのタブの項目を捨てる（切断・接続の切り替え）。世代もストア全体の
+# 区切りも改めるため、またいで返った応答は項目にも未コミットの表示とログにも書かない。
+none <- running: "clear()"
+none <- failed: "clear()"
+none <- discarded: "clear()"
+none <- succeeded: "clear()"

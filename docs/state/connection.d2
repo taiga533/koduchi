@@ -1,0 +1,84 @@
+# 接続の段階の遷移（src/stores/connection.ts の ConnectionStatus）
+#
+# 矢印はストアが受け付ける遷移。ここに無い遷移はストア自身が拒む。
+# 画面が入口を出さないのは見た目の手当てであり、関所はストアに置いてある。
+# 灰色の破線は、呼ばれても段階を動かさずに拒む呼び出しである。
+#
+# connect() / reconnect() は待ちを挟むため、試行ごとに採番した接続の識別子を
+# 「今有効な試行」として控え、待ちの後に自分がまだ有効かを確かめてから書き戻す。
+# 無効になった試行が繋いでしまったプールは手放す（漏らさない）。
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+classes: {
+  initial: {
+    shape: circle
+    width: 16
+    height: 16
+    label: ""
+    style.fill: "#444"
+  }
+  state: {
+    style.border-radius: 8
+  }
+  rejected: {
+    style.stroke: "#888"
+    style.stroke-dash: 4
+    style.font-color: "#888"
+  }
+}
+
+start.class: initial
+
+disconnected: {
+  class: state
+  label: "disconnected\n未接続"
+}
+connecting: {
+  class: state
+  label: "connecting\n接続中"
+}
+connected: {
+  class: state
+  label: "connected\n接続済み"
+}
+failed: {
+  class: state
+  label: "failed\n接続に失敗"
+}
+lost: {
+  class: state
+  label: "lost\nサーバ側で切れた（ADR 0026）"
+}
+
+start -> disconnected
+
+disconnected -> connecting: "connect()"
+failed -> connecting: "connect()"
+connected -> connecting: "connect()\n別の接続へ切り替え"
+lost -> connecting: "reconnect()\n押した瞬間に動かす（ADR 0030）"
+lost -> connecting: "connect()\n別の接続へ切り替え"
+# 接続の情報がある段階なら、ストアは繋ぎ直しを受け付ける。画面が「再接続」を
+# 出すのは lost のときだけである。
+connected -> connecting: "reconnect()\n同じ接続先へ繋ぎ直す"
+
+connecting -> connected: "connect 成功\n（試行がまだ有効なときだけ）"
+connecting -> failed: "connect 失敗\n（connect() から）"
+connecting -> lost: "connect 失敗\n（reconnect() から。押し直せる形を残す）"
+
+connected -> lost: "markLost()\n段階が変わったときだけ true"
+connected -> disconnected: "disconnect()"
+lost -> disconnected: "disconnect()"
+
+# 繋ぎに行っている最中の connect() / reconnect() は何もしない（段階も動かない）。
+connecting -> connecting: "connect() / reconnect()\n何もしない（2 本目を走らせない）" {class: rejected}
+
+# 待っている試行を無効にする。遅れて返った成功は書き戻さずプールを手放し、
+# 遅れて返った失敗も failed / lost を書き戻さない。
+connecting -> disconnected: "disconnect()\n待っている試行を無効にする"
