@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { getDbApi, resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, emptyResponse, queryResponse } from './test/fakeDbApi'
+import { SQLタブを一枚にする } from './test/activeConnection'
 import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingChanges'
 import { resetCloseTabDialog, setCloseTabDialog } from './components/editor/closing'
 import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
@@ -517,6 +518,68 @@ describe('App', () => {
     expect(
       await screen.findByRole('dialog', { name: 'オブジェクトのソース検索' }),
     ).toBeInTheDocument()
+  })
+
+  it('⌘K で開いたパレットからコミットを選ぶとコミットが呼ばれる', async () => {
+    // Arrange: キーとパレットは同じコマンドの表から配られる（ADR 0035）
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    const パレット = await screen.findByRole('dialog', { name: 'コマンドパレット' })
+    await userEvent.click(within(パレット).getByRole('option', { name: /コミット/ }))
+
+    // Assert
+    await waitFor(() => expect(calls.commit).toEqual(['c1']))
+  })
+
+  it('⇧⌘S で名前を尋ね、決めた名前で保存済みへ積む', async () => {
+    // Arrange: 尋ね事は仲介者が await し、画面が描いて答えを返す（ADR 0035）
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    SQLタブを一枚にする({ name: '売上.sql', content: 'select 1 from dual' })
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    const user = userEvent.setup()
+
+    // Act
+    fireEvent.keyDown(window, { key: 'S', metaKey: true, shiftKey: true })
+    const 名前 = await screen.findByLabelText('名前')
+    await user.clear(名前)
+    await user.type(名前, '売上集計')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    // Assert
+    await waitFor(() =>
+      expect(calls.createSavedQuery).toMatchObject([
+        { name: '売上集計', sql: 'select 1 from dual', connectionName: 'dev' },
+      ]),
+    )
+    expect(screen.queryByLabelText('名前')).not.toBeInTheDocument()
+  })
+
+  it('⌘W で選んでいるタブを閉じる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    // 前のテストで書きかけになったタブだと、閉じる前の確認で止まる（ADR 0023）
+    const タブ = SQLタブを一枚にする().id
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+
+    // Assert
+    await waitFor(() =>
+      expect(useTabStore.getState().tabs.some((tab) => tab.id === タブ)).toBe(false),
+    )
   })
 
   it('実行に失敗するとメッセージタブが現れる', async () => {

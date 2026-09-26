@@ -12,7 +12,7 @@
  * 見る順は 3 つで、どれも飛ばさない。
  *
  * 1. `event.defaultPrevented` … より近い所（入力欄や CodeMirror）が既に処理した
- *    `esc` は二重に扱わない。`App.tsx` の `keydown` と同じ作法である。
+ *    `esc` は二重に扱わない。コマンドの表の `dispatchCommandKey` と同じ作法である。
  * 2. `isComposingKey` … 変換中の `esc` は変換の取り消しであって「閉じる」では
  *    ない（ADR 0025）。`window` で受ける以上、この関所はここにも要る。
  * 3. 積みの末尾 … いちばん後に開いたオーバーレイだけが閉じる。

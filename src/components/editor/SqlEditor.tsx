@@ -11,7 +11,8 @@
  *
  * 実行（`⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎`）と中止（`⌘.`）、検索・置換（`⌘F` / `⌘G` /
  * `⇧⌘G` / `⌥⌘F`）、整形（`⇧⌥F`）はエディタの中でしか意味を持たないため、
- * `App.tsx` の `keydown` ではなく CodeMirror の keymap に置く。検索の中身は
+ * ウィンドウ全体のコマンドの表（`src/mediator/commands.ts`）ではなく CodeMirror の
+ * keymap に置く。検索の中身は
  * `search.tsx` にある。
  *
  * 整形（ADR 0024）だけは keymap へ**キーの名前で**登録できない。macOS では

@@ -52,7 +52,7 @@ interface 覗いた結果 extends ConnectionFreshness {
  * 繋がっていないときと、まだ 1 度も覗けていないときは `null` を返す。
  *
  * 断が分かったときは `reportConnectionLost` へ配る。受け手は例外の経路
- * （`watchConnection`）と同じ `App.tsx` の見張りであり、**2 度目以降を数えない
+ * （`watchConnection`）と同じ仲介者の `relayConnectionLost` であり、**2 度目以降を数えない
  * のもそちらの仕事である**（ADR 0026）。
  */
 export function useConnectionHealth(): ConnectionFreshness | null {
