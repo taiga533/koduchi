@@ -5,7 +5,6 @@ import { SessionSaver } from './SessionSaver'
 
 interface ShellProps {
   children: ReactNode
-  onOpenSettings: () => void
   onDisconnect: () => void
   /** セッションとロックのパネルを開く（ADR 0017）。接続中の画面だけが渡す。 */
   onOpenSessions?: () => void
@@ -36,7 +35,6 @@ interface ShellProps {
  */
 export function Shell({
   children,
-  onOpenSettings,
   onDisconnect,
   onOpenSessions,
   onOpenSourceSearch,
@@ -52,7 +50,6 @@ export function Shell({
       <TitleBar onOpenPalette={onOpenPalette} />
       <div className="flex-1 min-h-0 flex gap-6px p-6px">{children}</div>
       <StatusBar
-        onOpenSettings={onOpenSettings}
         onDisconnect={onDisconnect}
         onSwitchConnection={onDisconnect}
         onOpenSessions={onOpenSessions}

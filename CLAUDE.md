@@ -73,6 +73,7 @@ mise run oracle:down     # コンテナを止める（ボリュームは残す�
 | `src-tauri/src/keychain/`        | `keyring` の包み。パスワードだけを置く（ADR 0004）                   |
 | `src-tauri/src/history/`         | 履歴・保存済みクエリ・セッション復元の SQLite（ADR 0005・0018）      |
 | `src-tauri/src/csv/`             | CSV の書き出し                                                       |
+| `src-tauri/src/menu.rs`          | メニューバー。既定のメニューへ「設定…」を差し込む（ADR 0036）        |
 | `src/mediator/`                  | 複数のストアにまたがる裁定とコマンドの表（ADR 0035）                 |
 
 **仲介者**（ADR 0035）: 複数のストアにまたがる裁定（切断の後片付け・タブを閉じる・実行・未コミットの関所・CSV・ファイルの保存など）は `src/mediator/` の React に依存しない関数に置き、**裁定の領域ごとに**ファイルを分ける（`connection.ts` / `transaction.ts` / `execution.ts` / `tabs.ts` / `files.ts` / `savedQuery.ts` / `csv.ts` / `schema.ts` / `session.ts`）。`App.tsx` は仲介者を部品の callback と Tauri のイベントへ**配線するだけ**である。**ストアの中から別のストアを呼ばない**（ADR README「後片付けは仲介者が順に呼ぶ」）。画面にしか無いもの（エディタのカーソルとハンドル、確認の尋ね方）は**引数で受け取り**、仲介者は `SqlEditorHandle` も React の state も import しない。**利用者に尋ねるときは答えを `await` する。**画面の中に描く確認は `src/mediator/ask.ts` の尋ね事（`Ask`）として出し、`App.tsx` が受け渡し口（`createAskChannel`）から描いて答えを返す。**表示フラグを `App.tsx` の state に足さない。**部品は仲介者の値を import しない（型は許す）。`CsvExportDialog` / `TableCommandPalette` のような包みも、裁定を callback（`onExport` / `onRunCommand`）で受ける。ネイティブのダイアログは `src/api/dialog.ts` 越しに呼ぶ（テストで差し替えるため）。未コミットの確認（`transaction/pendingChanges.ts`）とタブを閉じる確認（`components/editor/closing.ts`）は専用の差し替え口を持つ。仲介者の単体テストは `App` を描かずに書き、`src/test/activeConnection.ts` の接続済みの状態から始める。

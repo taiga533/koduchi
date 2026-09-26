@@ -75,7 +75,7 @@ function 接続が切れた状態にする(): void {
 
 /** 必ず要るハンドラをまとめて用意する。 */
 function ハンドラを作る() {
-  return { onOpenSettings: vi.fn(), onDisconnect: vi.fn(), onSwitchConnection: vi.fn() }
+  return { onDisconnect: vi.fn(), onSwitchConnection: vi.fn() }
 }
 
 beforeEach(() => {

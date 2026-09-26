@@ -1,8 +1,8 @@
 /**
  * ステータスバー（デザイン 3a の最下段）。
  *
- * カーソル位置・文字コード・データベースの種別・接続状態・読み取り専用の別と、
- * 設定への入口を並べる。手動コミットの接続では、その並びに未コミットの表示と
+ * カーソル位置・文字コード・データベースの種別・接続状態・読み取り専用の別を
+ * 並べる。設定への入口はここに置かない（メニューバーの「設定…」、ADR 0036）。手動コミットの接続では、その並びに未コミットの表示と
  * コミット / ロールバックのボタンが加わる（ADR 0012）。
  *
  * カーソル位置は `ui` ストアから読む。打鍵のたびにアプリ全体を描き直さず、
@@ -37,7 +37,6 @@ import {
   FileSearch,
   Lock,
   PlugZap,
-  Settings,
   Undo2,
   Unplug,
 } from 'lucide-react'
@@ -50,8 +49,6 @@ import { useUiStore } from '../../stores/ui'
 import { connectionColorVar } from '../../theme/connectionColors'
 
 interface StatusBarProps {
-  /** 設定画面を開く。 */
-  onOpenSettings: () => void
   /** 接続を切って接続を選ぶ画面へ戻る。 */
   onDisconnect: () => void
   /** 接続を切り替える。切断して接続を選ぶ画面を出す。 */
@@ -95,7 +92,6 @@ const STATUS_LABELS = {
 const CONNECTED_COLOR = 'oklch(0.58 0.12 152)'
 
 export function StatusBar({
-  onOpenSettings,
   onDisconnect,
   onSwitchConnection,
   onOpenSessions,
@@ -160,14 +156,6 @@ export function StatusBar({
           </TransactionButton>
         </span>
       ) : null}
-      <button
-        type="button"
-        onClick={onOpenSettings}
-        className="flex items-center gap-5px text-11px text-fg3 bg-transparent border-none cursor-pointer font-inherit p-0"
-      >
-        <Settings size={13} />
-        設定
-      </button>
     </footer>
   )
 }

@@ -8,6 +8,7 @@ pub mod csv;
 pub mod db;
 pub mod history;
 pub mod keychain;
+pub mod menu;
 pub mod tnsnames;
 
 use commands::AppState;
@@ -28,6 +29,14 @@ pub fn run() {
         // ウィンドウの位置とサイズの復元はプラグインに任せる（ADR 0009）。
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState::default())
+        // 既定のメニューに「設定…」（⌘,）を足す（ADR 0036）。
+        .menu(menu::build)
+        .on_menu_event(|app, event| {
+            // メニューの押下には結果を返す相手がいない。ここが大域の受け手である。
+            if let Err(error) = menu::handle_event(app, &event) {
+                eprintln!("メニューの操作に失敗しました: {error}");
+            }
+        })
         .setup(|app| {
             let path = app.path().app_config_dir()?.join(HISTORY_FILE_NAME);
             app.manage(HistoryStore::open(&path)?);
