@@ -145,7 +145,7 @@ describe('ConnectionPicker', () => {
         params: {
           username: 'app',
           password: 'x',
-          target: { method: 'tns', directory: '/etc/oracle', alias: 'PROD' },
+          target: { method: 'ezConnect', host: 'prod', port: 1521, serviceName: 'PROD' },
           readOnly: true,
           autoCommit: false,
         },
