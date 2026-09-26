@@ -1,13 +1,3 @@
-/**
- * 3 パネル構成の枠。
- *
- * タイトルバー・本体・ステータスバーを縦に並べる。本体の中身は呼び出し側が渡す。
- * 設定画面・CSV の保存ダイアログ・コマンドパレットは、この枠の上に重ねる。
- *
- * 切断はステータスバーの接続状態から呼ぶ。「切断」と「別の接続へ切り替え…」は
- * どちらも同じ動きであるため、受け取る手続きは 1 つでよい。
- */
-
 import type { ReactNode } from 'react'
 import { StatusBar } from '../statusbar/StatusBar'
 import { TitleBar } from '../titlebar/TitleBar'
@@ -35,6 +25,15 @@ interface ShellProps {
   overlay?: ReactNode
 }
 
+/**
+ * 3 パネル構成の枠。
+ *
+ * タイトルバー・本体・ステータスバーを縦に並べる。本体の中身は呼び出し側が渡す。
+ * 設定画面・CSV の保存ダイアログ・コマンドパレットは、この枠の上に重ねる。
+ *
+ * 切断はステータスバーの接続状態から呼ぶ。「切断」と「別の接続へ切り替え…」は
+ * どちらも同じ動きであるため、受け取る手続きは 1 つでよい。
+ */
 export function Shell({
   children,
   onOpenSettings,

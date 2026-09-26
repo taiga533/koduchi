@@ -53,8 +53,9 @@ import { SourceSearchPanel } from './components/source/SourceSearchPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { onConnectionLost } from './connection/lost'
-import type { CommandScreen } from './mediator/commands'
-import { commandById, dispatchCommandKey, runCommand } from './mediator/commands'
+import type { Command, CommandScreen } from './mediator/commands'
+import { COMMANDS, commandById, dispatchCommandKey, runCommand } from './mediator/commands'
+import { exportActiveResult } from './mediator/csv'
 import { createAskChannel } from './mediator/ask'
 import {
   disconnectAndReset,
@@ -248,6 +249,12 @@ export function App() {
     [ask],
   )
 
+  /** パレットで選ばれたコマンドを、キーと同じ裁定と判定に通す。 */
+  const executeCommand = useCallback(
+    (command: Command) => runCommand(command, commandScreen),
+    [commandScreen],
+  )
+
   /** `⌘K` と同じ裁定と判定を、タイトルバーのボタンからも通す。 */
   const openPalette = useCallback(
     () => runCommand(commandById('palette'), commandScreen),
@@ -343,7 +350,9 @@ export function App() {
           onClose={() => pendingAsks.binds?.answer(false)}
         />
       ) : null}
-      {csvOpen ? <CsvExportDialog onClose={() => setCsvOpen(false)} /> : null}
+      {csvOpen ? (
+        <CsvExportDialog onExport={exportActiveResult} onClose={() => setCsvOpen(false)} />
+      ) : null}
       {pendingAsks.disconnectBlocked ? (
         <DisconnectBlockedDialog
           onCancelExecution={() => pendingAsks.disconnectBlocked?.answer('cancelExecution')}
@@ -360,7 +369,8 @@ export function App() {
       ) : null}
       {paletteOpen ? (
         <TableCommandPalette
-          screen={commandScreen}
+          commands={COMMANDS}
+          onRunCommand={executeCommand}
           connectionName={connection.name}
           onUseSql={putSqlIntoEditor}
           onRevealSchemaObject={revealSchemaObject}

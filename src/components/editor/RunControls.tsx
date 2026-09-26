@@ -1,10 +1,3 @@
-/**
- * 実行ボタンの状態を配る薄い包み。
- *
- * 実行中かどうかと選択の有無はストアから読む。ここで購読しておくことで、
- * 打鍵のたびにアプリ全体を描き直さずに済む。
- */
-
 import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { RunButton } from './RunButton'
@@ -21,6 +14,12 @@ interface RunControlsProps {
   onCancel: () => void
 }
 
+/**
+ * 実行ボタンの状態を配る薄い包み。
+ *
+ * 実行中かどうかと選択の有無はストアから読む。ここで購読しておくことで、
+ * 打鍵のたびにアプリ全体を描き直さずに済む。
+ */
 export function RunControls({ tabId, ...handlers }: RunControlsProps) {
   const running = useExecutionStore((state) =>
     tabId === null ? false : state.byTab[tabId]?.status === 'running',

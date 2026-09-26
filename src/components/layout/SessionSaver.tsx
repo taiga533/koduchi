@@ -1,10 +1,3 @@
-/**
- * タブ構成の書き出し（ADR 0005）。
- *
- * 打鍵のたびに変わるタブの配列を、この何も描かない部品だけで購読する。
- * ルートで購読すると画面全体が打鍵ごとに描き直る。
- */
-
 import { useEffect } from 'react'
 import { getDbApi } from '../../api/db'
 import { selectSession, useTabStore } from '../../stores/tab'
@@ -14,6 +7,12 @@ import { currentWindowLabel } from '../../window'
 /** セッションを書き出すまでの待ち時間（ミリ秒）。 */
 export const SESSION_SAVE_DELAY = 600
 
+/**
+ * タブ構成の書き出し（ADR 0005）。
+ *
+ * 打鍵のたびに変わるタブの配列を、この何も描かない部品だけで購読する。
+ * ルートで購読すると画面全体が打鍵ごとに描き直る。
+ */
 export function SessionSaver() {
   const tabs = useTabStore((state) => state.tabs)
   const activeTabId = useTabStore((state) => state.activeTabId)

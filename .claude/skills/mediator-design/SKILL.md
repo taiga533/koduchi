@@ -46,6 +46,7 @@ description: 小槌の仲介者（Mediator）と関所の設計手順。操作�
 裁定は `src/mediator/` に、React に依存しない普通の関数として書く（ADR 0035）。`App.tsx` の `useCallback` の中に書かない。
 
 - **ファイルは裁定の領域で選ぶ**（接続の一生は `connection.ts`、実行は `execution.ts`、タブは `tabs.ts` など）。画面の部品や描画の単位では分けない。どこにも当てはまらない領域なら、ファイルを 1 つ足す。
+- 部品は `src/mediator/` の値を import しない（型は許す）。部品は callback で報告し、`App.tsx` がそれを仲介者の関数へ繋ぐ。
 - ストアは `useXStore.getState()` で直に触ってよい。**画面にしか無いもの**（エディタのカーソルやハンドル、確認の尋ね方）は引数で受け取る。`SqlEditorHandle` も React の state も import しない。
 - **利用者に尋ねるときは答えを `await` する。**画面の中に描く確認は `ask.ts` の `AskRequest` に種類を 1 つ足し、`App.tsx` で受け渡し口（`createAskChannel`）から描く。表示フラグを `App.tsx` の state に足さない。ネイティブのダイアログは `src/api/dialog.ts` 越しに呼ぶ。
 - 単体テストは `App` を描かずに書く。`src/test/activeConnection.ts` で接続済みにし、`src/api/` 層を差し替える。`App.test.tsx` には配線を確かめるテストだけを足す。

@@ -10,9 +10,12 @@
  * CodeMirror の keymap・`ResultTable`・`SchemaTree`・`TabBar` の中でしか効かない
  * キーは今の置き場所のまま動かさない（ADR README「キーバインド」）。そのうち
  * パレットに並ぶもの（`⌘⏎` など）は、表記だけを `editor` の行として持つ。
+ *
+ * パレットの一覧への組み立て（表記の作り方を含む）は画面の側
+ * （`components/palette/commandEntries.ts`）が持つ。部品が仲介者の値を
+ * import しないためである。
  */
 
-import type { PaletteCommand } from '../components/palette/CommandPalette'
 import { useConnectionStore } from '../stores/connection'
 import { useTabStore } from '../stores/tab'
 import { useUiStore } from '../stores/ui'
@@ -262,33 +265,6 @@ export const COMMANDS: readonly Command[] = [
   },
 ]
 
-/**
- * 組み合わせを macOS の表記にする。修飾は `⌃⌥⇧⌘` の順に並べる。
- *
- * @param chord 組み合わせ
- */
-export function formatChord(chord: Chord): string {
-  return [
-    chord.ctrl ? '⌃' : '',
-    chord.alt ? '⌥' : '',
-    chord.shift ? '⇧' : '',
-    '⌘',
-    chord.key.toUpperCase(),
-  ].join('')
-}
-
-/**
- * パレットに出すキーの表記。キーが無ければ空文字。
- *
- * @param command コマンド
- */
-export function shortcutLabel(command: Command): string {
-  if (command.key === null) {
-    return ''
-  }
-  return command.key.owner === 'window' ? formatChord(command.key.chord) : command.key.label
-}
-
 /** 振り分けに要る打鍵の中身。`KeyboardEvent` はこの形を満たす。 */
 export interface KeyPress {
   key: string
@@ -383,33 +359,6 @@ export function dispatchCommandKey(
   }
   event.preventDefault()
   runCommand(command, screen)
-}
-
-/**
- * コマンドパレットに並べる項目を表から作る（ADR 0018）。
- *
- * 中身は既存のキーバインドで呼べるものだけである。パレットのためだけの動作は
- * 作らない。キーを覚えていなくても辿り着けるようにするのが役目だからである。
- *
- * 項目を選んだときの実行は `execute` に任せる。画面は描画の途中でこの一覧を
- * 作るため、画面にしか無いもの（エディタのカーソルなど）を読むのは選ばれた
- * 時点まで遅らせる。
- *
- * @param execute 選ばれたコマンドを実行する口。ふつうは `runCommand` に画面を添えたもの
- * @param commands 並べる表
- */
-export function paletteCommands(
-  execute: (command: Command) => void,
-  commands: readonly Command[] = COMMANDS,
-): PaletteCommand[] {
-  return commands
-    .filter((command) => command.inPalette && (command.available?.() ?? true))
-    .map((command) => ({
-      id: command.id,
-      label: command.label,
-      shortcut: shortcutLabel(command),
-      run: () => execute(command),
-    }))
 }
 
 /**
