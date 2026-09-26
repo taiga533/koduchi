@@ -22,8 +22,8 @@ import type { DefinitionTarget } from '../types/db'
  * 書き出されないため、ここで捨てた内容は再起動しても戻らない。
  *
  * 開いたままのカーソルはデータベース側の資源を握り続けるため、閉じる前に
- * 明示的に手放す（ADR 0003）。実行中のタブなら、手放す前に中止の命令を送る
- * （ADR README「エディタとタブ」）。結果テーブルで手を入れた列幅も、二度と使われない
+ * 明示的に手放す（ADR 0003）。実行中のタブなら、手放しが先に中止を送る
+ * （ADR README「エディタとタブ」・ADR 0003 への 2026-09-27 の追記）。結果テーブルで手を入れた列幅も、二度と使われない
  * ため一緒に忘れる。
  *
  * **タブを閉じる経路はここ 1 つである。**タブの `✕` も `⌘W` もここを通る。
@@ -41,14 +41,10 @@ export async function closeTabAndRelease(tabId: string): Promise<void> {
 
   const connection = useConnectionStore.getState().connection
   if (connection) {
-    const execution = useExecutionStore.getState()
-    // 実行中なら先に中止の命令を送る。手放すだけでは走っている文がデータベース
-    // の上で最後まで走り続け、閉じたタブの文が接続を握ったままになる。走って
-    // いないタブへは送らない（`cancel` の関所が弾く）。順序は中止が先である。
-    // 手放すとプールはそのタブの割り当てを外すため、後から送った中止は届かない
-    // （ADR 0003）。
-    void execution.cancel(connection.id, tabId)
-    void execution.releaseTab(connection.id, tabId)
+    // 実行中の文への中止は手放しそのもの（Rust の `release_tab`）が送る。中止を別の
+    // コマンドで送ると、Tauri のコマンドは別々のスレッドで走るため手放しに追い越され、
+    // 割り当てが外れた後の中止は届かない（ADR 0003 への 2026-09-27 の追記）。
+    void useExecutionStore.getState().releaseTab(connection.id, tabId)
   }
   useUiStore.getState().clearResultColumnWidths(tabId)
   // 定義タブなら、そのタブが抱えていた定義と DDL も捨てる（ADR 0022）。

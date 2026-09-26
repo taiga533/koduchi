@@ -94,6 +94,12 @@ struct Lease {
     /// 受けた新しい割り当て（実行し直しのカーソル）まで外し、割り当ての無い
     /// カーソルが残る。積むときに控えた番号と一致するものだけを外す。
     serial: u64,
+    /// この割り当てで積んだ実行か続きの取り出しが、まだ返っていないか。
+    ///
+    /// 手放すときに中止を送るかを決めるのに使う（ADR 0003 への 2026-09-27 の
+    /// 追記「閉じるときは手放す前に中止する」）。走っていない接続へ中止を送ると、
+    /// 次に積まれた命令のほうが打ち切られうる。
+    in_flight: bool,
 }
 
 /// 割り当ての表。
@@ -135,6 +141,21 @@ impl LeaseTable {
     /// * `serial` - 積むときに控えた通し番号
     fn remove_serial(&mut self, serial: u64) {
         self.leases.retain(|lease| lease.serial != serial);
+    }
+
+    /// 控えた通し番号の割り当てに、積んだ命令が返っていないかを書く。
+    ///
+    /// 番号で引くのは `remove_serial` と同じ理由である。待っている間に同じタブが
+    /// 受けた新しい割り当ての印を、古い命令の返事で降ろさない。
+    ///
+    /// # 引数
+    ///
+    /// * `serial` - 積むときに控えた通し番号
+    /// * `in_flight` - まだ返っていないか
+    fn set_in_flight(&mut self, serial: u64, in_flight: bool) {
+        if let Some(lease) = self.leases.iter_mut().find(|lease| lease.serial == serial) {
+            lease.in_flight = in_flight;
+        }
     }
 }
 
@@ -346,6 +367,11 @@ impl ConnectionPool {
     /// * `tab_id` - 対象のタブ
     fn leased(&self, tab_id: &str) -> Option<Arc<ConnectionHandle>> {
         let table = self.leases.lock().expect("割り当て表のロックが壊れている");
+        // 手放したタブの割り当ては片付けの間だけ残っている（`release` を参照）。
+        // 中止は `release` が自分で送るため、ここからは送らせない。
+        if table.released.contains(tab_id) {
+            return None;
+        }
         table
             .leases
             .iter()
@@ -419,20 +445,33 @@ impl ConnectionPool {
                 tab_id: tab_id.to_string(),
                 slot,
                 serial,
+                in_flight: false,
             });
             return Ok((Arc::clone(&self.handles[slot]), serial, None));
         }
 
-        // 空きが無ければ、最も長く使われていない割り当てを剥がす。
-        let 剥がす = table.leases.remove(0);
+        // 空きが無ければ、最も長く使われていない割り当てを剥がす。手放したタブの
+        // 片付け中の割り当て（`release` を参照）は後回しにする。そちらの接続には
+        // 閉じたタブの文へ宛てた中止がまだ届いていないことがあり、引き継ぐと
+        // こちらの文が打ち切られうる。全部が片付け中のときだけ、いちばん古い
+        // ものを引き継ぐ（片付けのカーソルを閉じる命令は先に積まれている）。
+        let index = table
+            .leases
+            .iter()
+            .position(|lease| !table.released.contains(&lease.tab_id));
+        let 片付け中を引き継ぐ = index.is_none();
+        let 剥がす = table.leases.remove(index.unwrap_or(0));
         let handle = Arc::clone(&self.handles[剥がす.slot]);
         table.leases.push(Lease {
             tab_id: tab_id.to_string(),
             slot: 剥がす.slot,
             serial,
+            in_flight: false,
         });
 
-        Ok((handle, serial, Some(剥がす.tab_id)))
+        // 片付け中のタブは閉じられており、「結果は破棄されました」を出す先が無い。
+        let discarded_tab = (!片付け中を引き継ぐ).then_some(剥がす.tab_id);
+        Ok((handle, serial, discarded_tab))
     }
 
     /// タブの割り当てを外す。
@@ -441,29 +480,59 @@ impl ConnectionPool {
     /// 接続を割り当てない（割り当てが無かったときも覚える。実行より先に手放しが
     /// 届いた場合こそ、覚えておかないと閉じたタブに接続を握らせる）。
     ///
+    /// **そのタブの文が走っていれば、手放すより先に中止を送る**（ADR 0003 への
+    /// 2026-09-27 の追記）。手放すだけでは閉じたタブの文がデータベースの上で
+    /// 最後まで走り、接続を握り続ける。中止を別のコマンドで送ると、Tauri の
+    /// コマンドは別々のスレッドで走るため手放しに追い越されることがあり、割り当てが
+    /// 外れた後の中止は届かない。そこで走っているかを割り当てを外すのと同じ臨界区間で
+    /// 読み、中止はここから送る。
+    ///
+    /// 割り当ては**カーソルを閉じ終えるまで表に残す**。表から消すと、中止が届く前に
+    /// 閉じたタブの文が終わり、カーソルを閉じ、同じ接続を引き継いだ別のタブの文が
+    /// 走り始めてから中止が届く、という順が残る。残しておけば別のタブはその接続を
+    /// 取らない（`acquire` を参照）ため、中止が当たりうるのは閉じたタブの文と、
+    /// その後に積まれたカーソルを閉じる命令だけである。中止は表を離してから送る。
+    /// 表を握ったまま送ると、切れた回線で中止が返らないときにプールの全操作が止まる。
+    ///
     /// # 引数
     ///
     /// * `tab_id` - 対象のタブ
     pub fn release(&self, tab_id: &str) -> DbResult<()> {
-        let pending = {
+        let (pending, serial, 中止先) = {
             let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
             table.released.insert(tab_id.to_string());
-            let Some(index) = table.leases.iter().position(|lease| lease.tab_id == tab_id) else {
+            let Some(lease) = table.leases.iter().find(|lease| lease.tab_id == tab_id) else {
                 return Ok(());
             };
-            let lease = table.leases.remove(index);
+            let (slot, serial, in_flight) = (lease.slot, lease.serial, lease.in_flight);
+            let handle = Arc::clone(&self.handles[slot]);
             // 表を握ったまま積む。離してから積むと、この接続を引き継いだ別のタブの
             // 実行が先に積まれ、そのタブのカーソルを閉じてしまう。
             //
-            // 積めなかったときも割り当ては戻さない。タブは閉じられており、戻すと
+            // 積めなかったときは割り当てをその場で外す。タブは閉じられており、残すと
             // 終わったアクタースレッドの接続を閉じたタブが握り続ける。
-            self.handles[lease.slot].send_close_cursor()?
+            let pending = match handle.send_close_cursor() {
+                Ok(pending) => pending,
+                Err(error) => {
+                    table.remove_serial(serial);
+                    return Err(error);
+                }
+            };
+            (pending, serial, in_flight.then_some(handle))
         };
         self.表を離した();
 
-        // 割り当てがあるときだけカーソルを閉じに行く。往復するのはここからで
-        // あるため、`見張る` を通すのもここだけでよい（ADR 0026・0030）。
-        self.見張る(|| pending.wait())
+        // 中止もカーソルを閉じるのもデータベースへの往復であり、`見張る` を通す
+        // （ADR 0026・0030）。中止に失敗してもカーソルは閉じに行き、割り当ても外す。
+        let 中止 = match 中止先 {
+            Some(handle) => self.見張る(|| handle.cancel()),
+            None => Ok(()),
+        };
+        let 閉じた = self.見張る(|| pending.wait());
+
+        let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+        table.remove_serial(serial);
+        中止.and(閉じた)
     }
 
     /// SQL を 1 文実行する。
@@ -494,7 +563,10 @@ impl ConnectionPool {
             // 実行そのものが前のカーソルを閉じるため、ここでは表からの削除だけでよい。
             // 積むのは表を握ったまま行う（`leases` の説明を参照）。
             match handle.send_execute(sql, binds, self.chunk_size) {
-                Ok(pending) => (pending, serial, discarded_tab),
+                Ok(pending) => {
+                    table.set_in_flight(serial, true);
+                    (pending, serial, discarded_tab)
+                }
                 Err(error) => {
                     // 積めないのはアクタースレッドが終わっているときである。命令は
                     // どの接続にも届いていないため、剥がしたタブのカーソルも手付かずで
@@ -507,7 +579,12 @@ impl ConnectionPool {
         };
         self.表を離した();
 
-        let outcome = self.見張る(|| pending.wait())?;
+        let result = self.見張る(|| pending.wait());
+
+        let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+        // 返事が来た以上、この割り当てで走っている文はもう無い。失敗でも降ろす。
+        table.set_in_flight(serial, false);
+        let outcome = result?;
 
         let 保持し続ける = matches!(
             &outcome,
@@ -515,9 +592,9 @@ impl ConnectionPool {
         );
 
         if !保持し続ける {
-            let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
             table.remove_serial(serial);
         }
+        drop(table);
 
         Ok(ExecuteResponse {
             outcome,
@@ -541,6 +618,14 @@ impl ConnectionPool {
 
         let (pending, serial) = {
             let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+            // 手放したタブの割り当ては片付けの間だけ残っている（`release`）。
+            // 閉じたタブのカーソルから読ませない。
+            if table.released.contains(tab_id) {
+                return Err(DbError::new(
+                    DbErrorKind::Closed,
+                    "結果は破棄されました。再実行してください",
+                ));
+            }
             let (handle, serial) = self.touch(&mut table, tab_id).ok_or_else(|| {
                 DbError::new(
                     DbErrorKind::Closed,
@@ -552,17 +637,23 @@ impl ConnectionPool {
             //
             // 積めなかったときも表は戻さない。`touch` が動かすのは使った順だけで
             // あり、割り当ての有無は変わっていない。
-            (handle.send_fetch_more(self.chunk_size)?, serial)
+            let pending = handle.send_fetch_more(self.chunk_size)?;
+            table.set_in_flight(serial, true);
+            (pending, serial)
         };
         self.表を離した();
 
-        let chunk = self.見張る(|| pending.wait())?;
+        let result = self.見張る(|| pending.wait());
+
+        let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
+        table.set_in_flight(serial, false);
+        let chunk = result?;
 
         // 尽きたら接続を明け渡す。
         if chunk.exhausted {
-            let mut table = self.leases.lock().expect("割り当て表のロックが壊れている");
             table.remove_serial(serial);
         }
+        drop(table);
 
         Ok(chunk)
     }
@@ -787,6 +878,7 @@ mod tests {
     use crate::db::driver::{Bind, Canceller, Column, Prober};
     use crate::db::value::CellKind;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     /// 何を求められても接続断で断るドライバ（ADR 0026）。
     ///
@@ -1682,6 +1774,308 @@ mod tests {
         assert_eq!(実行.unwrap_err().kind, DbErrorKind::Closed);
         assert!(pool.leased("B").is_none());
         assert!(pool.leased("A").is_some());
+    }
+
+    /// 中止されるまで走り続ける文を持つドライバ（ADR 0003 への 2026-09-27 の追記）。
+    ///
+    /// 閉じたタブの文へ中止が届くか、別のタブの文へ誤って届かないかを、
+    /// 実データベース抜きで確かめるためにある。`止まる` で実行すると中止されるまで
+    /// 返らず、中止されたら `Cancelled` を返す。それ以外の SQL はすぐに返る。
+    struct 止めるドライバ {
+        /// プールの中での位置。どの接続で走ったかを見分ける。
+        番号: usize,
+        /// 中止の印と、それを待つための条件変数。接続ごとに持つ。
+        中止: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        /// 送られた中止を接続の番号ごとに数える。
+        中止した回数: Arc<Mutex<Vec<usize>>>,
+        /// 走った文を（接続の番号, SQL）で記録する。
+        走った: Arc<Mutex<Vec<(usize, String)>>>,
+        /// 中止を送ると失敗するか。
+        中止に失敗する: bool,
+    }
+
+    /// 中止されるまで返らない文。
+    const 止まる: &str = "止まる";
+
+    /// 止めるドライバの中止経路。
+    struct 印を立てる中止経路 {
+        番号: usize,
+        失敗する: bool,
+        中止: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        中止した回数: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl Canceller for 印を立てる中止経路 {
+        fn cancel(&self) -> DbResult<()> {
+            self.中止した回数.lock().unwrap().push(self.番号);
+            if self.失敗する {
+                return Err(DbError::new(DbErrorKind::Execute, "中止に失敗した"));
+            }
+            let (印, 知らせ) = &*self.中止;
+            *印.lock().unwrap() = true;
+            知らせ.notify_all();
+            Ok(())
+        }
+    }
+
+    impl Driver for 止めるドライバ {
+        fn canceller(&self) -> Box<dyn Canceller> {
+            Box::new(印を立てる中止経路 {
+                番号: self.番号,
+                失敗する: self.中止に失敗する,
+                中止: Arc::clone(&self.中止),
+                中止した回数: Arc::clone(&self.中止した回数),
+            })
+        }
+
+        fn execute(
+            &mut self,
+            sql: &str,
+            _binds: &[Bind],
+            _chunk_size: usize,
+        ) -> DbResult<ExecuteOutcome> {
+            self.走った
+                .lock()
+                .unwrap()
+                .push((self.番号, sql.to_string()));
+            if sql == 止まる {
+                // 中止が届かないまま待ち続けると、壊れたときにテストが止まる。
+                // 待つのは 5 秒までにし、届かなければ別の種類のエラーで返す。
+                let (印, 知らせ) = &*self.中止;
+                let (mut 中止された, _) = 知らせ
+                    .wait_timeout_while(印.lock().unwrap(), Duration::from_secs(5), |届いた| {
+                        !*届いた
+                    })
+                    .unwrap();
+                if !*中止された {
+                    return Err(DbError::new(DbErrorKind::Execute, "中止が届かなかった"));
+                }
+                *中止された = false;
+                return Err(DbError::new(DbErrorKind::Cancelled, "ORA-01013"));
+            }
+            Ok(ExecuteOutcome::Query {
+                columns: Vec::new(),
+                chunk: Chunk {
+                    rows: Vec::new(),
+                    exhausted: false,
+                },
+                elapsed_ms: 0,
+                notices: Vec::new(),
+                in_transaction: false,
+            })
+        }
+
+        fn fetch_more(&mut self, _chunk_size: usize) -> DbResult<Chunk> {
+            Ok(Chunk {
+                rows: Vec::new(),
+                exhausted: true,
+            })
+        }
+
+        fn close_cursor(&mut self) -> DbResult<()> {
+            Ok(())
+        }
+
+        fn schema_overview(&mut self, _filter: &SchemaFilter) -> DbResult<Vec<SchemaNode>> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn commit(&mut self) -> DbResult<()> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn rollback(&mut self) -> DbResult<()> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn explain_plan(&mut self, _sql: &str, _binds: &[Bind]) -> DbResult<String> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn actual_plan(&mut self, _sql: &str, _binds: &[Bind]) -> DbResult<String> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn object_definition(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<ObjectDefinition> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn object_ddl(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<ObjectDdl> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn list_sessions(&mut self) -> DbResult<SessionOverview> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn kill_session(&mut self, _sid: u32, _serial: u32) -> DbResult<()> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn search_source(
+            &mut self,
+            _request: &SourceSearchRequest,
+        ) -> DbResult<SourceSearchResult> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn source_context(
+            &mut self,
+            _target: &SourceTarget,
+            _line: u32,
+        ) -> DbResult<Vec<SourceLine>> {
+            unimplemented!("中止のテストでは使わない")
+        }
+    }
+
+    /// 止めるドライバのプールが記録するもの。
+    struct 止めるプールの記録 {
+        中止した回数: Arc<Mutex<Vec<usize>>>,
+        走った: Arc<Mutex<Vec<(usize, String)>>>,
+    }
+
+    /// 止めるドライバを `本数` ぶん載せたプールを組む。
+    ///
+    /// # 引数
+    ///
+    /// * `本数` - プールに載せる接続の本数
+    /// * `中止に失敗する` - 中止を送ると失敗させるか
+    fn 止めるプールを組む(
+        本数: usize,
+        中止に失敗する: bool,
+    ) -> (Arc<ConnectionPool>, 止めるプールの記録) {
+        let 中止した回数 = Arc::new(Mutex::new(Vec::new()));
+        let 走った = Arc::new(Mutex::new(Vec::new()));
+        let drivers: Vec<_> = (0..本数)
+            .map(|番号| {
+                let 中止した回数 = Arc::clone(&中止した回数);
+                let 走った = Arc::clone(&走った);
+                move || {
+                    Ok(止めるドライバ {
+                        番号,
+                        中止: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+                        中止した回数,
+                        走った,
+                        中止に失敗する,
+                    })
+                }
+            })
+            .collect();
+        let pool = Arc::new(pool_from_drivers(drivers, DEFAULT_CHUNK_SIZE).unwrap());
+        (
+            pool,
+            止めるプールの記録 {
+                中止した回数,
+                走った,
+            },
+        )
+    }
+
+    #[test]
+    fn 走っている文のタブを手放すとその接続へ中止を送る() {
+        // Arrange: 実行が表を離した直後（文が走っている間）に、同じタブの
+        // 手放しが割り込む。中止を別のコマンドにすると手放しに追い越されうるため、
+        // 手放しそのものが中止を送る（ADR 0003）
+        let (pool, 記録) = 止めるプールを組む(1, false);
+        let 手放す側 = Arc::clone(&pool);
+        表を離した直後に割り込ませる(&pool, move || {
+            手放す側.release("A").unwrap();
+        });
+
+        // Act
+        let 実行 = pool.execute("A", 止まる, &[]);
+
+        // Assert: 閉じたタブの文は中止され、割り当ても残らない
+        assert_eq!(実行.unwrap_err().kind, DbErrorKind::Cancelled);
+        assert_eq!(*記録.中止した回数.lock().unwrap(), vec![0]);
+        assert!(pool.leases.lock().unwrap().leases.is_empty());
+    }
+
+    #[test]
+    fn 走っていないタブを手放しても中止は送らない() {
+        // Arrange: 走っていない接続へ中止を送ると、次に積まれた命令が打ち切られうる
+        let (pool, 記録) = 止めるプールを組む(1, false);
+        pool.execute("A", "select 1 from dual", &[]).unwrap();
+
+        // Act
+        pool.release("A").unwrap();
+
+        // Assert
+        assert!(記録.中止した回数.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn 手放しの片付けが済むまで別のタブはその接続を取らない() {
+        // Arrange: A の文が走っている間に A を手放す。手放しが表を離した直後に
+        // B が実行する。A の接続を B が取ると、A へ宛てた中止が B の文に当たりうる
+        let (pool, 記録) = 止めるプールを組む(2, false);
+        let 手放す側 = Arc::clone(&pool);
+        let 実行する側 = Arc::clone(&pool);
+        表を離した直後に割り込ませる(&pool, move || {
+            let 差し込み先 = Arc::clone(&手放す側);
+            表を離した直後に割り込ませる(&差し込み先, move || {
+                実行する側.execute("B", "B", &[]).unwrap();
+            });
+            手放す側.release("A").unwrap();
+        });
+
+        // Act
+        pool.execute("A", 止まる, &[]).unwrap_err();
+
+        // Assert: B は空いている 2 本目で走り、中止は A の接続にだけ届いた
+        let 走った = 記録.走った.lock().unwrap().clone();
+        assert!(走った.contains(&(1, String::from("B"))));
+        assert_eq!(*記録.中止した回数.lock().unwrap(), vec![0]);
+    }
+
+    #[test]
+    fn 中止に失敗しても手放しはカーソルを閉じて割り当てを外す() {
+        // Arrange: 中止が失敗したからといって、閉じたタブに接続を握らせない
+        let (pool, 記録) = 止めるプールを組む(1, true);
+        let 手放す側 = Arc::clone(&pool);
+        let 手放した結果 = Arc::new(Mutex::new(None));
+        let 控え = Arc::clone(&手放した結果);
+        表を離した直後に割り込ませる(&pool, move || {
+            *控え.lock().unwrap() = Some(手放す側.release("A"));
+        });
+
+        // Act
+        pool.execute("A", "select 1 from dual", &[]).unwrap();
+
+        // Assert: 失敗は伝えるが、割り当ては残らない
+        let 手放した結果 = 手放した結果.lock().unwrap().take().unwrap();
+        assert_eq!(手放した結果.unwrap_err().message, "中止に失敗した");
+        assert_eq!(*記録.中止した回数.lock().unwrap(), vec![0]);
+        assert!(pool.leases.lock().unwrap().leases.is_empty());
+    }
+
+    #[test]
+    fn 手放したタブへの中止はプールの側からは送らない() {
+        // Arrange: 手放しの片付け中に遅れて届いた `⌘.` が、片付けの後に同じ接続を
+        // 引き継いだ別のタブへ当たらないようにする
+        let (pool, 記録) = 止めるプールを組む(1, false);
+        pool.execute("A", "select 1 from dual", &[]).unwrap();
+        pool.release("A").unwrap();
+
+        // Act
+        pool.cancel("A").unwrap();
+
+        // Assert
+        assert!(記録.中止した回数.lock().unwrap().is_empty());
     }
 
     #[test]

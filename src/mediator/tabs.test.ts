@@ -81,38 +81,13 @@ describe('closeTabAndRelease', () => {
     expect(useUiStore.getState().resultColumnWidths['sql-1']).toBeUndefined()
   })
 
-  it('実行中のタブを閉じると、手放す前に中止の命令を送る', async () => {
-    // Arrange
-    const { api, calls } = createFakeDbApi()
-    SQLタブを一枚にする()
-    useExecutionStore.setState({ byTab: { 'sql-1': { ...emptyExecution, status: 'running' } } })
-    const 順序: string[] = []
-    setDbApi({
-      ...api,
-      cancel: async (id, tabId) => {
-        順序.push('cancel')
-        await api.cancel(id, tabId)
-      },
-      releaseTab: async (id, tabId) => {
-        順序.push('releaseTab')
-        await api.releaseTab(id, tabId)
-      },
-    })
-
-    // Act
-    await closeTabAndRelease('sql-1')
-
-    // Assert
-    expect(calls.cancel).toEqual([{ id: 'c1', tabId: 'sql-1' }])
-    expect(順序).toEqual(['cancel', 'releaseTab'])
-  })
-
-  it('実行中でないタブを閉じても中止の命令は送らない', async () => {
-    // Arrange
+  it('実行中のタブを閉じても中止は別のコマンドにせず、手放しだけを送る', async () => {
+    // Arrange: 別のコマンドの中止は手放しに追い越されると届かない。走っている文への
+    // 中止は手放し（Rust の release_tab）が自分で送る（ADR 0003）
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
     SQLタブを一枚にする()
-    useExecutionStore.setState({ byTab: { 'sql-1': { ...emptyExecution, status: 'succeeded' } } })
+    useExecutionStore.setState({ byTab: { 'sql-1': { ...emptyExecution, status: 'running' } } })
 
     // Act
     await closeTabAndRelease('sql-1')
@@ -120,6 +95,7 @@ describe('closeTabAndRelease', () => {
     // Assert
     expect(calls.cancel).toEqual([])
     expect(calls.releaseTab).toEqual([{ id: 'c1', tabId: 'sql-1' }])
+    expect(タブの並び()).not.toContain('sql-1')
   })
 
   it('定義タブを閉じるとその定義も手放す', async () => {

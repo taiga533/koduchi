@@ -91,7 +91,7 @@ none <- failed: "releaseTab()"
 none <- discarded: "releaseTab()"
 none <- succeeded: "releaseTab()"
 
-# 実行中のタブも閉じられる（closeTabAndRelease は中止を送ったうえで、終わるのを待たずに手放す）。
+# 実行中のタブも閉じられる（手放しが中止を送るが、文が終わるのは待たない）。
 none <- running: "releaseTab()\n待っている応答は捨てる"
 
 # clear() はすべてのタブの項目を捨てる（切断・接続の切り替え）。世代もストア全体の
