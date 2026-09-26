@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi } from '../test/fakeDbApi'
 import { canReachDatabase, isManualCommit, useConnectionStore } from './connection'
+import type { DbApi } from '../api/db'
 import type { ConnectionParams } from '../types/db'
 
 const params: ConnectionParams = {
@@ -10,6 +11,37 @@ const params: ConnectionParams = {
   target: { method: 'ezConnect', host: 'localhost', port: 1521, serviceName: 'FREEPDB1' },
   readOnly: false,
   autoCommit: false,
+}
+
+/**
+ * 応答を手で返す接続の窓口を作る。
+ *
+ * 待ちの最中に別の操作が割り込む順序を再現するために使う。`connect` は呼ばれた
+ * 順に積まれ、テストが `成功させる` / `失敗させる` で好きな順に返す。
+ */
+function 保留の接続(): {
+  api: DbApi
+  試行: { id: string; 成功させる: () => void; 失敗させる: (error: unknown) => void }[]
+  手放した: string[]
+} {
+  const { api } = createFakeDbApi()
+  const 試行: { id: string; 成功させる: () => void; 失敗させる: (error: unknown) => void }[] = []
+  const 手放した: string[] = []
+
+  return {
+    api: {
+      ...api,
+      connect: (id) =>
+        new Promise<void>((resolve, reject) => {
+          試行.push({ id, 成功させる: resolve, 失敗させる: reject })
+        }),
+      disconnect: async (id) => {
+        手放した.push(id)
+      },
+    },
+    試行,
+    手放した,
+  }
 }
 
 beforeEach(() => {
@@ -414,5 +446,166 @@ describe('接続断からの回復（ADR 0026）', () => {
 
     // Assert
     expect(calls.connect).toHaveLength(0)
+  })
+})
+
+describe('接続の試行の関所', () => {
+  it('繋ぎに行っている最中にもう一度接続を頼んでも 2 本目は走らない', async () => {
+    // Arrange: どちらが後に返るか約束できず、先に返ったプールが迷子になる
+    const { api, 試行 } = 保留の接続()
+    setDbApi(api)
+    const 一度目 = useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    await useConnectionStore.getState().connect('prod', params)
+    試行[0].成功させる()
+    await 一度目
+
+    // Assert
+    expect(試行).toHaveLength(1)
+    expect(useConnectionStore.getState().status).toBe('connected')
+    expect(useConnectionStore.getState().connection?.name).toBe('dev')
+  })
+
+  it('繋ぎ直しの最中に接続を頼んでも走らない', async () => {
+    // Arrange
+    const { api, 試行 } = 保留の接続()
+    setDbApi(api)
+    const 最初 = useConnectionStore.getState().connect('dev', params)
+    試行[0].成功させる()
+    await 最初
+    useConnectionStore.getState().markLost('ORA-03113')
+    const 繋ぎ直し = useConnectionStore.getState().reconnect()
+
+    // Act
+    await useConnectionStore.getState().connect('prod', params)
+    試行[1].成功させる()
+    await 繋ぎ直し
+
+    // Assert
+    expect(試行).toHaveLength(2)
+    expect(useConnectionStore.getState().connection?.name).toBe('dev')
+  })
+
+  it('接続の最中に切断すると未接続になり遅れて返った成功は書き戻されない', async () => {
+    // Arrange
+    const { api, 試行, 手放した } = 保留の接続()
+    setDbApi(api)
+    const 接続 = useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    await useConnectionStore.getState().disconnect()
+    試行[0].成功させる()
+    await 接続
+
+    // Assert: 遅れて作られたプールは漏らさず手放す
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('disconnected')
+    expect(state.connection).toBeNull()
+    expect(手放した).toEqual([試行[0].id])
+  })
+
+  it('接続の最中に切断すると遅れて返った失敗も書き戻されない', async () => {
+    // Arrange: 接続を選ぶ画面へ戻った後に「接続に失敗」を出さない
+    const { api, 試行, 手放した } = 保留の接続()
+    setDbApi(api)
+    const 接続 = useConnectionStore.getState().connect('dev', params)
+
+    // Act
+    await useConnectionStore.getState().disconnect()
+    試行[0].失敗させる({ kind: 'connect', message: 'ORA-12541' })
+    await 接続
+
+    // Assert: 失敗した試行にはプールが無いため手放すものも無い
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('disconnected')
+    expect(state.error).toBeNull()
+    expect(手放した).toEqual([])
+  })
+
+  it('繋ぎ直しの最中に切断すると遅れて返った成功で接続が蘇らない', async () => {
+    // Arrange
+    const { api, 試行, 手放した } = 保留の接続()
+    setDbApi(api)
+    const 最初 = useConnectionStore.getState().connect('dev', params)
+    試行[0].成功させる()
+    await 最初
+    useConnectionStore.getState().markLost('ORA-03113')
+    const 繋ぎ直し = useConnectionStore.getState().reconnect()
+
+    // Act
+    await useConnectionStore.getState().disconnect()
+    試行[1].成功させる()
+    await 繋ぎ直し
+
+    // Assert: 古い接続は繋ぎ直しを始めた時点で 1 度だけ手放し、新しいプールも手放す
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('disconnected')
+    expect(state.connection).toBeNull()
+    expect(手放した).toEqual([試行[0].id, 試行[1].id])
+  })
+
+  it('繋ぎ直しの最中に切断すると遅れて返った失敗で切れた状態へ戻らない', async () => {
+    // Arrange
+    const { api, 試行 } = 保留の接続()
+    setDbApi(api)
+    const 最初 = useConnectionStore.getState().connect('dev', params)
+    試行[0].成功させる()
+    await 最初
+    useConnectionStore.getState().markLost('ORA-03113')
+    const 繋ぎ直し = useConnectionStore.getState().reconnect()
+
+    // Act
+    await useConnectionStore.getState().disconnect()
+    試行[1].失敗させる({ kind: 'connect', message: 'ORA-12541' })
+    await 繋ぎ直し
+
+    // Assert
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('disconnected')
+    expect(state.connection).toBeNull()
+    expect(state.error).toBeNull()
+  })
+
+  it('切断の後に始めた接続は先の試行の遅れた成功に追い越されない', async () => {
+    // Arrange
+    const { api, 試行, 手放した } = 保留の接続()
+    setDbApi(api)
+    const 先 = useConnectionStore.getState().connect('dev', params)
+    await useConnectionStore.getState().disconnect()
+    const 後 = useConnectionStore.getState().connect('prod', params)
+    試行[1].成功させる()
+    await 後
+
+    // Act
+    試行[0].成功させる()
+    await 先
+
+    // Assert
+    const state = useConnectionStore.getState()
+    expect(state.status).toBe('connected')
+    expect(state.connection?.name).toBe('prod')
+    expect(state.connection?.id).toBe(試行[1].id)
+    expect(手放した).toEqual([試行[0].id])
+  })
+
+  it('切断の後に始めた接続は先の試行の遅れた失敗で失敗に落ちない', async () => {
+    // Arrange
+    const { api, 試行 } = 保留の接続()
+    setDbApi(api)
+    const 先 = useConnectionStore.getState().connect('dev', params)
+    await useConnectionStore.getState().disconnect()
+    const 後 = useConnectionStore.getState().connect('prod', params)
+
+    // Act
+    試行[0].失敗させる({ kind: 'connect', message: 'ORA-12541' })
+    await 先
+
+    // Assert: 後の試行はまだ待っている
+    expect(useConnectionStore.getState().status).toBe('connecting')
+    expect(useConnectionStore.getState().error).toBeNull()
+    試行[1].成功させる()
+    await 後
+    expect(useConnectionStore.getState().status).toBe('connected')
   })
 })
