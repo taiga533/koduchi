@@ -1430,6 +1430,39 @@ describe('トランザクションの制御（ADR 0012）', () => {
     expect(selectResultTabs(useExecutionStore.getState(), TAB)).toEqual(['result', 'messages'])
   })
 
+  it('結果を捨てるとどの段階のタブの項目も消える', () => {
+    // Arrange: 遷移表の clear() の矢印（docs/state/execution.d2）
+    useExecutionStore.setState({
+      byTab: {
+        実行中: { ...emptyExecution, status: 'running' },
+        失敗: { ...emptyExecution, status: 'failed' },
+        破棄: { ...emptyExecution, status: 'discarded' },
+        成功: { ...emptyExecution, status: 'succeeded' },
+      },
+    })
+
+    // Act
+    useExecutionStore.getState().clear()
+
+    // Assert
+    expect(useExecutionStore.getState().byTab).toEqual({})
+  })
+
+  it('続きを取り出している最中に接続が切れると破棄済みになる', () => {
+    // Arrange: カーソルはサーバ側にもう無い（ADR 0026）
+    useExecutionStore.setState({
+      byTab: {
+        [TAB]: { ...emptyExecution, status: 'succeeded', exhausted: false, loadingMore: true },
+      },
+    })
+
+    // Act
+    useExecutionStore.getState().noteConnectionLost('ORA-03113')
+
+    // Assert
+    expect(selectExecution(useExecutionStore.getState(), TAB).status).toBe('discarded')
+  })
+
   it('結果を捨てると未コミットの記憶も消える', async () => {
     // Arrange
     useExecutionStore.setState({ inTransaction: true })

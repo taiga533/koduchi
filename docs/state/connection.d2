@@ -63,6 +63,10 @@ disconnected -> connecting: "connect()"
 failed -> connecting: "connect()"
 connected -> connecting: "connect()\n別の接続へ切り替え"
 lost -> connecting: "reconnect()\n押した瞬間に動かす（ADR 0030）"
+lost -> connecting: "connect()\n別の接続へ切り替え"
+# 接続の情報がある段階なら、ストアは繋ぎ直しを受け付ける。画面が「再接続」を
+# 出すのは lost のときだけである。
+connected -> connecting: "reconnect()\n同じ接続先へ繋ぎ直す"
 
 connecting -> connected: "connect 成功\n（試行がまだ有効なときだけ）"
 connecting -> failed: "connect 失敗\n（connect() から）"

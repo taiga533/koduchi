@@ -435,6 +435,41 @@ describe('接続断からの回復（ADR 0026）', () => {
     expect(calls.connect).toHaveLength(2)
   })
 
+  it('繋がっている状態からも繋ぎ直せる', async () => {
+    // Arrange: 画面が「再接続」を出すのは切れたときだけだが、ストアは接続の情報が
+    // あれば受け付ける（docs/state/connection.d2）
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+    const 前の識別子 = useConnectionStore.getState().connection?.id
+
+    // Act
+    await useConnectionStore.getState().reconnect()
+
+    // Assert
+    expect(useConnectionStore.getState().status).toBe('connected')
+    expect(useConnectionStore.getState().connection?.id).not.toBe(前の識別子)
+    expect(calls.disconnect).toEqual([前の識別子])
+  })
+
+  it('切れた状態から別の接続へ切り替えると切れた接続を手放して繋ぐ', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    await useConnectionStore.getState().connect('dev', params)
+    const 切れた識別子 = useConnectionStore.getState().connection?.id
+    useConnectionStore.getState().markLost('ORA-03113')
+
+    // Act
+    const 繋がった = await useConnectionStore.getState().connect('prod', params)
+
+    // Assert
+    expect(繋がった).toBe(true)
+    expect(useConnectionStore.getState().status).toBe('connected')
+    expect(useConnectionStore.getState().connection?.name).toBe('prod')
+    expect(calls.disconnect).toEqual([切れた識別子])
+  })
+
   it('接続していないときに繋ぎ直しても何も起きない', async () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
