@@ -40,8 +40,7 @@ import {
   SIDEBAR_WIDTH_MIN,
   editorHeightMax,
 } from './components/layout/paneSizes'
-import type { PaletteCommand } from './components/palette/CommandPalette'
-import { CommandPalette } from './components/palette/CommandPalette'
+import { TableCommandPalette } from './components/palette/TableCommandPalette'
 import { RunControls } from './components/editor/RunControls'
 import { BindPrompt } from './components/editor/BindPrompt'
 import type { EditorPosition, SqlEditorHandle } from './components/editor/SqlEditor'
@@ -55,6 +54,8 @@ import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { onConnectionLost } from './connection/lost'
 import type { Ask, AskAnswers } from './mediator/ask'
+import type { CommandScreen } from './mediator/commands'
+import { commandById, dispatchCommandKey, runCommand } from './mediator/commands'
 import { DISMISSED } from './mediator/ask'
 import {
   disconnectAndReset,
@@ -72,12 +73,9 @@ import {
   runSelection,
   runStatement,
 } from './mediator/execution'
-import { openSqlFile, saveActiveTab } from './mediator/files'
-import { saveQueryFromEditor } from './mediator/savedQuery'
-import { reloadSchemas, revealSchemaObject } from './mediator/schema'
+import { revealSchemaObject } from './mediator/schema'
 import { restoreSession } from './mediator/session'
 import {
-  closeActiveTab,
   closeTabAndRelease,
   openDefinitionTab,
   openSqlInNewTab,
@@ -144,7 +142,6 @@ export function App() {
     const tab = selectActiveTab(state)
     return tab ? tabDisplayName(tab) : ''
   })
-  const openNewTab = useTabStore((state) => state.openNewTab)
   // 選択中のタブの種類だけを購読する（ADR 0022）。定義タブの間はエディタも
   // 結果ペインも出さないが、打鍵のたびにここが描き直っては元も子もない。
   const activeTabKind = useTabStore((state) => selectActiveTab(state)?.kind ?? 'sql')
@@ -253,7 +250,6 @@ export function App() {
   const onRunSelection = useCallback(() => runSelection(runScreen()), [runScreen])
   const onRunScript = useCallback(() => runScript(runScreen()), [runScreen])
   const onRunPlan = useCallback((actual: boolean) => void runPlan(actual, runScreen()), [runScreen])
-  const onSaveQuery = useCallback(() => void saveQueryFromEditor(positionRef.current, ask), [ask])
   const onDisconnect = useCallback(() => {
     void disconnectAndReset(ask).then((disconnected) => {
       if (disconnected) {
@@ -280,154 +276,35 @@ export function App() {
   }, [])
 
   /**
-   * `⇧⌥F`。今のタブの SQL を整形する（ADR 0024）。
+   * コマンドの表（ADR 0035）へ渡す、画面にしか無いもの。
    *
-   * 定義タブでは `EditorPanel` がエディタを描かず、この口も繋がらないため
-   * 何も起きない（ADR 0022）。
+   * 整形はエディタのハンドル越しに行う（ADR 0024）。定義タブでは `EditorPanel` が
+   * エディタを描かず、この口も繋がらないため何も起きない（ADR 0022）。
    */
-  const formatEditor = useCallback(() => {
-    editorRef.current?.formatDocument()
-  }, [])
-
-  /**
-   * `⌘K`。コマンドパレットを開く（ADR 0018）。
-   *
-   * 探せるのは現ウィンドウの接続の中だけであるため、繋がっていないときは開かない。
-   */
-  const openPalette = useCallback(() => {
-    if (useConnectionStore.getState().connection) {
-      setPaletteOpen(true)
-    }
-  }, [])
-
-  /** `⌥⌘S`。CSV の保存ダイアログを開く。 */
-  const openCsvDialog = useCallback(() => setCsvOpen(true), [])
-
-  /**
-   * コマンドパレットに並べる動作（ADR 0018）。
-   *
-   * 中身は既存のキーバインドで呼べるものだけである。パレットのためだけの動作は
-   * 作らない。キーを覚えていなくても辿り着けるようにするのが役目だからである。
-   */
-  const paletteCommands = useMemo<PaletteCommand[]>(
-    () => [
-      { id: 'run', label: '実行（カーソル位置の文）', shortcut: '⌘⏎', run: onRunStatement },
-      { id: 'run-selection', label: '選択範囲のみ実行', shortcut: '⇧⌘⏎', run: onRunSelection },
-      { id: 'run-script', label: 'すべて実行', shortcut: '⌥⌘⏎', run: onRunScript },
-      { id: 'explain', label: '実行計画を生成', shortcut: '⌘E', run: () => onRunPlan(false) },
-      {
-        id: 'explain-actual',
-        label: '実測付きで実行計画を生成',
-        shortcut: '⇧⌘E',
-        run: () => onRunPlan(true),
-      },
-      { id: 'cancel', label: '実行を中止', shortcut: '⌘.', run: cancelExecution },
-      { id: 'format', label: 'SQL を整形', shortcut: '⇧⌥F', run: formatEditor },
-      { id: 'csv', label: '結果を CSV で保存', shortcut: '⌥⌘S', run: openCsvDialog },
-      { id: 'commit', label: 'コミット', shortcut: '⌥⌘C', run: commitTransaction },
-      { id: 'rollback', label: 'ロールバック', shortcut: '⌥⌘R', run: rollbackTransaction },
-      { id: 'save-query', label: 'クエリを保存済みへ追加', shortcut: '⇧⌘S', run: onSaveQuery },
-      { id: 'save-file', label: 'ファイルに保存', shortcut: '⌘S', run: () => void saveActiveTab() },
-      { id: 'open-file', label: 'ファイルを開く', shortcut: '⌘O', run: () => void openSqlFile() },
-      { id: 'new-tab', label: '新しいタブ', shortcut: '⌘T', run: openNewTab },
-      {
-        id: 'new-window',
-        label: '別の接続を新しいウィンドウで開く',
-        shortcut: '⌃⌘N',
-        run: openNewConnectionWindow,
-      },
-      {
-        id: 'source-search',
-        label: 'オブジェクトのソースを検索',
-        shortcut: '⇧⌘F',
-        run: openSourceSearch,
-      },
-      { id: 'sessions', label: 'セッションとロックを開く', shortcut: '', run: openSessions },
-      { id: 'reload-schemas', label: 'スキーマを再読み込み', shortcut: '', run: reloadSchemas },
-      { id: 'settings', label: '設定を開く', shortcut: '', run: openSettings },
-    ],
-    [
-      formatEditor,
-      onRunPlan,
-      onRunScript,
-      onRunSelection,
-      onRunStatement,
-      onSaveQuery,
-      openCsvDialog,
-      openNewTab,
-      openSessions,
-      openSettings,
-      openSourceSearch,
-    ],
+  const commandScreen = useMemo<CommandScreen>(
+    () => ({
+      cursor: () => positionRef.current,
+      ask,
+      formatEditor: () => editorRef.current?.formatDocument(),
+      openPalette: () => setPaletteOpen(true),
+      openCsvDialog: () => setCsvOpen(true),
+    }),
+    [ask],
   )
 
-  // ウィンドウ全体で効くキーバインド（ADR の「キーバインド」節）。
+  /** `⌘K` と同じ裁定と判定を、タイトルバーのボタンからも通す。 */
+  const openPalette = useCallback(
+    () => runCommand(commandById('palette'), commandScreen),
+    [commandScreen],
+  )
+
+  // ウィンドウ全体で効くキーバインド（ADR の「キーバインド」節）。振り分けは
+  // コマンドの表が持つ。
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // エディタが既に処理したものは二重に扱わない。
-      if (event.defaultPrevented || !event.metaKey) {
-        return
-      }
-
-      const key = event.key.toLowerCase()
-
-      const handled = (work: () => void) => {
-        event.preventDefault()
-        work()
-      }
-
-      if (key === 'e') {
-        handled(() => onRunPlan(event.shiftKey))
-        return
-      }
-      if (key === 'c' && event.altKey) {
-        handled(commitTransaction)
-        return
-      }
-      if (key === 'r' && event.altKey) {
-        handled(rollbackTransaction)
-        return
-      }
-      if (key === 's' && event.altKey) {
-        handled(openCsvDialog)
-        return
-      }
-      if (key === 's' && event.shiftKey) {
-        handled(onSaveQuery)
-        return
-      }
-      if (key === 's') {
-        handled(() => void saveActiveTab())
-        return
-      }
-      if (key === 'o') {
-        handled(() => void openSqlFile())
-        return
-      }
-      if (key === 't') {
-        handled(openNewTab)
-        return
-      }
-      if (key === 'w') {
-        handled(closeActiveTab)
-        return
-      }
-      if (key === 'n' && event.ctrlKey) {
-        handled(openNewConnectionWindow)
-        return
-      }
-      if (key === 'f' && event.shiftKey) {
-        handled(openSourceSearch)
-        return
-      }
-      if (key === 'k') {
-        handled(openPalette)
-      }
-    }
-
+    const onKeyDown = (event: KeyboardEvent) => dispatchCommandKey(event, commandScreen)
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onRunPlan, onSaveQuery, openCsvDialog, openNewTab, openPalette, openSourceSearch])
+  }, [commandScreen])
 
   /** 接続できたらフィルタを当ててスキーマの読み込みを始める（ADR 0007）。 */
   const onConnected = useCallback(
@@ -544,9 +421,9 @@ export function App() {
         />
       ) : null}
       {paletteOpen ? (
-        <CommandPalette
+        <TableCommandPalette
+          screen={commandScreen}
           connectionName={connection.name}
-          commands={paletteCommands}
           onUseSql={putSqlIntoEditor}
           onRevealSchemaObject={revealSchemaObject}
           onClose={() => setPaletteOpen(false)}
@@ -618,7 +495,7 @@ export function App() {
                 onRunScript={onRunScript}
                 onExplain={() => onRunPlan(false)}
                 onExplainActual={() => onRunPlan(true)}
-                onSaveCsv={openCsvDialog}
+                onSaveCsv={commandScreen.openCsvDialog}
                 onCancel={cancelExecution}
               />
             </div>

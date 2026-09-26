@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { getDbApi, resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, emptyResponse, queryResponse } from './test/fakeDbApi'
+import { SQLタブを一枚にする } from './test/activeConnection'
 import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingChanges'
 import { resetCloseTabDialog, setCloseTabDialog } from './components/editor/closing'
 import { EDITOR_HEIGHT_DEFAULT, SIDEBAR_WIDTH_DEFAULT } from './components/layout/paneSizes'
@@ -517,6 +518,42 @@ describe('App', () => {
     expect(
       await screen.findByRole('dialog', { name: 'オブジェクトのソース検索' }),
     ).toBeInTheDocument()
+  })
+
+  it('⌘K で開いたパレットからコミットを選ぶとコミットが呼ばれる', async () => {
+    // Arrange: キーとパレットは同じコマンドの表から配られる（ADR 0035）
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    const パレット = await screen.findByRole('dialog', { name: 'コマンドパレット' })
+    await userEvent.click(within(パレット).getByRole('option', { name: /コミット/ }))
+
+    // Assert
+    await waitFor(() => expect(calls.commit).toEqual(['c1']))
+  })
+
+  it('⌘W で選んでいるタブを閉じる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    // 前のテストで書きかけになったタブだと、閉じる前の確認で止まる（ADR 0023）
+    const タブ = SQLタブを一枚にする().id
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+
+    // Assert
+    await waitFor(() =>
+      expect(useTabStore.getState().tabs.some((tab) => tab.id === タブ)).toBe(false),
+    )
   })
 
   it('実行に失敗するとメッセージタブが現れる', async () => {
