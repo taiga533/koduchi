@@ -1,7 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
+import { emit } from '@tauri-apps/api/event'
 import { App } from './App'
+import { OPEN_SETTINGS_EVENT } from './appMenu'
 import { getDbApi, resetDbApi, setDbApi } from './api/db'
 import { createFakeDbApi, emptyResponse, queryResponse } from './test/fakeDbApi'
 import { SQLタブを一枚にする } from './test/activeConnection'
@@ -140,10 +143,15 @@ beforeEach(() => {
   useUiStore.setState({
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
     editorHeight: EDITOR_HEIGHT_DEFAULT,
+    settingsOpen: false,
   })
 })
 
 afterEach(() => {
+  // 描いた画面が外すイベントの口は Tauri の差し替えに依るため、差し替えを
+  // 解く前に画面を片付ける。
+  cleanup()
+  clearMocks()
   resetDbApi()
   resetPendingDialogs()
   resetCloseTabDialog()
@@ -198,6 +206,25 @@ describe('App', () => {
     // Assert
     expect(await screen.findByText('接続を選ぶ')).toBeInTheDocument()
     expect(screen.getByText('1つの接続が1つのウィンドウになります')).toBeInTheDocument()
+  })
+
+  it('メニューバーの「設定…」のイベントが届くと設定画面を開く', async () => {
+    // Arrange
+    mockWindows('main')
+    mockIPC(() => {}, { shouldMockEvents: true })
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    render(<App />)
+    await screen.findByText('接続を選ぶ')
+
+    // Act
+    await waitFor(async () => {
+      await act(() => emit(OPEN_SETTINGS_EVENT))
+      expect(useUiStore.getState().settingsOpen).toBe(true)
+    })
+
+    // Assert
+    expect(await screen.findByRole('heading', { name: '設定' })).toBeInTheDocument()
   })
 
   it('選ぶ画面の新しい接続から作成画面へ進む', async () => {
