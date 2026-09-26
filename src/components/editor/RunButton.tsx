@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
+import { useShortcutLabel } from '../../keybindings/context'
 
 interface RunButtonProps {
   /** 実行中か。真なら「中止」になる。 */
@@ -22,9 +23,9 @@ interface RunButtonProps {
   onRunScript: () => void
   /** 選択範囲があるか。 */
   hasSelection: boolean
-  /** `⌘E`。見積りの実行計画を生成する。 */
+  /** `⌃⌘E`。見積りの実行計画を生成する。 */
   onExplain: () => void
-  /** `⇧⌘E`。実測付きの実行計画を生成する。 */
+  /** `⌃⇧⌘E`。実測付きの実行計画を生成する。 */
   onExplainActual: () => void
   /** `⌥⌘S`。結果を CSV で保存する。 */
   onSaveCsv: () => void
@@ -43,6 +44,15 @@ export function RunButton({
   onSaveCsv,
   onCancel,
 }: RunButtonProps) {
+  // メニューに添えるキーは今の割り当てから引く（ADR 0037）。
+  const shortcut = {
+    run: useShortcutLabel('run'),
+    runSelection: useShortcutLabel('run-selection'),
+    runScript: useShortcutLabel('run-script'),
+    explain: useShortcutLabel('explain'),
+    explainActual: useShortcutLabel('explain-actual'),
+    csv: useShortcutLabel('csv'),
+  }
   const [open, setOpen] = useState(false)
   const container = useRef<HTMLDivElement>(null)
 
@@ -84,28 +94,36 @@ export function RunButton({
     <div ref={container} className="absolute bottom-11px right-12px">
       {open ? (
         <div className="absolute bottom-40px right-0 w-282px p-5px rounded-9px bg-panel border border-line shadow-[0_14px_30px_-10px_rgba(24,28,38,.36)] text-12.5px">
-          <MenuItem shortcut="⌘⏎" onClick={() => pick(onRun)}>
+          <MenuItem shortcut={shortcut.run} onClick={() => pick(onRun)}>
             実行
           </MenuItem>
-          <MenuItem shortcut="⇧⌘⏎" disabled={!hasSelection} onClick={() => pick(onRunSelection)}>
+          <MenuItem
+            shortcut={shortcut.runSelection}
+            disabled={!hasSelection}
+            onClick={() => pick(onRunSelection)}
+          >
             選択範囲のみ実行
           </MenuItem>
           <MenuItem
-            shortcut="⌥⌘⏎"
+            shortcut={shortcut.runScript}
             note={hasSelection ? '選択範囲' : undefined}
             onClick={() => pick(onRunScript)}
           >
             すべて実行
           </MenuItem>
           <Divider />
-          <MenuItem shortcut="⌘E" note="EXPLAIN" onClick={() => pick(onExplain)}>
+          <MenuItem shortcut={shortcut.explain} note="EXPLAIN" onClick={() => pick(onExplain)}>
             実行計画を生成
           </MenuItem>
-          <MenuItem shortcut="⇧⌘E" note="ANALYZE" onClick={() => pick(onExplainActual)}>
+          <MenuItem
+            shortcut={shortcut.explainActual}
+            note="ANALYZE"
+            onClick={() => pick(onExplainActual)}
+          >
             実測付きで生成
           </MenuItem>
           <Divider />
-          <MenuItem shortcut="⌥⌘S" onClick={() => pick(onSaveCsv)}>
+          <MenuItem shortcut={shortcut.csv} onClick={() => pick(onSaveCsv)}>
             結果を CSV で保存
           </MenuItem>
         </div>

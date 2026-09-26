@@ -1,9 +1,9 @@
 /**
- * 設定画面（ステータスバー右の ⚙︎）。
+ * 設定画面（メニューバーの「設定…」、ADR 0036）。
  *
  * 項目は ADR の「設定画面」節どおり、テーマ 3 択 / エディタの文字の大きさ 4 択 /
  * Oracle Instant Client のパス（未検出時のみ）/ 履歴の一括削除 / 罫線の有無 /
- * 行の高さ の 6 つに限る。
+ * 行の高さ / キー割り当て（ADR 0037）の 7 つに限る。
  */
 
 import { useState } from 'react'
@@ -13,6 +13,8 @@ import { useHistoryStore } from '../../stores/history'
 import { useUiStore } from '../../stores/ui'
 import { getDbApi } from '../../api/db'
 import { useEscapeKey } from '../../input/useEscapeKey'
+import type { BindableCommand } from '../../keybindings/bindings'
+import { KeybindingSettings } from './KeybindingSettings'
 
 /** テーマの選択肢。 */
 const THEMES: { id: ThemePreference; label: string }[] = [
@@ -45,9 +47,11 @@ interface SettingsPanelProps {
   clientUnavailable: boolean
   /** 設定画面を閉じる。 */
   onClose: () => void
+  /** キーを割り当て直せる操作（ADR 0037）。コマンドの表の行である。 */
+  commands: readonly BindableCommand[]
 }
 
-export function SettingsPanel({ clientUnavailable, onClose }: SettingsPanelProps) {
+export function SettingsPanel({ clientUnavailable, onClose, commands }: SettingsPanelProps) {
   // `esc` で閉じる。打鍵は器ではなく `window` で受ける（ADR 0031）。
   useEscapeKey(onClose)
 
@@ -160,6 +164,10 @@ export function SettingsPanel({ clientUnavailable, onClose }: SettingsPanelProps
             </button>
             {historyMessage ? <p className="m-0 text-11px text-fg4">{historyMessage}</p> : null}
           </div>
+        </Row>
+
+        <Row label="キー割り当て">
+          <KeybindingSettings commands={commands} />
         </Row>
       </section>
     </div>

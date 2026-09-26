@@ -7,7 +7,7 @@
  *
  * 実行ログはウィンドウに 1 本だけ持ち、メッセージタブに時系列で出す。
  *
- * 実行はすべて履歴に記録する（ADR 0005）。ただし `⌘E` / `⇧⌘E` による実行計画の
+ * 実行はすべて履歴に記録する（ADR 0005）。ただし `⌃⌘E` / `⌃⇧⌘E` による実行計画の
  * 生成は記録しない。バインド変数へ与えた値も記録しない。値には個人情報が入りうる
  * ためである（ADR の「バインド変数」節）。
  */
@@ -72,9 +72,9 @@ export interface ScriptProgress {
 
 /** 実行計画の取り方。 */
 export type PlanMode =
-  /** `⌘E`。`EXPLAIN PLAN FOR` による見積り。SQL は実行しない。 */
+  /** `⌃⌘E`。`EXPLAIN PLAN FOR` による見積り。SQL は実行しない。 */
   | 'estimate'
-  /** `⇧⌘E`。実際に実行してから `DBMS_XPLAN.DISPLAY_CURSOR` で取る。 */
+  /** `⌃⇧⌘E`。実際に実行してから `DBMS_XPLAN.DISPLAY_CURSOR` で取る。 */
   | 'actual'
 
 /** タブ 1 枚ぶんの実行計画。 */
@@ -220,7 +220,7 @@ interface ExecutionState {
     connectionName: string,
     binds: Bind[],
   ) => Promise<void>
-  /** 実行計画を取る（`⌘E` / `⇧⌘E`）。履歴には記録しない。 */
+  /** 実行計画を取る（`⌃⌘E` / `⌃⇧⌘E`）。履歴には記録しない。 */
   generatePlan: (
     connectionId: string,
     tabId: string,
@@ -237,12 +237,12 @@ interface ExecutionState {
    */
   cancel: (connectionId: string, tabId: string) => Promise<void>
   /**
-   * トランザクションをコミットする（`⌥⌘C`、ADR 0012）。
+   * トランザクションをコミットする（`⌃⌘C`、ADR 0012）。
    *
    * 結果はメッセージタブのログへ 1 行として残す。
    */
   commit: (connectionId: string) => Promise<void>
-  /** トランザクションをロールバックする（`⌥⌘R`、ADR 0012）。 */
+  /** トランザクションをロールバックする（`⌃⌘R`、ADR 0012）。 */
   rollback: (connectionId: string) => Promise<void>
   /**
    * タブの結果セットを手放す。タブを閉じたときに呼ぶ。

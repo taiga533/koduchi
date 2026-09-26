@@ -11,13 +11,13 @@
  *
  * 実行（`⌘⏎` / `⇧⌘⏎` / `⌥⌘⏎`）と中止（`⌘.`）、検索・置換（`⌘F` / `⌘G` /
  * `⇧⌘G` / `⌥⌘F`）、整形（`⇧⌥F`）はエディタの中でしか意味を持たないため、
- * ウィンドウ全体のコマンドの表（`src/mediator/commands.ts`）ではなく CodeMirror の
- * keymap に置く。検索の中身は
+ * ウィンドウ全体の振り分けではなく CodeMirror の keymap に置く。検索の中身は
  * `search.tsx` にある。
  *
- * 整形（ADR 0024）だけは keymap へ**キーの名前で**登録できない。macOS では
- * `⌥` を伴う打鍵が文字そのものを変えるためで、理由と判定は `formatting.ts` の
- * `isFormatShortcut` にある。keymap の `any` から打鍵を直に見て拾う。
+ * 実行・中止・整形のキーは利用者が割り当て直せる（ADR 0037）。keymap へ
+ * キーの名前で登録せず、`any` から打鍵を直に見て `editorKeys.ts` の
+ * `findEditorAction` で当てる。割り当て直しに追随するためと、`⌥` を伴う打鍵が
+ * 文字そのものを変える macOS で整形の `⇧⌥F` を拾うため（ADR 0024）である。
  *
  * 日本語入力（IME）の変換中はエディタの外へ何も伝えない。変換中に React の
  * 再描画を起こすと、CodeMirror が編集領域の DOM を組み直し、その拍子に
@@ -47,7 +47,10 @@ import { sql } from '@codemirror/lang-sql'
 import type { IdentifierCase } from '../../types/db'
 import type { Catalog } from './catalog'
 import { koduchiOracleDialect } from './dialect'
-import { formatEdit, isFormatShortcut } from './formatting'
+import type { Chord } from '../../keybindings/chord'
+import type { EditorAction } from './editorKeys'
+import { findEditorAction } from './editorKeys'
+import { formatEdit } from './formatting'
 import { withLeadingSpace } from './insertion'
 import { sqlCompletionSource } from './sqlCompletion'
 import { koduchiEditorTheme } from './theme'
@@ -156,6 +159,12 @@ interface SqlEditorProps {
    * まとめてあるためである（ADR README「機能スコープ」）。
    */
   onFormatFailed: (message: string) => void
+  /**
+   * 操作の `id` から今のキー（ADR 0037）。実行・中止・整形の行だけを使う。
+   *
+   * エディタを作り直さずに差し替わる。作り直すと取り消し履歴とカーソルが飛ぶ。
+   */
+  keybindings: ReadonlyMap<string, Chord>
 }
 
 export function SqlEditor({
@@ -170,6 +179,7 @@ export function SqlEditor({
   onRunScript,
   onCancel,
   onFormatFailed,
+  keybindings,
 }: SqlEditorProps) {
   const container = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
@@ -204,6 +214,10 @@ export function SqlEditor({
     onFormatFailed,
   }
 
+  // keymap は作り直さずに、打鍵の時点の割り当てを読む。
+  const chords = useRef(keybindings)
+  chords.current = keybindings
+
   /**
    * 整形を本文へ当てる（`⇧⌥F`、ADR 0024）。
    *
@@ -237,6 +251,26 @@ export function SqlEditor({
       scrollIntoView: true,
     })
   })
+
+  /**
+   * エディタの操作を呼ぶ。
+   *
+   * @param action 当たった操作
+   */
+  const runEditorAction = (action: EditorAction) => {
+    switch (action) {
+      case 'run':
+        return handlers.current.onRunStatement()
+      case 'run-selection':
+        return handlers.current.onRunSelection()
+      case 'run-script':
+        return handlers.current.onRunScript()
+      case 'cancel':
+        return handlers.current.onCancel()
+      case 'format':
+        return runFormat.current()
+    }
+  }
 
   useImperativeHandle(
     ref,
@@ -291,45 +325,14 @@ export function SqlEditor({
         EditorView.contentAttributes.of(CONTENT_ATTRIBUTES),
         keymap.of([
           {
-            key: 'Mod-Enter',
-            preventDefault: true,
-            run: () => {
-              handlers.current.onRunStatement()
-              return true
-            },
-          },
-          {
-            key: 'Shift-Mod-Enter',
-            preventDefault: true,
-            run: () => {
-              handlers.current.onRunSelection()
-              return true
-            },
-          },
-          {
-            key: 'Alt-Mod-Enter',
-            preventDefault: true,
-            run: () => {
-              handlers.current.onRunScript()
-              return true
-            },
-          },
-          {
-            key: 'Mod-.',
-            preventDefault: true,
-            run: () => {
-              handlers.current.onCancel()
-              return true
-            },
-          },
-          {
-            // `⇧⌥F`（整形、ADR 0024）。キーの名前では登録できないため、打鍵を
-            // 直に見る。理由は `formatting.ts` の `isFormatShortcut` にある。
+            // 実行・中止・整形（ADR 0037）。割り当て直せるため名前では登録しない。
+            // `defaultKeymap` より前に置き、`⌘⏎` の行の挿入などより先に取る。
             any: (_view, event) => {
-              if (!isFormatShortcut(event)) {
+              const action = findEditorAction(event, chords.current)
+              if (action === null) {
                 return false
               }
-              runFormat.current()
+              runEditorAction(action)
               return true
             },
           },

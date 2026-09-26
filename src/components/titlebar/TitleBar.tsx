@@ -5,7 +5,7 @@
  * ずらしている。ここではその分だけ左端を空け、42px の帯に接続名・検索ボックス・
  * Ask AI ボタンを並べる。
  *
- * 検索ボックスはコマンドパレット（`⌘K`、ADR 0018）の入口である。押すとパレットが
+ * 検索ボックスはコマンドパレット（`⇧⌘P`、ADR 0018）の入口である。押すとパレットが
  * 開く。接続していないときは押せない。Ask AI は器のみで、操作はできない
  * （ADR の機能スコープ）。
  *
@@ -22,9 +22,10 @@ import { Search, Sparkles } from 'lucide-react'
 import { useConnectionStore } from '../../stores/connection'
 import { connectionColorVar } from '../../theme/connectionColors'
 import { CONNECTION_COLOR_BAR_HEIGHT, TITLE_BAR_HEIGHT, titleBarContentLeft } from './geometry'
+import { useShortcutLabel } from '../../keybindings/context'
 
 interface TitleBarProps {
-  /** コマンドパレットを開く（`⌘K`）。未接続の画面では渡さない。 */
+  /** コマンドパレットを開く（`⇧⌘P`）。未接続の画面では渡さない。 */
   onOpenPalette?: () => void
 }
 
@@ -32,6 +33,7 @@ export function TitleBar({ onOpenPalette }: TitleBarProps) {
   const connection = useConnectionStore((state) => state.connection)
   const status = useConnectionStore((state) => state.status)
   const 押せる = connection !== null && onOpenPalette !== undefined
+  const paletteKey = useShortcutLabel('palette')
 
   const 接続の色 = connectionColorVar(connection?.color ?? 'none')
 
@@ -87,7 +89,9 @@ export function TitleBar({ onOpenPalette }: TitleBarProps) {
           <span className="flex-1 text-12px text-fg4">
             {connection ? 'テーブル・クエリ・コマンドを検索' : '接続すると検索できます'}
           </span>
-          {connection ? <span className="text-10.5px text-fg5">⌘K</span> : null}
+          {connection && paletteKey !== '' ? (
+            <span className="text-10.5px text-fg5">{paletteKey}</span>
+          ) : null}
         </button>
       </div>
 

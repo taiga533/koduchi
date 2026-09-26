@@ -20,6 +20,7 @@ import {
 } from '../components/layout/paneSizes'
 import type { Appearance, EditorFontSize, RowHeight, ThemePreference } from '../theme/appearance'
 import { applyAppearance, defaultAppearance, parseEditorFontSize } from '../theme/appearance'
+import type { KeybindingOverrides } from '../keybindings/bindings'
 import type { AppSettings, CsvOptions } from '../types/db'
 import { defaultCsvOptions } from '../types/db'
 
@@ -55,6 +56,13 @@ interface UiState {
   editorHeight: number
   appearance: Appearance
   csvOptions: CsvOptions
+  /**
+   * 利用者が割り当て直したキー（ADR 0037）。既定との差分だけを持つ。
+   *
+   * 解決（既定と重ね、重なりを除く）はここではしない。既定はコマンドの表
+   * （仲介者）が持ち、ストアは仲介者を import しないためである。
+   */
+  keybindings: KeybindingOverrides
   /** 設定画面を開いているか。 */
   settingsOpen: boolean
   /**
@@ -86,6 +94,8 @@ interface UiState {
   setRowHeight: (rowHeight: RowHeight) => void
   setEditorFontSize: (editorFontSize: EditorFontSize) => void
   setCsvOptions: (options: CsvOptions) => void
+  /** キーの割り当ての差分を置き換えて保存する（ADR 0037）。 */
+  setKeybindings: (keybindings: KeybindingOverrides) => void
   /** 結果テーブルの列幅を覚える。 */
   setResultColumnWidth: (tabId: string, columnName: string, width: number) => void
   /** タブぶんの列幅を忘れる。タブを閉じたときに呼ぶ。 */
@@ -132,13 +142,16 @@ function reflect(appearance: Appearance): void {
   applyAppearance(document.documentElement, appearance)
 }
 
+/** `settings.toml` へ書く値。 */
+type SavedSettings = Pick<UiState, 'appearance' | 'csvOptions' | 'keybindings'>
+
 /**
  * 保存する形へ変換する。
  *
  * `theme` / `rowHeight` / `editorFontSize` は Rust 側では文字列として扱う。値の
  * 意味を知っているのはフロントエンドだけである。
  */
-function toSettings(appearance: Appearance, csv: CsvOptions): AppSettings {
+function toSettings({ appearance, csvOptions: csv, keybindings }: SavedSettings): AppSettings {
   return {
     appearance: {
       theme: appearance.theme,
@@ -147,6 +160,7 @@ function toSettings(appearance: Appearance, csv: CsvOptions): AppSettings {
       editorFontSize: appearance.editorFontSize,
     },
     csv,
+    keybindings: { ...keybindings },
   }
 }
 
@@ -156,9 +170,9 @@ function toSettings(appearance: Appearance, csv: CsvOptions): AppSettings {
  * 書き込みに失敗しても画面の見た目は既に変わっている。設定の保存に失敗したことで
  * 操作を巻き戻すほうが分かりにくいため、失敗は握りつぶす。
  */
-function persist(appearance: Appearance, csv: CsvOptions): void {
+function persist(settings: SavedSettings): void {
   void getDbApi()
-    .saveAppSettings(toSettings(appearance, csv))
+    .saveAppSettings(toSettings(settings))
     .catch(() => {})
 }
 
@@ -171,6 +185,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   editorHeight: EDITOR_HEIGHT_DEFAULT,
   appearance: defaultAppearance,
   csvOptions: defaultCsvOptions,
+  keybindings: {},
   settingsOpen: false,
   sessionsOpen: false,
   sourceSearchOpen: false,
@@ -196,7 +211,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => {
       const appearance = { ...state.appearance, theme }
       reflect(appearance)
-      persist(appearance, state.csvOptions)
+      persist({ ...state, appearance })
       return { appearance }
     }),
 
@@ -204,7 +219,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => {
       const appearance = { ...state.appearance, gridLines }
       reflect(appearance)
-      persist(appearance, state.csvOptions)
+      persist({ ...state, appearance })
       return { appearance }
     }),
 
@@ -212,7 +227,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => {
       const appearance = { ...state.appearance, rowHeight }
       reflect(appearance)
-      persist(appearance, state.csvOptions)
+      persist({ ...state, appearance })
       return { appearance }
     }),
 
@@ -220,14 +235,20 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => {
       const appearance = { ...state.appearance, editorFontSize }
       reflect(appearance)
-      persist(appearance, state.csvOptions)
+      persist({ ...state, appearance })
       return { appearance }
     }),
 
   setCsvOptions: (csvOptions) =>
     set((state) => {
-      persist(state.appearance, csvOptions)
+      persist({ ...state, csvOptions })
       return { csvOptions }
+    }),
+
+  setKeybindings: (keybindings) =>
+    set((state) => {
+      persist({ ...state, keybindings })
+      return { keybindings }
     }),
 
   setResultColumnWidth: (tabId, columnName, width) =>
@@ -290,7 +311,7 @@ export const useUiStore = create<UiState>((set, get) => ({
         editorFontSize: parseEditorFontSize(settings.appearance.editorFontSize),
       }
       reflect(appearance)
-      set({ appearance, csvOptions: settings.csv })
+      set({ appearance, csvOptions: settings.csv, keybindings: settings.keybindings ?? {} })
     } catch {
       // 設定が読めなくても既定値で動く。起動を止める理由にはしない。
       reflect(get().appearance)

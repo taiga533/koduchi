@@ -22,6 +22,7 @@ beforeEach(() => {
   useUiStore.setState({
     appearance: defaultAppearance,
     csvOptions: defaultCsvOptions,
+    keybindings: {},
     settingsOpen: false,
     sidebarSegment: 'schema',
     resultTab: 'result',
@@ -116,6 +117,41 @@ describe('useUiStore', () => {
     expect(calls.saveAppSettings[0].csv).toEqual(options)
   })
 
+  it('キーの割り当ての差分を置き換えると、他の設定と一緒に保存する', () => {
+    // Arrange
+    useUiStore.getState().setTheme('dark')
+
+    // Act
+    useUiStore.getState().setKeybindings({ palette: 'cmd+k', commit: '' })
+
+    // Assert
+    expect(useUiStore.getState().keybindings).toEqual({ palette: 'cmd+k', commit: '' })
+    expect(calls.saveAppSettings[1].keybindings).toEqual({ palette: 'cmd+k', commit: '' })
+    expect(calls.saveAppSettings[1].appearance.theme).toBe('dark')
+  })
+
+  it('見た目を変えてもキーの割り当ての差分を書き落とさない', () => {
+    // Arrange
+    useUiStore.getState().setKeybindings({ palette: 'cmd+k' })
+
+    // Act
+    useUiStore.getState().setRowHeight('comfortable')
+
+    // Assert
+    expect(calls.saveAppSettings[1].keybindings).toEqual({ palette: 'cmd+k' })
+  })
+
+  it('キーの割り当てを持たない設定を読むと差分は空になる', async () => {
+    // Arrange
+    useUiStore.setState({ keybindings: { palette: 'cmd+k' } })
+
+    // Act
+    await useUiStore.getState().loadSettings()
+
+    // Assert
+    expect(useUiStore.getState().keybindings).toEqual({})
+  })
+
   it('保存済みの設定を読み込むと反映される', async () => {
     // Arrange
     setDbApi(
@@ -128,6 +164,7 @@ describe('useUiStore', () => {
             editorFontSize: 'large',
           },
           csv: { delimiter: 'semicolon', encoding: 'shiftJis', nullText: 'backslash' },
+          keybindings: { palette: 'cmd+k' },
         },
       }).api,
     )
@@ -145,6 +182,7 @@ describe('useUiStore', () => {
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
     expect(document.documentElement.getAttribute('data-editor-font-size')).toBe('large')
     expect(useUiStore.getState().csvOptions.encoding).toBe('shiftJis')
+    expect(useUiStore.getState().keybindings).toEqual({ palette: 'cmd+k' })
   })
 
   it('文字の大きさを持たない古い設定を読んでも既定へ落ちて他の項目は保たれる', async () => {

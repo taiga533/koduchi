@@ -1,11 +1,14 @@
 import { useMemo } from 'react'
 import type { Command } from '../../mediator/commands'
+import type { ResolvedKeybindings } from '../../keybindings/bindings'
 import { CommandPalette } from './CommandPalette'
 import { paletteCommands } from './commandEntries'
 
 interface TableCommandPaletteProps {
   /** コマンドの表（ADR 0035）。 */
   commands: readonly Command[]
+  /** 今の割り当て（ADR 0037）。キーの表記に使う。 */
+  keybindings: ResolvedKeybindings
   /** 選ばれたコマンドを実行する。裁定は呼び出し側（仲介者）が持つ。 */
   onRunCommand: (command: Command) => void
   /** 接続の表示名。履歴を現ウィンドウの接続に絞るのに使う。 */
@@ -28,9 +31,13 @@ interface TableCommandPaletteProps {
  */
 export function TableCommandPalette({
   commands,
+  keybindings,
   onRunCommand,
   ...props
 }: TableCommandPaletteProps) {
-  const items = useMemo(() => paletteCommands(commands, onRunCommand), [commands, onRunCommand])
+  const items = useMemo(
+    () => paletteCommands(commands, keybindings, onRunCommand),
+    [commands, keybindings, onRunCommand],
+  )
   return <CommandPalette commands={items} {...props} />
 }

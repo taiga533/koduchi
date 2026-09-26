@@ -1,23 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  formatEdit,
-  indentContinuationLines,
-  isFormatShortcut,
-  selectionIndent,
-  unchangedEnds,
-} from './formatting'
-
-/** 打鍵の形。`isFormatShortcut` が見る項目だけを持つ。 */
-function 打鍵(overrides: Partial<Parameters<typeof isFormatShortcut>[0]> = {}) {
-  return {
-    code: 'KeyF',
-    altKey: true,
-    shiftKey: true,
-    ctrlKey: false,
-    metaKey: false,
-    ...overrides,
-  }
-}
+import { formatEdit, indentContinuationLines, selectionIndent, unchangedEnds } from './formatting'
 
 /** 書き換えを本文へ当てた結果を返す。 */
 function 当てる(doc: string, from: number, to: number): string {
@@ -28,86 +10,6 @@ function 当てる(doc: string, from: number, to: number): string {
   const { edit } = outcome
   return doc.slice(0, edit.from) + edit.insert + doc.slice(edit.to)
 }
-
-describe('isFormatShortcut', () => {
-  it('⇧⌥F を整形の打鍵と見なす', () => {
-    // Arrange
-    const event = 打鍵()
-
-    // Act
-    const 整形か = isFormatShortcut(event)
-
-    // Assert
-    expect(整形か).toBe(true)
-  })
-
-  it('配列の違いで文字が変わっても、物理キーで拾う', () => {
-    // Arrange
-    // macOS では `⇧⌥F` が `Ï` になる。`key` を見ていれば拾えない打鍵である。
-    const event = { ...打鍵(), key: 'Ï' }
-
-    // Act
-    const 整形か = isFormatShortcut(event)
-
-    // Assert
-    expect(整形か).toBe(true)
-  })
-
-  it('⌘ が付いていれば整形の打鍵と見なさない（⌥⌘F は置換）', () => {
-    // Arrange
-    const event = 打鍵({ metaKey: true })
-
-    // Act
-    const 整形か = isFormatShortcut(event)
-
-    // Assert
-    expect(整形か).toBe(false)
-  })
-
-  it('⌃ が付いていれば整形の打鍵と見なさない', () => {
-    // Arrange
-    const event = 打鍵({ ctrlKey: true })
-
-    // Act
-    const 整形か = isFormatShortcut(event)
-
-    // Assert
-    expect(整形か).toBe(false)
-  })
-
-  it('⇧ が無ければ整形の打鍵と見なさない', () => {
-    // Arrange
-    const event = 打鍵({ shiftKey: false })
-
-    // Act
-    const 整形か = isFormatShortcut(event)
-
-    // Assert
-    expect(整形か).toBe(false)
-  })
-
-  it('⌥ が無ければ整形の打鍵と見なさない', () => {
-    // Arrange
-    const event = 打鍵({ altKey: false })
-
-    // Act
-    const 整形か = isFormatShortcut(event)
-
-    // Assert
-    expect(整形か).toBe(false)
-  })
-
-  it('別のキーなら整形の打鍵と見なさない', () => {
-    // Arrange
-    const event = 打鍵({ code: 'KeyG' })
-
-    // Act
-    const 整形か = isFormatShortcut(event)
-
-    // Assert
-    expect(整形か).toBe(false)
-  })
-})
 
 describe('selectionIndent', () => {
   it('行頭から選択の始まりまでが空白だけなら、その空白を下げ幅にする', () => {

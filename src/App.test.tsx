@@ -18,6 +18,7 @@ import { useSchemaStore } from './stores/schema'
 import type { ExecuteResponse, SchemaFilter, SchemaNode } from './types/db'
 import { selectActiveSqlTab, selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
+import { defaultCsvOptions } from './types/db'
 
 /** 2 行 2 列の問い合わせ結果。 */
 const 二行の結果 = queryResponse(
@@ -143,6 +144,7 @@ beforeEach(() => {
   useUiStore.setState({
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
     editorHeight: EDITOR_HEIGHT_DEFAULT,
+    keybindings: {},
     settingsOpen: false,
   })
 })
@@ -521,7 +523,7 @@ describe('App', () => {
     render(<App />)
     await screen.findByText('SQL を実行すると、ここに結果が出ます')
     useTabStore.getState().updateContent(選択中のタブ(), 'select * from users where id = :id')
-    await userEvent.keyboard('{Meta>}e{/Meta}')
+    await userEvent.keyboard('{Control>}{Meta>}e{/Meta}{/Control}')
     await screen.findByText('バインド変数の値')
 
     // Act
@@ -550,7 +552,7 @@ describe('App', () => {
     ).toBeInTheDocument()
   })
 
-  it('⌘K で開いたパレットからコミットを選ぶとコミットが呼ばれる', async () => {
+  it('⇧⌘P で開いたパレットからコミットを選ぶとコミットが呼ばれる', async () => {
     // Arrange: キーとパレットは同じコマンドの表から配られる（ADR 0035）
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
@@ -559,7 +561,7 @@ describe('App', () => {
     await screen.findByText('SQL を実行すると、ここに結果が出ます')
 
     // Act
-    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    fireEvent.keyDown(window, { key: 'P', metaKey: true, shiftKey: true })
     const パレット = await screen.findByRole('dialog', { name: 'コマンドパレット' })
     await userEvent.click(within(パレット).getByRole('option', { name: /コミット/ }))
 
@@ -567,7 +569,7 @@ describe('App', () => {
     await waitFor(() => expect(calls.commit).toEqual(['c1']))
   })
 
-  it('⇧⌘S で名前を尋ね、決めた名前で保存済みへ積む', async () => {
+  it('⌃⌘S で名前を尋ね、決めた名前で保存済みへ積む', async () => {
     // Arrange: 尋ね事は仲介者が await し、画面が描いて答えを返す（ADR 0035）
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
@@ -578,7 +580,7 @@ describe('App', () => {
     const user = userEvent.setup()
 
     // Act
-    fireEvent.keyDown(window, { key: 'S', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(window, { key: 's', metaKey: true, ctrlKey: true })
     const 名前 = await screen.findByLabelText('名前')
     await user.clear(名前)
     await user.type(名前, '売上集計')
@@ -901,7 +903,7 @@ describe('App', () => {
     })
   })
 
-  it('⌥⌘C でコミットが呼ばれる', async () => {
+  it('⌃⌘C でコミットが呼ばれる', async () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
@@ -910,13 +912,13 @@ describe('App', () => {
     await screen.findByText('SQL を実行すると、ここに結果が出ます')
 
     // Act
-    fireEvent.keyDown(window, { key: 'c', metaKey: true, altKey: true })
+    fireEvent.keyDown(window, { key: 'c', metaKey: true, ctrlKey: true })
 
     // Assert
     await waitFor(() => expect(calls.commit).toEqual(['c1']))
   })
 
-  it('⌥⌘R でロールバックが呼ばれる', async () => {
+  it('⌃⌘R でロールバックが呼ばれる', async () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
     setDbApi(api)
@@ -925,10 +927,43 @@ describe('App', () => {
     await screen.findByText('SQL を実行すると、ここに結果が出ます')
 
     // Act
-    fireEvent.keyDown(window, { key: 'r', metaKey: true, altKey: true })
+    fireEvent.keyDown(window, { key: 'r', metaKey: true, ctrlKey: true })
 
     // Assert
     await waitFor(() => expect(calls.rollback).toEqual(['c1']))
+  })
+
+  it('設定で割り当て直したキーでコミットが呼ばれ、元のキーでは呼ばれない', async () => {
+    // Arrange
+    // settings.toml に差分が書いてある。起動時の読み込みから効くことを確かめる
+    const { api, calls } = createFakeDbApi({
+      appSettings: {
+        appearance: {
+          theme: 'system',
+          gridLines: true,
+          rowHeight: 'compact',
+          editorFontSize: 'medium',
+        },
+        csv: defaultCsvOptions,
+        keybindings: { commit: 'cmd+j' },
+      },
+    })
+    setDbApi(api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+    await waitFor(() => expect(useUiStore.getState().keybindings).toEqual({ commit: 'cmd+j' }))
+
+    // Act
+    fireEvent.keyDown(window, { key: 'c', metaKey: true, ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'j', metaKey: true })
+
+    // Assert: ⌃⌘C は既定のキーであり、割り当て直した後は効かない
+    await waitFor(() => expect(calls.commit).toEqual(['c1']))
+    expect(screen.getByRole('button', { name: 'コミット' })).toHaveAttribute(
+      'title',
+      'コミット（⌘J）',
+    )
   })
 
   it('ステータスバーのコミットを押すとコミットが呼ばれる', async () => {

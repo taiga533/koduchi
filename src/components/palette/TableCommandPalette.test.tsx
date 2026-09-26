@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { resetDbApi, setDbApi } from '../../api/db'
 import type { Command } from '../../mediator/commands'
 import { createFakeDbApi } from '../../test/fakeDbApi'
+import { resolveKeybindings } from '../../keybindings/bindings'
 import { TableCommandPalette } from './TableCommandPalette'
 
 /** 表の代わりに渡す 2 行。1 行はパレットに並べない。 */
@@ -11,14 +12,16 @@ const 表: Command[] = [
   {
     id: 'commit',
     label: 'コミット',
-    key: { owner: 'window', chord: { key: 'c', alt: true } },
+    scope: 'window',
+    defaultKey: { key: 'c', ctrl: true, meta: true },
     inPalette: true,
     run: () => {},
   },
   {
     id: 'close-tab',
     label: 'タブを閉じる',
-    key: { owner: 'window', chord: { key: 'w' } },
+    scope: 'window',
+    defaultKey: { key: 'w', meta: true },
     inPalette: false,
     run: () => {},
   },
@@ -39,6 +42,7 @@ describe('TableCommandPalette', () => {
     render(
       <TableCommandPalette
         commands={表}
+        keybindings={resolveKeybindings(表, {})}
         onRunCommand={(command) => {
           報告.push(command.id)
         }}

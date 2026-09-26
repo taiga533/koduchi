@@ -750,6 +750,11 @@ export interface AppearanceSettings {
 export interface AppSettings {
   appearance: AppearanceSettings
   csv: CsvOptions
+  /**
+   * 利用者が割り当て直したキー（ADR 0037）。コマンドの `id` から保存の書き方
+   * （`cmd+shift+p`）。空文字は「外した」。既定との差分だけを持つ。
+   */
+  keybindings?: Record<string, string>
 }
 
 /**

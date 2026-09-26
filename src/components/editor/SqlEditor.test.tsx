@@ -6,6 +6,15 @@ import type { SchemaNode, TableColumn } from '../../types/db'
 import { buildCatalog, EMPTY_CATALOG } from './catalog'
 import { SqlEditor, type EditorPosition, type SqlEditorHandle } from './SqlEditor'
 
+/** 既定の割り当てのうち、エディタが振り分ける行（ADR 0037）。 */
+const 既定のキー = new Map([
+  ['run', { key: 'enter', meta: true }],
+  ['run-selection', { key: 'enter', meta: true, shift: true }],
+  ['run-script', { key: 'enter', meta: true, alt: true }],
+  ['cancel', { key: '.', meta: true }],
+  ['format', { key: 'f', alt: true, shift: true }],
+])
+
 /** 既定の props でエディタを描き、通知された内容を集めて返す。 */
 function 描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {}) {
   const 通知: { content: string[]; position: EditorPosition[] } = { content: [], position: [] }
@@ -20,6 +29,7 @@ function 描く(overrides: Partial<React.ComponentProps<typeof SqlEditor>> = {})
     onRunScript: () => {},
     onCancel: () => {},
     onFormatFailed: () => {},
+    keybindings: 既定のキー,
     ...overrides,
   }
   const { rerender } = render(<SqlEditor {...props} />)
@@ -141,6 +151,25 @@ describe('SqlEditor', () => {
 
     // Assert
     expect(呼ばれた).toEqual(['script'])
+  })
+
+  it('実行のキーを割り当て直すと新しいキーで呼ばれ、元のキーでは呼ばれない', async () => {
+    // Arrange
+    const 呼ばれた: string[] = []
+    const { 差し替える } = 描く({
+      value: 'select 1 from dual',
+      onRunStatement: () => 呼ばれた.push('run'),
+      keybindings: new Map([['run', { key: 'enter', ctrl: true }]]),
+    })
+    差し替える('select 1 from dual')
+
+    // Act
+    await userEvent.click(編集領域())
+    await userEvent.keyboard('{Meta>}{Enter}{/Meta}')
+    await userEvent.keyboard('{Control>}{Enter}{/Control}')
+
+    // Assert
+    expect(呼ばれた).toEqual(['run'])
   })
 
   it('カタログの表名が補完の候補に出る', async () => {
@@ -292,6 +321,7 @@ function 口付きで描く(overrides: Partial<React.ComponentProps<typeof SqlEd
       onRunScript={() => {}}
       onCancel={() => {}}
       onFormatFailed={() => {}}
+      keybindings={既定のキー}
       {...overrides}
     />,
   )

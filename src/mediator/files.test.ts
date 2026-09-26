@@ -5,7 +5,7 @@ import { createFakeDbApi } from '../test/fakeDbApi'
 import { createFakeDialogApi } from '../test/fakeDialogApi'
 import { SQLタブを一枚にする } from '../test/activeConnection'
 import { selectActiveSqlTab, useTabStore } from '../stores/tab'
-import { openSqlFile, saveActiveTab } from './files'
+import { openSqlFile, saveActiveTab, saveActiveTabAs } from './files'
 
 afterEach(() => {
   resetDbApi()
@@ -60,6 +60,74 @@ describe('saveActiveTab', () => {
     // Assert
     expect(calls.writeTextFile).toEqual([])
     expect(selectActiveSqlTab(useTabStore.getState())?.dirty).toBe(true)
+  })
+})
+
+describe('saveActiveTabAs', () => {
+  it('保存先が決まっていても尋ね、選んだファイルへ書いて保存先を移す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const dialog = createFakeDialogApi({ savePath: '/tmp/b.sql' })
+    setDialogApi(dialog.api)
+    SQLタブを一枚にする({ filePath: '/tmp/a.sql', content: 'select 1 from dual', dirty: true })
+
+    // Act
+    await saveActiveTabAs()
+
+    // Assert
+    expect(dialog.calls.save[0].defaultPath).toBe('/tmp/a.sql')
+    expect(calls.writeTextFile).toEqual([{ path: '/tmp/b.sql', content: 'select 1 from dual' }])
+    const tab = selectActiveSqlTab(useTabStore.getState())
+    expect(tab?.filePath).toBe('/tmp/b.sql')
+    expect(tab?.dirty).toBe(false)
+  })
+
+  it('保存先が無ければタブの名前を既定にして尋ねる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    const dialog = createFakeDialogApi({ savePath: '/tmp/users.sql' })
+    setDialogApi(dialog.api)
+    SQLタブを一枚にする({ content: 'select 1 from dual', dirty: true })
+
+    // Act
+    await saveActiveTabAs()
+
+    // Assert
+    expect(dialog.calls.save[0].defaultPath).toBe('無題-1.sql')
+  })
+
+  it('保存先を選ばずに閉じたら書かず、保存先も変えない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    setDialogApi(createFakeDialogApi({ savePath: null }).api)
+    SQLタブを一枚にする({ filePath: '/tmp/a.sql', content: 'select 1 from dual', dirty: true })
+
+    // Act
+    await saveActiveTabAs()
+
+    // Assert
+    expect(calls.writeTextFile).toEqual([])
+    expect(selectActiveSqlTab(useTabStore.getState())?.filePath).toBe('/tmp/a.sql')
+  })
+
+  it('定義タブを選んでいるときは尋ねもしない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const dialog = createFakeDialogApi({ savePath: '/tmp/b.sql' })
+    setDialogApi(dialog.api)
+    SQLタブを一枚にする({ content: 'select 1 from dual' })
+    useTabStore.getState().openDefinitionTab({ owner: 'KODUCHI', name: 'USERS', kind: 'table' })
+
+    // Act
+    await saveActiveTabAs()
+
+    // Assert
+    expect(dialog.calls.save).toEqual([])
+    expect(calls.writeTextFile).toEqual([])
   })
 })
 

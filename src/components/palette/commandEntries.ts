@@ -2,44 +2,15 @@
  * コマンドの表（ADR 0035）の行を、パレットの項目へ組み立てる。
  *
  * 表そのものと実行の裁定は仲介者（`src/mediator/commands.ts`）が持つ。ここは
- * 見せ方（キーの表記・並べるかどうか）だけを受け持ち、仲介者の値は import しない。
- * 表の行と実行の口は呼び出し側から受け取る。
+ * 見せ方（並べるかどうか）だけを受け持ち、仲介者の値は import しない。
+ * 表の行・今の割り当て・実行の口は呼び出し側から受け取る。キーの表記は
+ * `keybindings/bindings.ts` の `shortcutLabelFor` が持つ（ADR 0037）。
  */
 
-import type { Chord, Command } from '../../mediator/commands'
+import type { Command } from '../../mediator/commands'
+import type { ResolvedKeybindings } from '../../keybindings/bindings'
+import { shortcutLabelFor } from '../../keybindings/bindings'
 import type { PaletteCommand } from './CommandPalette'
-
-/**
- * 組み合わせを macOS の表記にする。修飾は `⌃⌥⇧⌘` の順に並べる。
- *
- * メニューバーと同じ並びにしておかないと、利用者が見慣れた表記と食い違う。
- *
- * @param chord 組み合わせ
- */
-export function formatChord(chord: Chord): string {
-  return [
-    chord.ctrl ? '⌃' : '',
-    chord.alt ? '⌥' : '',
-    chord.shift ? '⇧' : '',
-    '⌘',
-    chord.key.toUpperCase(),
-  ].join('')
-}
-
-/**
- * パレットに出すキーの表記。キーが無ければ空文字。
- *
- * 表が振り分けるキーは組み合わせから作り、CodeMirror が持つキーは表に書いた
- * 表記をそのまま使う。表記を手で書き写すと、組み合わせを変えたときに食い違う。
- *
- * @param command コマンド
- */
-export function shortcutLabel(command: Command): string {
-  if (command.key === null) {
-    return ''
-  }
-  return command.key.owner === 'window' ? formatChord(command.key.chord) : command.key.label
-}
 
 /**
  * コマンドパレットに並べる項目を表から作る（ADR 0018）。
@@ -51,11 +22,15 @@ export function shortcutLabel(command: Command): string {
  * 項目を選んだときの実行は `execute` に任せる。画面にしか無いもの（エディタの
  * カーソルなど）を読むのは、選ばれた時点まで遅らせる。
  *
+ * キーの表記は既定ではなく、利用者が割り当て直した後のもの（ADR 0037）を出す。
+ *
  * @param commands 並べる表
+ * @param keybindings 今の割り当て
  * @param execute 選ばれたコマンドを実行する口
  */
 export function paletteCommands(
   commands: readonly Command[],
+  keybindings: ResolvedKeybindings,
   execute: (command: Command) => void,
 ): PaletteCommand[] {
   return commands
@@ -63,7 +38,7 @@ export function paletteCommands(
     .map((command) => ({
       id: command.id,
       label: command.label,
-      shortcut: shortcutLabel(command),
+      shortcut: shortcutLabelFor(command.id, keybindings),
       run: () => execute(command),
     }))
 }

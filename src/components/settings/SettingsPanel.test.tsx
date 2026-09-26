@@ -27,7 +27,9 @@ describe('SettingsPanel', () => {
   it('焦点がどこにも当たっていなくても esc で閉じる（ADR 0031）', () => {
     // Arrange
     let 閉じた = false
-    render(<SettingsPanel clientUnavailable={false} onClose={() => (閉じた = true)} />)
+    render(
+      <SettingsPanel commands={[]} clientUnavailable={false} onClose={() => (閉じた = true)} />,
+    )
     ;(document.activeElement as HTMLElement | null)?.blur()
 
     // Act
@@ -40,7 +42,9 @@ describe('SettingsPanel', () => {
   it('変換中の esc では閉じない（ADR 0025）', () => {
     // Arrange
     let 閉じた = false
-    render(<SettingsPanel clientUnavailable={false} onClose={() => (閉じた = true)} />)
+    render(
+      <SettingsPanel commands={[]} clientUnavailable={false} onClose={() => (閉じた = true)} />,
+    )
 
     // Act
     fireEvent.keyDown(document.body, { key: 'Escape', isComposing: true })
@@ -51,7 +55,7 @@ describe('SettingsPanel', () => {
 
   it('テーマは 3 択である', () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
 
     // Act
     const 選択肢 = ['システム', 'ライト', 'ダーク'].map((label) =>
@@ -64,7 +68,7 @@ describe('SettingsPanel', () => {
 
   it('テーマを選ぶとルート要素へ反映される', async () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: 'ダーク' }))
@@ -75,7 +79,7 @@ describe('SettingsPanel', () => {
 
   it('エディタの文字の大きさは 4 択である', () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
 
     // Act
     const 選択肢 = ['小', '標準', '大', '特大'].map((label) =>
@@ -88,7 +92,7 @@ describe('SettingsPanel', () => {
 
   it('エディタの文字を大きくするとルート要素へ反映される', async () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: '特大' }))
@@ -100,7 +104,7 @@ describe('SettingsPanel', () => {
 
   it('罫線の有無を切り替えられる', async () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByLabelText('結果テーブルに罫線を引く'))
@@ -111,7 +115,7 @@ describe('SettingsPanel', () => {
 
   it('履歴を一括削除できる', async () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: '履歴をすべて削除' }))
@@ -123,7 +127,7 @@ describe('SettingsPanel', () => {
 
   it('instant client が検出できているときはパスの欄を出さない', () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable={false} onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
 
     // Act
     const 欄 = screen.queryByLabelText('Instant Client のディレクトリ')
@@ -134,7 +138,7 @@ describe('SettingsPanel', () => {
 
   it('instant client が未検出のときだけパスの欄を出す', () => {
     // Arrange
-    render(<SettingsPanel clientUnavailable onClose={() => {}} />)
+    render(<SettingsPanel commands={[]} clientUnavailable onClose={() => {}} />)
 
     // Act
     const 欄 = screen.getByLabelText('Instant Client のディレクトリ')
@@ -146,7 +150,9 @@ describe('SettingsPanel', () => {
   it('閉じる操作を呼び出し側へ伝える', async () => {
     // Arrange
     let 閉じた = false
-    render(<SettingsPanel clientUnavailable={false} onClose={() => (閉じた = true)} />)
+    render(
+      <SettingsPanel commands={[]} clientUnavailable={false} onClose={() => (閉じた = true)} />,
+    )
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: '設定を閉じる' }))
