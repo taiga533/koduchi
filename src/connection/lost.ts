@@ -8,8 +8,9 @@
  * 気付けない、という抜けを構造として作らないためである。
  *
  * 報せの受け手を決めるのはここではない。`App.tsx` が `onConnectionLost` で
- * 受け取り、`connection` ストアと `execution` ストアへ順に配る。切断の後片付けを
- * `App.tsx` が順に呼ぶ（ADR README「接続の切断と切り替え」）のと同じ形であり、
+ * 受け取り、仲介者の `relayConnectionLost`（`src/mediator/connection.ts`）が
+ * `connection` ストアと `execution` ストアへ順に配る。切断の後片付けを仲介者が
+ * 順に呼ぶ（ADR README「接続の切断と切り替え」・ADR 0035）のと同じ形であり、
  * ストア同士を結合させない。
  *
  * **繋ぎ直しは自動で行わない**（ADR 0026）。切れた時点で Oracle は未コミットの
