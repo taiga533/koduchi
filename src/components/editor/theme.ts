@@ -6,7 +6,7 @@
  */
 
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { EditorView } from '@codemirror/view'
+import { EditorView, drawSelection } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import type { Extension } from '@codemirror/state'
 
@@ -62,8 +62,17 @@ export const editorThemeSpec = {
   '.cm-content': {
     fontFamily: 'var(--font-mono)',
     lineHeight: '1.7',
-    padding: '10px 14px',
+    padding: '10px 0',
     caretColor: 'var(--fg)',
+  },
+  /*
+   * 横の余白は `.cm-content` ではなく行に持たせる。`drawSelection` は行の
+   * `padding-left` から選択の矩形を描き始めるため、`.cm-content` 側に置くと
+   * 複数行の選択が文字の左へ 14px はみ出す（issue #54）。値は既定の
+   * `0 2px 0 6px` に元の 14px を足したもので、文字の位置は変わらない。
+   */
+  '.cm-line': {
+    padding: '0 16px 0 20px',
   },
   '.cm-gutters': {
     backgroundColor: 'var(--panel)',
@@ -82,9 +91,16 @@ export const editorThemeSpec = {
   },
   '.cm-activeLine': { backgroundColor: 'transparent' },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--fg)' },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
-    backgroundColor: 'var(--fill2)',
-  },
+  /*
+   * 選択の地は `drawSelection` の層が描く（issue #54）。焦点のあるときの選択子は
+   * `@codemirror/view` の基底テーマ（`&light.cm-focused > .cm-scroller >
+   * .cm-selectionLayer .cm-selectionBackground`）と同じ強さにそろえる。弱いと
+   * 焦点のある間だけ基底の薄紫が勝つ。
+   */
+  '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground':
+    {
+      backgroundColor: 'var(--fill2)',
+    },
   '.cm-scroller': { fontFamily: 'var(--font-mono)', overflow: 'auto' },
   '&.cm-focused': { outline: 'none' },
   '.cm-tooltip': {
@@ -181,5 +197,17 @@ export const editorThemeSpec = {
 
 const editorTheme = EditorView.theme(editorThemeSpec)
 
-/** エディタのテーマ一式。 */
-export const koduchiEditorTheme: Extension = [editorTheme, syntaxHighlighting(highlightStyle)]
+/**
+ * エディタのテーマ一式。
+ *
+ * `drawSelection` をここへ含めるのは、選択の色（`.cm-selectionBackground`）が
+ * その層にしか当たらないためである。素のままでは WebKit の `::selection` が
+ * 文字の高さだけを塗り、行の高さ 1.7 の余りが行と行の間のすき間として残る
+ * （issue #54）。`drawSelection` は行の箱の高さで矩形を描くため、文字の大きさ
+ * （`data-editor-font-size`）が変わってもすき間は生まれない。
+ */
+export const koduchiEditorTheme: Extension = [
+  drawSelection(),
+  editorTheme,
+  syntaxHighlighting(highlightStyle),
+]

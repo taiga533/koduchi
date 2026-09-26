@@ -173,9 +173,28 @@ export async function startRun(run: PendingRun, ask: Ask): Promise<void> {
 }
 
 /**
- * カーソル位置の文、または選択範囲を取り出す。
+ * 選択範囲を文に切り出す（issue #55）。
  *
- * 定義タブを選んでいるときは SQL が無い（ADR 0022）。
+ * 選択した文字列をそのまま渡すと、末尾の `;` や複数の文が Oracle に届いて
+ * `ORA-00933` になる。カーソル位置の文やスクリプト実行と同じ切り出しを通し、
+ * 渡す本文の決め方を経路ごとに割らない。
+ *
+ * @param cursor 押された時点のカーソル
+ *
+ * @returns 選択範囲の中の文。選択が無ければ `null`
+ */
+function selectedStatements(cursor: EditorCursor): string[] | null {
+  if (cursor.selectedText === null) {
+    return null
+  }
+  return splitStatements(cursor.selectedText).map((statement) => statement.text)
+}
+
+/**
+ * カーソル位置の文、または選択範囲の文を取り出す。
+ *
+ * 実行計画は 1 文にしか取れないため、選択範囲に複数の文があれば最初の 1 文を
+ * 返す。定義タブを選んでいるときは SQL が無い（ADR 0022）。
  *
  * @param cursor 押された時点のカーソル
  * @param selectionOnly 選択範囲だけを取り出すか
@@ -186,21 +205,9 @@ export function currentSql(cursor: EditorCursor, selectionOnly: boolean): string
     return null
   }
   if (selectionOnly) {
-    return cursor.selectedText
+    return selectedStatements(cursor)?.[0] ?? null
   }
   return statementAt(tab.content, cursor.offset)?.text ?? null
-}
-
-/**
- * 1 つの SQL を実行する。空白だけなら何もしない。
- *
- * @param sql 実行する SQL
- * @param ask 利用者への尋ね方
- */
-function runSql(sql: string, ask: Ask): void {
-  if (sql.trim() !== '') {
-    void startRun({ kind: 'execute', sql }, ask)
-  }
 }
 
 /**
@@ -211,19 +218,27 @@ function runSql(sql: string, ask: Ask): void {
 export function runStatement(screen: RunScreen): void {
   const sql = currentSql(screen.cursor, false)
   if (sql) {
-    runSql(sql, screen.ask)
+    void startRun({ kind: 'execute', sql }, screen.ask)
   }
 }
 
 /**
  * `⇧⌘⏎`。選択範囲を実行する。選択が無ければ何もしない。
  *
+ * 選択範囲に複数の文があればスクリプト実行（`⌥⌘⏎`）と同じく順に実行する。
+ * Oracle は 1 度に 1 文しか受け取らないため、まとめて渡す道は無い。
+ *
  * @param screen 押された時点のカーソルと尋ね方
  */
 export function runSelection(screen: RunScreen): void {
-  const sql = currentSql(screen.cursor, true)
-  if (sql) {
-    runSql(sql, screen.ask)
+  if (!selectActiveSqlTab(useTabStore.getState())) {
+    return
+  }
+  const statements = selectedStatements(screen.cursor) ?? []
+  if (statements.length === 1) {
+    void startRun({ kind: 'execute', sql: statements[0] }, screen.ask)
+  } else if (statements.length > 1) {
+    void startRun({ kind: 'script', statements }, screen.ask)
   }
 }
 
