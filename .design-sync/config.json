@@ -1,0 +1,83 @@
+{
+  "projectId": "73f67dba-f0c9-422b-bbfb-3e1394390437",
+  "shape": "package",
+  "pkg": "koduchi-ui",
+  "globalName": "Koduchi",
+  "entry": "./.design-sync/pkg/dist/index.js",
+  "buildCmd": "bunx vite build --config .design-sync/pkg/vite.config.ts && bunx tsc -p .design-sync/pkg/tsconfig.json && node .design-sync/pkg/flatten-types.mjs",
+  "srcDir": "../../src/components",
+  "cssEntry": "dist/style.css",
+  "extraFonts": ["../../src/theme/fonts.css"],
+  "overrides": {
+    "ResultTable": {
+      "cardMode": "column"
+    },
+    "StatusBar": {
+      "cardMode": "column"
+    },
+    "TitleBar": {
+      "cardMode": "single",
+      "primaryStory": "Connected",
+      "viewport": "1100x80"
+    },
+    "TabBar": {
+      "cardMode": "column"
+    },
+    "SessionsPanel": {
+      "cardMode": "column"
+    },
+    "ConnectionForm": {
+      "cardMode": "column"
+    },
+    "InstantClientNotice": {
+      "cardMode": "column"
+    },
+    "CsvSaveDialog": {
+      "cardMode": "column"
+    },
+    "TableDefinitionPanel": {
+      "cardMode": "column"
+    },
+    "BindValuesDialog": {
+      "cardMode": "column"
+    },
+    "SaveQueryDialog": {
+      "cardMode": "column"
+    },
+    "Splitter": {
+      "cardMode": "column"
+    },
+    "CommandPalette": {
+      "cardMode": "column"
+    },
+    "ResultPane": {
+      "cardMode": "column"
+    },
+    "ResultSearchBar": {
+      "cardMode": "column"
+    },
+    "SettingsPanel": {
+      "cardMode": "column"
+    },
+    "SourceSearchPanel": {
+      "cardMode": "column"
+    },
+    "SqlEditor": {
+      "cardMode": "single",
+      "primaryStory": "Query"
+    },
+    "ResultContextMenu": {
+      "cardMode": "single",
+      "primaryStory": "Open"
+    },
+    "SchemaTree": {
+      "cardMode": "single",
+      "primaryStory": "ContextMenuOpen"
+    },
+    "SchemaTreeContextMenu": {
+      "cardMode": "single",
+      "primaryStory": "TableRow"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}
