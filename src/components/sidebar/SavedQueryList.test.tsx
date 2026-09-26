@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls } from '../../test/fakeDbApi'
 import type { SavedQuery } from '../../types/db'
@@ -44,12 +45,13 @@ beforeEach(() => {
 
 afterEach(() => {
   resetDbApi()
+  resetClipboardApi()
 })
 
 describe('SavedQueryList', () => {
   it('名前と sql の 1 行目と接続名が並ぶ', () => {
     // Arrange
-    render(<SavedQueryList onUse={() => {}} />)
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Act
     const 名前 = screen.getByText('利用者の一覧')
@@ -63,7 +65,7 @@ describe('SavedQueryList', () => {
   it('クエリを押すと sql を渡す', async () => {
     // Arrange
     const 渡された: string[] = []
-    render(<SavedQueryList onUse={(sql) => 渡された.push(sql)} />)
+    render(<SavedQueryList onUse={(sql) => 渡された.push(sql)} onOpenInNewTab={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByText('利用者の一覧'))
@@ -74,7 +76,7 @@ describe('SavedQueryList', () => {
 
   it('鉛筆を押すと名前を書き換えられる', async () => {
     // Arrange
-    render(<SavedQueryList onUse={() => {}} />)
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
     await userEvent.click(screen.getAllByRole('button', { name: 'このクエリの名前を変える' })[0])
 
     // Act
@@ -89,7 +91,7 @@ describe('SavedQueryList', () => {
 
   it('名前の変更を esc で取り消すと元の名前に戻る', async () => {
     // Arrange
-    render(<SavedQueryList onUse={() => {}} />)
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
     await userEvent.click(screen.getAllByRole('button', { name: 'このクエリの名前を変える' })[0])
 
     // Act
@@ -104,7 +106,7 @@ describe('SavedQueryList', () => {
 
   it('空の名前は受け付けない', async () => {
     // Arrange
-    render(<SavedQueryList onUse={() => {}} />)
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
     await userEvent.click(screen.getAllByRole('button', { name: 'このクエリの名前を変える' })[0])
 
     // Act
@@ -119,7 +121,7 @@ describe('SavedQueryList', () => {
 
   it('一件ごとに削除できる', async () => {
     // Arrange
-    render(<SavedQueryList onUse={() => {}} />)
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Act
     await userEvent.click(screen.getAllByRole('button', { name: 'このクエリを削除' })[0])
@@ -130,7 +132,7 @@ describe('SavedQueryList', () => {
 
   it('スコープをこの接続のみへ切り替えられる', async () => {
     // Arrange
-    render(<SavedQueryList onUse={() => {}} />)
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Act
     await userEvent.click(screen.getByRole('button', { name: 'この接続のみ' }))
@@ -144,7 +146,7 @@ describe('SavedQueryList', () => {
     useSavedQueryStore.setState({ entries: [], loading: false })
 
     // Act
-    render(<SavedQueryList onUse={() => {}} />)
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
 
     // Assert
     expect(screen.getByText('保存したクエリがここに並びます')).toBeInTheDocument()
@@ -153,7 +155,7 @@ describe('SavedQueryList', () => {
 
 /** 鉛筆を押して名前の入力欄を出す。 */
 async function 名前を編集する() {
-  render(<SavedQueryList onUse={() => {}} />)
+  render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
   await userEvent.click(screen.getAllByRole('button', { name: 'このクエリの名前を変える' })[0])
   return screen.getByRole('textbox', { name: 'クエリの名前' })
 }
@@ -212,5 +214,42 @@ describe('SavedQueryList の IME 対応（ADR 0025）', () => {
     // Assert
     expect(screen.queryByRole('textbox', { name: 'クエリの名前' })).not.toBeInTheDocument()
     expect(screen.getByText('利用者の一覧')).toBeInTheDocument()
+  })
+})
+
+describe('保存済みクエリの右クリックメニュー', () => {
+  it('名前を変更を選ぶと鉛筆と同じ行の中の編集が始まる', () => {
+    // Arrange
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
+    fireEvent.contextMenu(screen.getByText('注文の一覧'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: '名前を変更' }))
+
+    // Assert
+    expect(screen.getByRole('textbox', { name: 'クエリの名前' })).toHaveValue('注文の一覧')
+  })
+
+  it('新しいタブで開く・コピー・削除はその行の SQL と ID で届く', () => {
+    // Arrange
+    const 開いた: string[] = []
+    const 書いた: string[] = []
+    setClipboardApi({ writeText: async (text) => void 書いた.push(text) })
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={(sql) => 開いた.push(sql)} />)
+    const 行 = screen.getByText('利用者の一覧')
+    const 開く = () => fireEvent.contextMenu(行)
+
+    // Act
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: '新しいタブで開く' }))
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'SQL をコピー' }))
+    開く()
+    fireEvent.click(screen.getByRole('menuitem', { name: '削除' }))
+
+    // Assert
+    expect(開いた).toEqual(['select * from users\nwhere id = 1'])
+    expect(書いた).toEqual(['select * from users\nwhere id = 1'])
+    expect(calls.deleteSavedQuery).toEqual([1])
   })
 })

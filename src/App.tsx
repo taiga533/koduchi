@@ -78,8 +78,11 @@ import {
 } from './mediator/execution'
 import { revealSchemaObject } from './mediator/schema'
 import { restoreSession } from './mediator/session'
+import { saveTab, saveTabAs } from './mediator/files'
 import {
+  closeOtherTabs,
   closeTabAndRelease,
+  closeTabsToRight,
   openDefinitionTab,
   openSqlInNewTab,
   putSqlIntoEditor,
@@ -440,7 +443,13 @@ function AppWindow() {
         onChange={setSidebarWidth}
       />
       <div className="flex-1 min-w-0 flex flex-col gap-6px">
-        <TabBar onCloseTab={closeTabAndRelease} />
+        <TabBar
+          onCloseTab={closeTabAndRelease}
+          onCloseOtherTabs={closeOtherTabs}
+          onCloseTabsToRight={closeTabsToRight}
+          onSaveTab={saveTab}
+          onSaveTabAs={saveTabAs}
+        />
         {/*
           定義タブを選んでいる間は、エディタも結果ペインも出さずに本体を
           まるごと定義へ渡す（ADR 0022）。定義は実行の結果ではないため、
@@ -488,6 +497,7 @@ function AppWindow() {
               runningLabel={`${connection.name} · ${activeTabName}`}
               onCancel={cancelExecution}
               onRequestMore={requestMore}
+              onOpenSqlInNewTab={openSqlInNewTab}
             />
           </>
         )}

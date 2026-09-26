@@ -9,7 +9,9 @@ import { selectActiveSqlTab, selectActiveTab, useTabStore } from '../stores/tab'
 import { useUiStore } from '../stores/ui'
 import {
   closeActiveTab,
+  closeOtherTabs,
   closeTabAndRelease,
+  closeTabsToRight,
   openDefinitionTab,
   openSqlInNewTab,
   putSqlIntoEditor,
@@ -139,6 +141,76 @@ describe('closeTabAndRelease', () => {
 
     // Assert
     expect(タブの並び()).toEqual(['sql-1'])
+  })
+})
+
+/** SQL タブを 4 枚にし、並び順の ID を返す。`dirty` に入れた位置のタブだけ書きかけにする。 */
+function SQLタブを四枚にする(dirty: number[] = []): string[] {
+  SQLタブを一枚にする()
+  for (let index = 0; index < 3; index += 1) {
+    useTabStore.getState().openNewTab()
+  }
+  const ids = タブの並び()
+  for (const index of dirty) {
+    useTabStore.getState().updateContent(ids[index], `select ${index} from dual`)
+  }
+  return ids
+}
+
+describe('closeOtherTabs', () => {
+  it('右クリックしたタブだけを残し、他は手放して閉じる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const [a, b, c, d] = SQLタブを四枚にする()
+
+    // Act
+    await closeOtherTabs(b)
+
+    // Assert
+    expect(タブの並び()).toEqual([b])
+    expect(calls.releaseTab.map((call) => call.tabId)).toEqual([a, c, d])
+  })
+
+  it('書きかけのタブで取り消されたら、そこから先は閉じない', async () => {
+    // Arrange
+    setDbApi(createFakeDbApi().api)
+    const [a, b, c, d] = SQLタブを四枚にする([2])
+    確認の答え = [false]
+
+    // Act
+    await closeOtherTabs(b)
+
+    // Assert
+    expect(尋ねた名前).toHaveLength(1)
+    expect(タブの並び()).toEqual([b, c, d])
+    expect(タブの並び()).not.toContain(a)
+  })
+})
+
+describe('closeTabsToRight', () => {
+  it('右クリックしたタブより右だけを閉じる', async () => {
+    // Arrange
+    setDbApi(createFakeDbApi().api)
+    const [a, b] = SQLタブを四枚にする()
+
+    // Act
+    await closeTabsToRight(b)
+
+    // Assert
+    expect(タブの並び()).toEqual([a, b])
+  })
+
+  it('右端のタブでは何も閉じない', async () => {
+    // Arrange
+    setDbApi(createFakeDbApi().api)
+    const ids = SQLタブを四枚にする()
+
+    // Act
+    await closeTabsToRight(ids[3])
+
+    // Assert
+    expect(タブの並び()).toEqual(ids)
   })
 })
 

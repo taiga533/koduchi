@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
 import { useSchemaStore } from '../../stores/schema'
@@ -314,5 +315,62 @@ describe('SourceSearchPanel の本物の IME 対応（ADR 0025 の測り直し�
     // Assert
     expect(通った).toBe(false)
     expect(calls.searchSource).toHaveLength(0)
+  })
+})
+
+describe('ソース検索の当たりの右クリック（ADR 0038）', () => {
+  /** クリップボードへ書かれた文字列。 */
+  let 書いた: string[]
+
+  beforeEach(() => {
+    書いた = []
+    setClipboardApi({ writeText: async (text) => void 書いた.push(text) })
+  })
+
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('当たった行ではオブジェクト名と、字下げを残した行の本文を写せる', async () => {
+    // Arrange
+    パネルを描く()
+    await 検索する('user_traits')
+    const 行 = await screen.findByLabelText('ORDER_AUDIT の 4 行目')
+
+    // Act
+    fireEvent.contextMenu(行)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'オブジェクト名をコピー' }))
+    fireEvent.contextMenu(行)
+    fireEvent.click(screen.getByRole('menuitem', { name: '当たった行をコピー' }))
+
+    // Assert
+    expect(書いた).toEqual(['KODUCHI.ORDER_AUDIT', '    UPDATE koduchi.user_traits'])
+  })
+
+  it('見出しの上では行のコピーを出さず、定義を開く項目も無い', async () => {
+    // Arrange
+    パネルを描く()
+    await 検索する('user_traits')
+
+    // Act
+    fireEvent.contextMenu(await screen.findByText('KODUCHI.TRG_USER_TRAITS_TOUCH'))
+
+    // Assert
+    const 項目 = screen.getAllByRole('menuitem').map((item) => item.textContent)
+    expect(項目).toEqual(['オブジェクト名をコピー'])
+  })
+
+  it('メニューの esc はメニューだけを閉じ、パネルは閉じない', async () => {
+    // Arrange: 重なったオーバーレイは後に開いたものから閉じる（ADR 0031）
+    const { onClose } = パネルを描く()
+    await 検索する('user_traits')
+    fireEvent.contextMenu(await screen.findByLabelText('ORDER_AUDIT の 4 行目'))
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    // Assert
+    expect(screen.queryByTestId('source-match-context-menu')).not.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

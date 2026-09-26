@@ -4,11 +4,16 @@
  * 「この接続のみ / 全接続」のスコープを切り替えられる。1 件ごとの削除を
  * 用意してあるのは、`alter user … identified by …` のような SQL が平文で
  * 残るためである。
+ *
+ * 行の右クリックでメニューを出す（ADR 0038。`SqlEntryContextMenu.tsx`）。
  */
 
+import { useState } from 'react'
 import { X } from 'lucide-react'
+import { getClipboardApi } from '../../api/clipboard'
 import type { HistoryEntry } from '../../types/db'
 import { useHistoryStore } from '../../stores/history'
+import { SqlEntryContextMenu } from './SqlEntryContextMenu'
 
 /** SQL の 1 行目だけを取り出して詰める。一覧では全文を出さない。 */
 function summarize(sql: string): string {
@@ -28,14 +33,24 @@ function formatTime(startedAt: number): string {
 interface HistoryListProps {
   /** 履歴の SQL をエディタへ入れる。 */
   onUse: (sql: string) => void
+  /** 履歴の SQL を新しいタブに入れる。実行はしない（ADR 0038）。 */
+  onOpenInNewTab: (sql: string) => void
 }
 
-export function HistoryList({ onUse }: HistoryListProps) {
+/** 右クリックのメニューの状態。 */
+interface MenuState {
+  x: number
+  y: number
+  entry: HistoryEntry
+}
+
+export function HistoryList({ onUse, onOpenInNewTab }: HistoryListProps) {
   const entries = useHistoryStore((state) => state.entries)
   const scope = useHistoryStore((state) => state.scope)
   const setScope = useHistoryStore((state) => state.setScope)
   const remove = useHistoryStore((state) => state.remove)
   const loading = useHistoryStore((state) => state.loading)
+  const [menu, setMenu] = useState<MenuState | null>(null)
 
   return (
     <div className="flex flex-col">
@@ -55,10 +70,28 @@ export function HistoryList({ onUse }: HistoryListProps) {
       ) : (
         <ul className="list-none m-0 p-0 flex flex-col">
           {entries.map((entry) => (
-            <HistoryRow key={entry.id} entry={entry} onUse={onUse} onRemove={remove} />
+            <HistoryRow
+              key={entry.id}
+              entry={entry}
+              onUse={onUse}
+              onRemove={remove}
+              onContextMenu={(x, y) => setMenu({ x, y, entry })}
+            />
           ))}
         </ul>
       )}
+      {menu ? (
+        <SqlEntryContextMenu
+          x={menu.x}
+          y={menu.y}
+          heading={summarize(menu.entry.sql)}
+          onUse={() => onUse(menu.entry.sql)}
+          onOpenInNewTab={() => onOpenInNewTab(menu.entry.sql)}
+          onCopy={() => void getClipboardApi().writeText(menu.entry.sql)}
+          onRemove={() => remove(menu.entry.id)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -67,12 +100,20 @@ interface HistoryRowProps {
   entry: HistoryEntry
   onUse: (sql: string) => void
   onRemove: (id: number) => void
+  /** 右クリックされた。押した点を渡す。 */
+  onContextMenu: (x: number, y: number) => void
 }
 
 /** 履歴 1 件。押すとエディタへ入り、✕ で 1 件だけ消える。 */
-function HistoryRow({ entry, onUse, onRemove }: HistoryRowProps) {
+function HistoryRow({ entry, onUse, onRemove, onContextMenu }: HistoryRowProps) {
   return (
-    <li className="flex items-start gap-6px px-10px py-6px hover:bg-fill">
+    <li
+      className="flex items-start gap-6px px-10px py-6px hover:bg-fill"
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onContextMenu(event.clientX, event.clientY)
+      }}
+    >
       <button
         type="button"
         onClick={() => onUse(entry.sql)}

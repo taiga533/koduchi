@@ -105,7 +105,14 @@ export interface LogEntry {
   id: string
   /** 実行を開始した時刻。 */
   startedAt: Date
-  /** 実行した SQL の全文。 */
+  /**
+   * ログの出どころ。`statement` は実行した SQL、`notice` は小槌からの報せ
+   * （整形・接続・コミット / ロールバック）である。報せの `sql` は見出しの
+   * 文言であって SQL ではないため、右クリックの「SQL をコピー」「新しいタブで
+   * 開く」（ADR 0038）は `statement` にだけ出す。
+   */
+  kind: 'statement' | 'notice'
+  /** 実行した SQL の全文。報せでは見出しの文言。 */
   sql: string
   /** 所要ミリ秒。 */
   elapsedMs: number | null
@@ -150,6 +157,7 @@ function 接続のログ(error: string): LogEntry {
   return {
     id: crypto.randomUUID(),
     startedAt: new Date(),
+    kind: 'notice',
     sql: CONNECTION_LOG_LABEL,
     elapsedMs: null,
     rowCount: null,
@@ -510,6 +518,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
                 {
                   id: entryId,
                   startedAt,
+                  kind: 'statement',
                   sql,
                   elapsedMs: response.elapsedMs,
                   rowCount,
@@ -545,6 +554,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
                 {
                   id: entryId,
                   startedAt,
+                  kind: 'statement',
                   sql,
                   elapsedMs,
                   rowCount: null,
@@ -849,6 +859,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
           {
             id: crypto.randomUUID(),
             startedAt: new Date(),
+            kind: 'notice',
             sql: FORMAT_LOG_LABEL,
             elapsedMs: null,
             rowCount: null,
@@ -925,6 +936,7 @@ async function 終わらせる(
         {
           id: entryId,
           startedAt,
+          kind: 'notice',
           sql: label,
           elapsedMs: Date.now() - startedAt.getTime(),
           rowCount: null,
@@ -941,6 +953,7 @@ async function 終わらせる(
         {
           id: entryId,
           startedAt,
+          kind: 'notice',
           sql: label,
           elapsedMs: Date.now() - startedAt.getTime(),
           rowCount: null,

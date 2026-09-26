@@ -8,7 +8,10 @@
 import { describe, expect, it } from 'vitest'
 import type { ObjectDefinition, TableColumn, TableConstraint, TableIndex } from '../../types/db'
 import {
+  buildColumnRowCopyText,
   buildColumnsCopyText,
+  buildConstraintRowCopyText,
+  buildIndexRowCopyText,
   buildConstraintsCopyText,
   buildDdlCopyText,
   buildDefinitionCopy,
@@ -394,5 +397,39 @@ describe('describeDefinitionCopy', () => {
 
     // Assert
     expect(文).toBe('DDL をコピーしました')
+  })
+})
+
+describe('1 行のコピー（ADR 0038）', () => {
+  it('列 1 つは見出しを付けず、全列の中の番号で写す', () => {
+    // Arrange & Act
+    const text = buildColumnRowCopyText(列[2], 列)
+
+    // Assert
+    expect(text).toBe('3\tTRACKING_NO\tVARCHAR2(64)\t可')
+  })
+
+  it('コメントの欄は全列のどれかにコメントがあれば付き、無い列は空欄の字になる', () => {
+    // Arrange & Act
+    const text = buildColumnRowCopyText(コメント付きの列[2], コメント付きの列)
+
+    // Assert
+    expect(text).toBe('3\tTRACKING_NO\tVARCHAR2(64)\t可\t—')
+  })
+
+  it('制約 1 つは内訳のコピーと同じ札を付けて写す', () => {
+    // Arrange & Act
+    const text = buildConstraintRowCopyText(制約[2])
+
+    // Assert
+    expect(text).toBe("検査 (無効)\tCK_SHIPMENTS_STATUS\tSTATUS\tstatus in ('pending','shipped')")
+  })
+
+  it('索引 1 つは内訳のコピーと同じ札を付けて写す', () => {
+    // Arrange & Act
+    const text = buildIndexRowCopyText(索引[1])
+
+    // Assert
+    expect(text).toBe('SYS_C0012345 (自動生成)\tSHIPMENT_ID\tUNIQUE\tNORMAL')
   })
 })

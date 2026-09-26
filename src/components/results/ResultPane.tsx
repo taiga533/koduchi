@@ -5,7 +5,10 @@
  * その場合はタブ行を描かず、32px のヘッダーには行数と所要時間だけが残る。
  */
 
+import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import { getClipboardApi } from '../../api/clipboard'
+import { isOnSelectedText } from '../../input/nativeContextMenu'
 import type { LogEntry, ScriptProgress, TabExecution, TabPlan } from '../../stores/execution'
 import {
   formatResultSummary,
@@ -17,6 +20,7 @@ import {
 } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { ErrorCopyButton } from './ErrorCopyButton'
+import { MessageLogContextMenu } from './MessageLogContextMenu'
 import { ResultTable } from './ResultTable'
 
 /** タブの表示名。 */
@@ -35,9 +39,17 @@ interface ResultPaneProps {
   onCancel: () => void
   /** 続きのかたまりを要求する。 */
   onRequestMore: () => void
+  /** メッセージタブのログの SQL を新しいタブに入れる。実行はしない（ADR 0038）。 */
+  onOpenSqlInNewTab: (sql: string) => void
 }
 
-export function ResultPane({ tabId, runningLabel, onCancel, onRequestMore }: ResultPaneProps) {
+export function ResultPane({
+  tabId,
+  runningLabel,
+  onCancel,
+  onRequestMore,
+  onOpenSqlInNewTab,
+}: ResultPaneProps) {
   const execution = useExecutionStore((state) => selectExecution(state, tabId))
   const plan = useExecutionStore((state) => selectPlan(state, tabId))
   const log = useExecutionStore((state) => state.log)
@@ -85,6 +97,7 @@ export function ResultPane({ tabId, runningLabel, onCancel, onRequestMore }: Res
         runningLabel={runningLabel}
         onCancel={onCancel}
         onRequestMore={onRequestMore}
+        onOpenSqlInNewTab={onOpenSqlInNewTab}
       />
     </section>
   )
@@ -100,6 +113,7 @@ interface PaneBodyProps {
   runningLabel: string
   onCancel: () => void
   onRequestMore: () => void
+  onOpenSqlInNewTab: (sql: string) => void
 }
 
 /** ペインの本文。状態に応じて実行中・エラー・結果・空状態を出し分ける。 */
@@ -112,6 +126,7 @@ function PaneBody({
   runningLabel,
   onCancel,
   onRequestMore,
+  onOpenSqlInNewTab,
 }: PaneBodyProps) {
   if (currentTab === 'plan') {
     return <PlanView plan={plan} />
@@ -122,7 +137,7 @@ function PaneBody({
   }
 
   if (currentTab === 'messages') {
-    return <MessageLog log={log} error={execution.error} />
+    return <MessageLog log={log} error={execution.error} onOpenSqlInNewTab={onOpenSqlInNewTab} />
   }
 
   if (execution.status === 'discarded') {
@@ -276,8 +291,31 @@ function FailureNotice({
   )
 }
 
-/** メッセージタブ。実行ログを時系列で積む。 */
-function MessageLog({ log, error }: { log: LogEntry[]; error: string | null }) {
+interface MessageLogProps {
+  log: LogEntry[]
+  error: string | null
+  onOpenSqlInNewTab: (sql: string) => void
+}
+
+/** メッセージタブのログの右クリックメニューの状態。 */
+interface LogMenuState {
+  x: number
+  y: number
+  entry: LogEntry
+}
+
+/**
+ * メッセージタブ。実行ログを時系列で積む。
+ *
+ * ログ 1 件の右クリックでメニューを出す（ADR 0038。`MessageLogContextMenu.tsx`）。
+ * スクリプト実行で失敗した 1 文を取り出して直す道が他に無いためである。
+ * **選んだ文字の上の右クリックはウェブビューのメニューに任せる。**ここは
+ * なぞって写す場所でもあり（`select-text`）、選んだ部分だけを写す「コピー」を
+ * 奪わない。
+ */
+function MessageLog({ log, error, onOpenSqlInNewTab }: MessageLogProps) {
+  const [menu, setMenu] = useState<LogMenuState | null>(null)
+
   if (log.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-9px text-12.5px text-fg4">
@@ -290,7 +328,22 @@ function MessageLog({ log, error }: { log: LogEntry[]; error: string | null }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto select-text px-14px py-13px flex flex-col gap-14px text-11.5px">
       {log.map((entry) => (
-        <div key={entry.id} className="flex flex-col gap-5px">
+        <div
+          key={entry.id}
+          data-testid={`message-log-${entry.id}`}
+          className="flex flex-col gap-5px"
+          onContextMenu={(event) => {
+            const point = { x: event.clientX, y: event.clientY }
+            if (isOnSelectedText(point, window.getSelection())) {
+              return
+            }
+            event.preventDefault()
+            // 写すものが無い報せ（コミットしました、など）ではメニューを出さない。
+            if (entry.kind === 'statement' || entry.error !== null) {
+              setMenu({ x: event.clientX, y: event.clientY, entry })
+            }
+          }}
+        >
           <div className="flex items-center gap-10px text-10.5px text-fg4">
             <span>{entry.startedAt.toLocaleTimeString('ja-JP')}</span>
             {entry.statement ? (
@@ -326,6 +379,21 @@ function MessageLog({ log, error }: { log: LogEntry[]; error: string | null }) {
           ))}
         </div>
       ))}
+      {menu ? (
+        <MessageLogContextMenu
+          x={menu.x}
+          y={menu.y}
+          entry={menu.entry}
+          onCopySql={() => void getClipboardApi().writeText(menu.entry.sql)}
+          onOpenInNewTab={() => onOpenSqlInNewTab(menu.entry.sql)}
+          onCopyError={() => {
+            if (menu.entry.error !== null) {
+              void getClipboardApi().writeText(menu.entry.error)
+            }
+          }}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   )
 }
