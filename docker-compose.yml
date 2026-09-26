@@ -2,8 +2,8 @@
 #
 # 統合テストと動作確認に使う。開発者が手動で起動する:
 #
-#   docker compose up -d
-#   export KODUCHI_TEST_ORACLE_URL='localhost:1521/FREEPDB1'
+#   mise run oracle:up     # docker compose up -d --wait と同じ
+#   mise run test:oracle   # 起動して healthy まで待ち、統合テストを走らせる
 #
 # 初回起動はスキーマ投入まで含めて数分かかる。2 回目以降はボリューム
 # `koduchi-oracle-data` を再利用するため速い。起動完了は healthcheck で判定できる。

@@ -94,10 +94,23 @@ docker compose logs -f     # 進み具合を見る
 環境変数が設定されているときだけ実行される。未設定なら該当テストはスキップされ、
 Docker の無い環境でも `cargo test` は緑になる。
 
+[mise](https://mise.jdx.dev/) のタスクにまとめてある。コンテナの起動と healthy になるまでの待ち、
+環境変数の設定までを行う。
+
 ```bash
-export KODUCHI_TEST_ORACLE_URL='koduchi/koduchi_dev@localhost:1521/FREEPDB1'
-cd src-tauri && cargo test
+mise run test:oracle
 ```
+
+手で走らせる場合は次と同じである。
+
+```bash
+docker compose up -d --wait
+export KODUCHI_TEST_ORACLE_URL='koduchi/koduchi_dev@localhost:1521/FREEPDB1'
+cd src-tauri && cargo test --test oracle
+```
+
+`dev/oracle/initdb/` のスクリプトはデータベースを新規に作ったときにしか走らない。
+スクリプトを足した後は `mise run oracle:reset` でボリュームごと作り直す。
 
 OS キーチェーンを実際に読み書きするテストも同じ扱いにしてある。実行すると
 キーチェーンへの書き込みが起きるため、明示的に指定したときだけ走る。

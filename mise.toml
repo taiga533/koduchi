@@ -1,0 +1,27 @@
+# 開発用のタスク。`mise tasks` で一覧、`mise run <名前>` で実行する。
+
+[vars]
+# docker-compose.yml の APP_USER / APP_USER_PASSWORD と組になっている。開発専用の値である。
+oracle_url = "koduchi/koduchi_dev@localhost:1521/FREEPDB1"
+
+[tasks."oracle:up"]
+description = "統合テスト用の Oracle コンテナを起動し、healthy になるまで待つ"
+# 初回はデータベースの作成と dev/oracle/initdb の投入で数分かかるため、待ちを長めに取る。
+run = "docker compose up -d --wait --wait-timeout 900"
+
+[tasks."oracle:down"]
+description = "Oracle コンテナを止める（データのボリュームは残す）"
+run = "docker compose down"
+
+[tasks."oracle:reset"]
+description = "ボリュームごと消して作り直す（dev/oracle/initdb を変えたとき）"
+# initdb のスクリプトはデータベースを新規に作ったときにしか走らないため、ボリュームごと消す。
+run = ["docker compose down -v", "docker compose up -d --wait --wait-timeout 900"]
+
+[tasks."test:oracle"]
+description = "Oracle を使う Rust の統合テストを走らせる（コンテナは自動で起動する）"
+depends = ["oracle:up"]
+dir = "src-tauri"
+# 常に効く [env] に置かないのは、コンテナの無いときの `cargo test` を緑に保つためである（ADR 0010）。
+env = { KODUCHI_TEST_ORACLE_URL = "{{vars.oracle_url}}" }
+run = "cargo test --test oracle"

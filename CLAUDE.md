@@ -34,6 +34,19 @@ cargo fmt                # src-tauri/ 配下で Rust コードの整形
 - Rust: `cargo test` / `cargo clippy` / `cargo fmt`。Oracle を使う統合テストは環境変数 `KODUCHI_TEST_ORACLE_URL` が設定されているときだけ走り、未設定ならスキップする。Docker が無い環境でも `cargo test` は緑になる。OS キーチェーンを実際に触るテストも同じ考え方で、`KODUCHI_TEST_KEYCHAIN` が設定されているときだけ走る。
 - テストは Arrange - Act - Assert の順で書き、テストケース名は日本語で書く。mock は最小限に留め、フロントエンドは `src/api/` 層の差し替えで代替する。
 
+**Oracle の統合テストの手順**: `src-tauri/`（Rust）に触れたら、`cargo test` に加えてこれを走らせる。
+
+```bash
+mise run test:oracle     # コンテナを起動して healthy まで待ち、URL を渡して cargo test --test oracle を走らせる
+mise run oracle:reset    # dev/oracle/initdb を足した・変えたとき。ボリュームごと作り直す（数分かかる）
+mise run oracle:down     # コンテナを止める（ボリュームは残す）
+```
+
+- **接続先の URL は `mise.toml` の `[vars]` の `oracle_url` 1 か所**にあり、`test:oracle` の実行中だけ `KODUCHI_TEST_ORACLE_URL` として渡る。形式は `ユーザー/パスワード@ホスト:ポート/サービス名` で、`docker-compose.yml` の `APP_USER` / `APP_USER_PASSWORD` と組である。**`[env]` へ移さない**（常に設定されると、コンテナの無いときの `cargo test` が接続に失敗して赤になる）。
+- **`dev/oracle/initdb/` のスクリプトはデータベースを新規に作ったときにしか走らない。**既存のボリュームは後から足したスクリプトを知らないため、スキーマに依るテストが「期待した値が `None`」の形で落ちる。そのときはコードより先にボリュームの古さを疑い、`oracle:reset` する。スキーマを足すテストを書いたら、同じ変更で `initdb` にスクリプトを足す。
+- **Instant Client が見つからないと統合テストは失敗せずに素通りする**（`Instant Client を読み込めないためスキップします` と出るだけで緑になる）。緑を報告する前に、出力にこの文言が無く件数が 0 でないことを確かめる。
+- テストは `serial_test` で直列に走る（`oracle::InitParams::init()` がプロセスに 1 回きりのため）。統合テストのファイルは `src-tauri/tests/oracle.rs` 1 つで、足すテストもここに置く。
+
 ## アーキテクチャ
 
 フロントエンド（`src/`）と Rust バックエンド（`src-tauri/`）が Tauri の IPC で繋がる2層構成。
