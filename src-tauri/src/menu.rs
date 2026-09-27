@@ -42,8 +42,14 @@ pub const FORMAT: MenuCommand = MenuCommand {
     command_id: "format",
 };
 
+/// 「アップデートを確認…」（ADR 0042）。
+pub const CHECK_UPDATE: MenuCommand = MenuCommand {
+    menu_id: "koduchi.command.check-update",
+    command_id: "check-update",
+};
+
 /// 小槌が足した項目の一覧。押された項目の振り分けに使う。
-pub const MENU_COMMANDS: [MenuCommand; 3] = [SETTINGS, OPEN_FILE, FORMAT];
+pub const MENU_COMMANDS: [MenuCommand; 4] = [SETTINGS, OPEN_FILE, FORMAT, CHECK_UPDATE];
 
 /// 最初のウィンドウのラベル（`tauri.conf.json`）。焦点のあるウィンドウが無いときの受け手。
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -53,6 +59,12 @@ const MAIN_WINDOW_LABEL: &str = "main";
 /// macOS の慣例（「〜について」と区切り線の直後）に合わせる。既定のメニューの
 /// アプリメニューは「〜について」「区切り線」「サービス」… の順に並ぶ。
 const SETTINGS_POSITION: usize = 2;
+
+/// アプリメニューの中で「アップデートを確認…」を差し込む位置。
+///
+/// macOS の慣例（「〜について」の直後）に合わせる。「設定…」より先に差し込むと
+/// 「設定…」の位置がずれるため、差し込みは「設定…」の後に行う。
+const CHECK_UPDATE_POSITION: usize = 1;
 
 /// 既定のメニューの File メニューの名前（tauri 2.11.5 の `Menu::default`）。
 pub const FILE_SUBMENU_TEXT: &str = "File";
@@ -83,6 +95,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[&settings, &PredefinedMenuItem::separator(app)?],
         SETTINGS_POSITION,
     )?;
+    let check_update = MenuItem::with_id(
+        app,
+        CHECK_UPDATE.menu_id,
+        "アップデートを確認…",
+        true,
+        None::<&str>,
+    )?;
+    app_menu.insert(&check_update, CHECK_UPDATE_POSITION)?;
 
     // 「ウィンドウを閉じる」より上に置くのは macOS の File メニューの並び
     // （開く・…・閉じる）に合わせるためである。
@@ -253,7 +273,12 @@ mod tests {
     #[test]
     fn 小槌が足した項目からコマンドの識別子を引く() {
         // Arrange
-        let menu_ids = [SETTINGS.menu_id, OPEN_FILE.menu_id, FORMAT.menu_id];
+        let menu_ids = [
+            SETTINGS.menu_id,
+            OPEN_FILE.menu_id,
+            FORMAT.menu_id,
+            CHECK_UPDATE.menu_id,
+        ];
 
         // Act
         let commands = menu_ids.map(command_for);
@@ -261,7 +286,12 @@ mod tests {
         // Assert
         assert_eq!(
             commands,
-            [Some("settings"), Some("open-file"), Some("format")]
+            [
+                Some("settings"),
+                Some("open-file"),
+                Some("format"),
+                Some("check-update")
+            ]
         );
     }
 

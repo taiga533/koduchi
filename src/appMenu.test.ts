@@ -139,7 +139,7 @@ describe('メニューの項目とコマンドの表', () => {
     const missing = ids.filter((id) => !COMMANDS.some((command) => command.id === id))
 
     // Assert
-    expect(ids).toEqual(['settings', 'open-file', 'format'])
+    expect(ids).toEqual(['settings', 'open-file', 'format', 'check-update'])
     expect(missing).toEqual([])
   })
 })

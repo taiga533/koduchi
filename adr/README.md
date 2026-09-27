@@ -45,6 +45,7 @@
 | [0039](0039-文末のセミコロンの扱い.md) | 文末のセミコロンの扱い — SQL は落とし PL/SQL は残す、選択範囲も同じ切り出しを通す |
 | [0040](0040-メニューバーからコマンドを走らせる.md) | メニューバーからコマンドを走らせる — 「ファイルを開く…」「SQL を整形」を足し、表の識別子で届ける |
 | [0041](0041-履歴から保存済みクエリへ追加.md) | 履歴から保存済みクエリへ追加 — 右クリックから、履歴の接続名で、同じ SQL は告げて積む |
+| [0042](0042-自動アップデート.md) | 自動アップデート — 最新リリースの latest.json を起動時に確かめ、尋ねてから入れ替え、終了と同じ関所を通って再起動する |
 
 ## ADR に切り出していない決定
 
@@ -309,22 +310,23 @@ TanStack Virtual による仮想スクロール。スクロールが下端に近
 
 zustand を機能別に 10 ストアへ分割する（`connection` / `tab` / `execution` / `history` / `savedQuery` / `schema` / `sessions` / `definition` / `sourceSearch` / `ui`）。ストアは Tauri の `invoke` を直接呼ばず、`src/api/` 層越しに呼ぶ。これによりストアの単体テストをデータベースから切り離せる（[0010](0010-テストとリンタの構成.md)）。
 
-ストアの中から別のストアを呼ばない。複数のストアにまたがる動きは**仲介者**（`src/mediator/`）の React に依存しない関数が順に呼ぶ（[0035](0035-仲介者の切り出しとコマンドの表.md)）。ファイルは裁定の領域（接続の一生・トランザクション・実行・タブ・ファイル・保存済みクエリ・CSV・スキーマ・セッションの復元）で分け、`App.tsx` はそれを部品と Tauri のイベントへ配線するだけにする。利用者への確認は答えを `await` する形に揃え、画面の中に描く確認は `src/mediator/ask.ts` の尋ね事として出す。
+ストアの中から別のストアを呼ばない。複数のストアにまたがる動きは**仲介者**（`src/mediator/`）の React に依存しない関数が順に呼ぶ（[0035](0035-仲介者の切り出しとコマンドの表.md)）。ファイルは裁定の領域（接続の一生・トランザクション・実行・タブ・ファイル・保存済みクエリ・CSV・スキーマ・セッションの復元・アップデート）で分け、`App.tsx` はそれを部品と Tauri のイベントへ配線するだけにする。利用者への確認は答えを `await` する形に揃え、画面の中に描く確認は `src/mediator/ask.ts` の尋ね事として出す。
 
 ### ディレクトリ構成
 
 ```
 src/
-  api/            Tauri invoke・クリップボード・ダイアログのラッパ（テスト時に差し替える境界）
-  stores/         zustand ストア10種
+  api/            Tauri invoke・クリップボード・ダイアログ・アップデートのラッパ（テスト時に差し替える境界）
+  stores/         zustand ストア11種
   mediator/       複数のストアにまたがる裁定とコマンドの表（React に依存しない）
   components/
     titlebar/  sidebar/  editor/  results/  connection/  settings/  layout/  palette/
-    sessions/  definition/  source/
+    sessions/  definition/  source/  update/
   theme/          CSSトークン定義（:root / [data-theme="dark"]）
   types/          Rust と共有する型定義
 src-tauri/src/
-  lib.rs          commands 登録のみ
+  lib.rs          commands 登録と終了の受け手のみ
+  updater.rs      アップデートの再起動の予約と終了の判断（ADR 0042）
   commands/       Tauri コマンド（薄い層）
   db/
     driver.rs     Driver trait

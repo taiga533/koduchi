@@ -52,6 +52,7 @@ import { SessionsPanel } from './components/sessions/SessionsPanel'
 import { SourceSearchPanel } from './components/source/SourceSearchPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
+import { UpdateDialog } from './components/update/UpdateDialog'
 import { onMenuCommand } from './appMenu'
 import { onConnectionLost } from './connection/lost'
 import type { Command, CommandScreen } from './mediator/commands'
@@ -88,16 +89,12 @@ import {
   openSqlInNewTab,
   putSqlIntoEditor,
 } from './mediator/tabs'
-import {
-  commitTransaction,
-  resolvePendingTransaction,
-  rollbackTransaction,
-} from './mediator/transaction'
+import { commitTransaction, rollbackTransaction } from './mediator/transaction'
+import { checkForUpdateOnLaunch, confirmWindowClose } from './mediator/update'
 import { useConnectionStore } from './stores/connection'
 import { useSchemaStore } from './stores/schema'
 import { selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
-import { CLOSE_WORDING } from './transaction/pendingChanges'
 import { currentWindowLabel, onWindowCloseRequested } from './window'
 import type { ClientStatus, HistoryEntry, SavedConnection, SchemaFilter } from './types/db'
 
@@ -242,9 +239,12 @@ function AppWindow() {
   // サーバ側で接続が切れたことを各ストアへ配る（ADR 0026）。
   useEffect(() => onConnectionLost(relayConnectionLost), [])
 
-  // 未コミットのまま閉じさせない（ADR 0012）。アプリの終了も Rust 側から
-  // 各ウィンドウを閉じにいくため、この関所を通る。
-  useEffect(() => onWindowCloseRequested(() => resolvePendingTransaction(CLOSE_WORDING)), [])
+  // 未コミットのまま閉じさせない（ADR 0012）。アプリの終了もアップデートの
+  // 再起動（ADR 0042）も Rust 側から各ウィンドウを閉じにいくため、この関所を通る。
+  useEffect(() => onWindowCloseRequested(confirmWindowClose), [])
+
+  // 起動時に新しい版を確かめる（ADR 0042）。どのウィンドウで走らせるかは仲介者が決める。
+  useEffect(() => checkForUpdateOnLaunch(currentWindowLabel(), import.meta.env.DEV), [])
 
   /**
    * ツリーで拾った名前をエディタのカーソル位置へ入れる（ADR 0020）。
@@ -325,13 +325,19 @@ function AppWindow() {
     return <Splash />
   }
 
-  const settings = settingsOpen ? (
-    <SettingsPanel
-      clientUnavailable={clientStatus.status === 'unavailable'}
-      onClose={closeSettings}
-      commands={COMMANDS}
-    />
-  ) : null
+  // 設定とアップデート（ADR 0042）は、接続の有無に関わらずどの画面でも出す。
+  const settings = (
+    <>
+      {settingsOpen ? (
+        <SettingsPanel
+          clientUnavailable={clientStatus.status === 'unavailable'}
+          onClose={closeSettings}
+          commands={COMMANDS}
+        />
+      ) : null}
+      <UpdateDialog />
+    </>
+  )
 
   if (clientStatus.status === 'unavailable') {
     return (

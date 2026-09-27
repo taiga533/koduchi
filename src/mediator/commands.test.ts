@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
+import { resetUpdaterApi, setUpdaterApi } from '../api/updater'
+import { createFakeUpdaterApi } from '../test/fakeUpdaterApi'
+import { useUpdateStore } from '../stores/update'
 import { createFakeDbApi } from '../test/fakeDbApi'
 import { SQLタブを一枚にする, 接続済みにする, 未接続にする } from '../test/activeConnection'
 import { useTabStore } from '../stores/tab'
@@ -24,6 +27,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetDbApi()
+  resetUpdaterApi()
 })
 
 /** 既定の割り当て。 */
@@ -255,6 +259,21 @@ describe('runCommand', () => {
 
     // Assert
     await expect.poll(() => calls.commit).toEqual(['c1'])
+  })
+
+  it('アップデートの確認は繋がっていなくても手で確かめる形で走る', () => {
+    // Arrange
+    const fake = createFakeUpdaterApi()
+    setUpdaterApi(fake.api)
+    useUpdateStore.setState({ status: 'idle', dialogOpen: false })
+    未接続にする()
+
+    // Act
+    runCommand(commandById('check-update'), 画面を作る())
+
+    // Assert
+    expect(fake.calls).toEqual(['check'])
+    expect(useUpdateStore.getState().dialogOpen).toBe(true)
   })
 })
 

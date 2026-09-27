@@ -7,7 +7,9 @@
 //! muda は macOS でメニューを主スレッドでしか作らせないため、テストの枠組みを外し
 //! （`Cargo.toml` の `harness = false`）、`main` から直に走らせる。
 
-use koduchi_lib::menu::{self, EDIT_SUBMENU_TEXT, FILE_SUBMENU_TEXT, FORMAT, OPEN_FILE, SETTINGS};
+use koduchi_lib::menu::{
+    self, CHECK_UPDATE, EDIT_SUBMENU_TEXT, FILE_SUBMENU_TEXT, FORMAT, OPEN_FILE, SETTINGS,
+};
 use tauri::menu::Submenu;
 use tauri::test::{mock_app, MockRuntime};
 
@@ -49,7 +51,10 @@ fn 既定のメニューへ小槌の項目を差し込める() {
         .into_iter()
         .filter_map(|item| item.as_submenu().cloned())
         .collect::<Vec<_>>();
-    assert!(item_ids(&submenus[0]).contains(&SETTINGS.menu_id.to_string()));
+    let app_menu = item_ids(&submenus[0]);
+    assert!(app_menu.contains(&SETTINGS.menu_id.to_string()));
+    // 「〜について」の直後に並ぶ（macOS の慣例）。
+    assert_eq!(app_menu[1], CHECK_UPDATE.menu_id);
     assert_eq!(
         item_ids(&submenu_named(&submenus, FILE_SUBMENU_TEXT))[0],
         OPEN_FILE.menu_id

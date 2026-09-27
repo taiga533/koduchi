@@ -38,6 +38,7 @@ describe('paletteCommands', () => {
       ['sessions', 'セッションとロックを開く', ''],
       ['reload-schemas', 'スキーマを再読み込み', ''],
       ['settings', '設定を開く', ''],
+      ['check-update', 'アップデートを確認', ''],
     ])
   })
 

@@ -35,6 +35,8 @@ tauri-plugin-dialog = "2.7.2"
 tauri-plugin-window-state = "2.4.1"
 # 結果テーブルの ⌘C をクリップボードへ載せる。
 tauri-plugin-clipboard-manager = "2.3.3"
+# 自動アップデート（ADR 0042）。2.13 は tauri 2.12 を要求するため、tauri を上げるときに併せて上げる。
+tauri-plugin-updater = "2.12.0"
 
 [dev-dependencies]
 # InitParams::init() がプロセス 1 回きりであるため、
@@ -44,6 +46,10 @@ tempfile = "3.24.0"
 # 既定のメニューの形（ADR 0040）を実物の `Menu::default` で見張るため、MockRuntime を使う。
 # 版は [dependencies] の tauri と揃える。
 tauri = { version = "2.11.5", features = ["test"] }
+# 更新の公開鍵（ADR 0042）を、アプリが読むのと同じ解き方で見張る。
+# 版は tauri-plugin-updater が使っているものと揃える。
+base64 = "0.22.1"
+minisign-verify = "0.2.5"
 
 # muda は macOS でメニューを主スレッドでしか作らせない。テストの枠組みは各テストを
 # 別のスレッドで走らせるため、枠組みを外して main から走らせる（ADR 0040）。

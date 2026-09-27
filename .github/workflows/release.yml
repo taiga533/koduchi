@@ -2,6 +2,9 @@
 # 署名して公証（notarization）し、GitHub の下書きリリースに添付する。
 # 公開ボタンは人間が押す。署名と公証の決めごとは adr/0028-配布物の署名と公証.md。
 #
+# 自動アップデート（ADR 0042）のために、.app を固めた tar.gz とその minisign 署名から
+# 組んだ latest.json も添付する。アプリは公開済みの最新リリースの latest.json を見る。
+#
 # ここは tauri-apps/tauri-action で置き換えられる。今は使っていない。
 # 理由と移行の見取り図は adr/0011-cicdとリリース配布.md にある。
 name: Release
@@ -144,16 +147,26 @@ jobs:
       # "-" のままだと dmg の署名そのものが飛ぶ。ADR 0028）。
       #
       # **ここでは公証しない。**APPLE_API_KEY / APPLE_API_ISSUER を渡すと
-      # Tauri が .app を notary へ提出して待つが、その成果は捨てられる——
-      # `--bundles dmg` は dmg を作り終えた時点で .app を消すためである
+      # Tauri が .app を notary へ提出して待つ。`--bundles dmg` だけだった頃は
+      # dmg を作り終えた時点で .app が消され、その成果は捨てられていた
       # （実測: .app の公証待ちに 49 分、消される。dmg の公証は 24 秒）。
       # dmg を公証すれば notary が中身を展開して .app まで検証するので、
-      # 提出は次の手順の 1 回で足りる（ADR 0028）。
-      - name: dmg をビルドする（署名のみ）
+      # 提出は次の手順の 1 回で足りる（ADR 0028）。更新用の tar.gz の .app も
+      # 同じ実行ファイルであり、この 1 回の記録が当たる（ADR 0042）。
+      #
+      # **更新用の tar.gz もここで作る**（ADR 0042）。`--bundles app` を足すと .app が
+      # 消されずに残り、`createUpdaterArtifacts` がそれを tar.gz に固めて minisign の
+      # 鍵で署名する。この設定を tauri.conf.json に書かないのは、書くと手元の
+      # `tauri build` まで署名鍵を要求するためである。
+      - name: dmg と更新用の tar.gz をビルドする（署名のみ）
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: bun run tauri build --target aarch64-apple-darwin --bundles dmg
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: >-
+          bun run tauri build --target aarch64-apple-darwin --bundles app,dmg
+          --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       - name: 作られた dmg のパスを控える
         id: dmg
@@ -164,6 +177,26 @@ jobs:
           [ -n "${dmg}" ] || { echo 'dmg が見つからない' >&2; exit 1; }
           echo "path=${dmg}" >>"${GITHUB_OUTPUT}"
           echo "作られた dmg: ${dmg}"
+
+      # アセットの名前に版と CPU を入れる。Tauri の出す名前（koduchi.app.tar.gz）の
+      # ままだと、どのリリースのものかが名前から読めない。署名は中身に対するもので
+      # あり、名前を変えても効く。
+      - name: 更新用の tar.gz と署名のパスを控える
+        id: updater
+        run: |
+          set -euo pipefail
+          dir=src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          tarball="$(find "${dir}" -maxdepth 1 -name '*.app.tar.gz' | head -n 1)"
+          [ -n "${tarball}" ] || { echo '更新用の tar.gz が見つからない' >&2; exit 1; }
+          [ -s "${tarball}.sig" ] || { echo '更新用の tar.gz の署名が無い' >&2; exit 1; }
+          version="${GITHUB_REF_NAME#v}"
+          asset="koduchi_${version}_aarch64.app.tar.gz"
+          cp "${tarball}" "${RUNNER_TEMP}/${asset}"
+          cp "${tarball}.sig" "${RUNNER_TEMP}/${asset}.sig"
+          echo "tarball=${RUNNER_TEMP}/${asset}" >>"${GITHUB_OUTPUT}"
+          echo "signature=${RUNNER_TEMP}/${asset}.sig" >>"${GITHUB_OUTPUT}"
+          echo "asset=${asset}" >>"${GITHUB_OUTPUT}"
+          echo "作られた tar.gz: ${tarball} → ${asset}"
 
       # 公証の提出はここ 1 回だけである（ADR 0028）。利用者が受け取るのは dmg
       # であり、dmg 自身に証跡が無いと Gatekeeper に止められる。notary は
@@ -188,13 +221,14 @@ jobs:
       - name: 署名と公証とアイコンを確かめる
         env:
           DMG_PATH: ${{ steps.dmg.outputs.path }}
+          TARBALL_PATH: ${{ steps.updater.outputs.tarball }}
           EXPECTED_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
 
-          # `--bundles dmg` は dmg を作り終えた時点で bundle/macos/*.app を
-          # 消す。確かめる相手は**配る dmg の中身**であり、それが正しい。
-          # 手元に残った .app を見ても、利用者が受け取るものの検査にならない。
+          # 確かめる相手は**配る dmg の中身**である。手元の bundle/macos/*.app を
+          # 見ても、利用者が受け取るものの検査にならない。更新用の tar.gz の
+          # 中身は、この後でこの .app と同じものかを確かめる。
           mount="$(mktemp -d)"
           cleanup() { hdiutil detach "${mount}" -quiet || true; }
           trap cleanup EXIT
@@ -247,6 +281,52 @@ jobs:
           }
           echo "CFBundleIconName=${icon_name}"
 
+          # 更新用の tar.gz は別に公証へ出していない（ADR 0042）。中の .app が dmg の
+          # 中身と同じ実行ファイル（cdhash が一致）であれば、dmg の公証の記録が
+          # そのまま当たる。一致しないなら公証されていない .app を配ることになる。
+          echo "== 更新用の .app が dmg の中身と同じか =="
+          extracted="$(mktemp -d)"
+          tar -xzf "${TARBALL_PATH}" -C "${extracted}"
+          updater_app="$(find "${extracted}" -maxdepth 1 -name '*.app' | head -n 1)"
+          [ -n "${updater_app}" ] || { echo '::error::tar.gz の中に .app が無い' >&2; exit 1; }
+          dmg_cdhash="$(codesign -dv --verbose=4 "${app}" 2>&1 | sed -n 's/^CDHash=//p')"
+          updater_cdhash="$(codesign -dv --verbose=4 "${updater_app}" 2>&1 | sed -n 's/^CDHash=//p')"
+          if [ -z "${dmg_cdhash}" ] || [ "${dmg_cdhash}" != "${updater_cdhash}" ]; then
+            echo "::error::更新用の .app が dmg の中身と違う（dmg ${dmg_cdhash} / tar.gz ${updater_cdhash}）" >&2
+            exit 1
+          fi
+          codesign --verify --strict --deep --verbose=2 "${updater_app}"
+          spctl -a -vvv -t exec "${updater_app}"
+
+      # 公開鍵（tauri.conf.json）と秘密鍵（secret）が組でないと、配った版はどれも
+      # 署名の検証に落ちて更新できない。気付くのは利用者が次の版を待ったときになり、
+      # そのときには手で入れ直してもらうしかない。配る前にここで確かめる。
+      # minisign は版を固定していない（Homebrew の最新）。検証しかしないためである。
+      - name: 更新用の tar.gz の署名を公開鍵で確かめる
+        env:
+          TARBALL_PATH: ${{ steps.updater.outputs.tarball }}
+          SIGNATURE_PATH: ${{ steps.updater.outputs.signature }}
+        run: |
+          set -euo pipefail
+          brew install minisign
+          dir="$(mktemp -d)"
+          jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json | base64 --decode >"${dir}/key.pub"
+          base64 --decode <"${SIGNATURE_PATH}" >"${dir}/tarball.minisig"
+          minisign -V -p "${dir}/key.pub" -m "${TARBALL_PATH}" -x "${dir}/tarball.minisig"
+
+      - name: latest.json を組み立てる
+        id: latest
+        env:
+          SIGNATURE_PATH: ${{ steps.updater.outputs.signature }}
+          ASSET: ${{ steps.updater.outputs.asset }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/latest.json"
+          ./scripts/generate-latest-json.sh "${GITHUB_REF_NAME}" "${ASSET}" "${SIGNATURE_PATH}" \
+            "${GITHUB_REPOSITORY}" >"${path}"
+          cat "${path}"
+          echo "path=${path}" >>"${GITHUB_OUTPUT}"
+
       - name: 下書きリリースを作る
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -256,16 +336,23 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --generate-notes
 
-      - name: dmg を添付する
+      # latest.json は下書きのうちは誰からも見えない。公開した時点で
+      # releases/latest/download/latest.json がこのリリースのものに切り替わる。
+      - name: dmg と更新用のファイルを添付する
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DMG_PATH: ${{ steps.dmg.outputs.path }}
-        run: gh release upload "${GITHUB_REF_NAME}" "${DMG_PATH}"
+          TARBALL_PATH: ${{ steps.updater.outputs.tarball }}
+          LATEST_JSON_PATH: ${{ steps.latest.outputs.path }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${DMG_PATH}" "${TARBALL_PATH}" "${LATEST_JSON_PATH}"
 
       - name: 次にすることを表示する
         run: |
-          echo "下書きリリース ${GITHUB_REF_NAME} に署名・公証済みの dmg を添付した。"
+          echo "下書きリリース ${GITHUB_REF_NAME} に署名・公証済みの dmg と更新用のファイルを添付した。"
           echo "dmg を開けることを確かめてから、GitHub 上で公開すること。"
+          echo "公開した時点で、既に入っている小槌が起動時にこの版を見つける（ADR 0042）。"
 
       # 失敗しても必ず消す。ランナーは使い捨てだが、鍵をログや後続の手順から
       # 触れる場所に残さない。

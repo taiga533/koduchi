@@ -77,3 +77,6 @@ jobs:
       # リリース時に macOS 上で走るスクリプトなので、同じ macOS で確かめる。
       - name: リリースタグ検査のテスト
         run: ./scripts/check-release-tag.test.sh
+
+      - name: latest.json の組み立てのテスト
+        run: ./scripts/generate-latest-json.test.sh
