@@ -55,10 +55,10 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const SETTINGS_POSITION: usize = 2;
 
 /// 既定のメニューの File メニューの名前（tauri 2.11.5 の `Menu::default`）。
-const FILE_SUBMENU_TEXT: &str = "File";
+pub const FILE_SUBMENU_TEXT: &str = "File";
 
 /// 既定のメニューの Edit メニューの名前（tauri 2.11.5 の `Menu::default`）。
-const EDIT_SUBMENU_TEXT: &str = "Edit";
+pub const EDIT_SUBMENU_TEXT: &str = "Edit";
 
 /// メニューバーを組み立てる。
 ///

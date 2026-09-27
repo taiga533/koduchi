@@ -41,3 +41,12 @@ tauri-plugin-clipboard-manager = "2.3.3"
 # Instant Client を触るテストは直列に走らせる必要がある（ADR 0001）。
 serial_test = "3.5.0"
 tempfile = "3.24.0"
+# 既定のメニューの形（ADR 0040）を実物の `Menu::default` で見張るため、MockRuntime を使う。
+# 版は [dependencies] の tauri と揃える。
+tauri = { version = "2.11.5", features = ["test"] }
+
+# muda は macOS でメニューを主スレッドでしか作らせない。テストの枠組みは各テストを
+# 別のスレッドで走らせるため、枠組みを外して main から走らせる（ADR 0040）。
+[[test]]
+name = "menu"
+harness = false
