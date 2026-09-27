@@ -43,8 +43,17 @@ interface SavedQueryState {
    * 今のクエリを名前を付けて保存する。
    *
    * 名前の重複は弾かない。名前は目印であって鍵ではないためである。
+   * 積めたかを返すのは、失敗したのに「追加しました」と出さないためである
+   * （失敗の中身は `error` に置く）。
    */
-  save: (name: string, sql: string, connectionName: string) => Promise<void>
+  save: (name: string, sql: string, connectionName: string) => Promise<boolean>
+  /**
+   * 前後の空白を除いて同じ SQL の保存済みクエリを 1 件探す（ADR 0041）。
+   *
+   * 今の絞り込み（スコープ・検索語）に依らず全接続から探す。保存済みクエリは
+   * 接続をまたいで使う道具であり、別の接続で保存したものも重複である。
+   */
+  findBySql: (sql: string) => Promise<SavedQuery | null>
   /** 名前を付け替える。SQL 本体は変えない。 */
   rename: (id: number, name: string) => Promise<void>
   /** 1 件削除する。 */
@@ -96,9 +105,30 @@ export const useSavedQueryStore = create<SavedQueryState>((set, get) => ({
         connectionName,
         savedAt: Date.now(),
       })
-      await get().reload()
     } catch (error) {
       set({ error: toErrorMessage(error) })
+      return false
+    }
+    await get().reload()
+    return true
+  },
+
+  findBySql: async (sql) => {
+    const target = sql.trim()
+    if (target === '') {
+      return null
+    }
+    try {
+      // 検索語は部分一致なので、当たったものから本文が一致するものだけを拾う。
+      const candidates = await getDbApi().listSavedQueries({
+        connectionName: null,
+        search: target,
+        limit: SAVED_QUERY_LIMIT,
+      })
+      return candidates.find((entry) => entry.sql.trim() === target) ?? null
+    } catch (error) {
+      set({ error: toErrorMessage(error) })
+      return null
     }
   },
 

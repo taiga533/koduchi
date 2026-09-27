@@ -10,6 +10,7 @@ describe('SaveQueryDialog', () => {
       <SaveQueryDialog
         defaultName="無題-1"
         sql="select * from users"
+        existingName={null}
         onSubmit={() => {}}
         onClose={() => {}}
       />,
@@ -28,6 +29,7 @@ describe('SaveQueryDialog', () => {
       <SaveQueryDialog
         defaultName="無題-1"
         sql="select * from users"
+        existingName={null}
         onSubmit={() => {}}
         onClose={() => {}}
       />,
@@ -47,6 +49,7 @@ describe('SaveQueryDialog', () => {
       <SaveQueryDialog
         defaultName=""
         sql="select 1 from dual"
+        existingName={null}
         onSubmit={(name) => 渡された.push(name)}
         onClose={() => {}}
       />,
@@ -66,6 +69,7 @@ describe('SaveQueryDialog', () => {
       <SaveQueryDialog
         defaultName="  "
         sql="select 1 from dual"
+        existingName={null}
         onSubmit={(name) => 渡された.push(name)}
         onClose={() => {}}
       />,
@@ -85,6 +89,7 @@ describe('SaveQueryDialog', () => {
       <SaveQueryDialog
         defaultName="無題-1"
         sql="select 1 from dual"
+        existingName={null}
         onSubmit={() => {}}
         onClose={() => {
           閉じた = true
@@ -107,6 +112,7 @@ describe('SaveQueryDialog の IME 対応（ADR 0025）', () => {
       <SaveQueryDialog
         defaultName="売上"
         sql="select 1 from dual"
+        existingName={null}
         onSubmit={() => {}}
         onClose={() => {}}
       />,
@@ -126,6 +132,7 @@ describe('SaveQueryDialog の IME 対応（ADR 0025）', () => {
       <SaveQueryDialog
         defaultName="売上"
         sql="select 1 from dual"
+        existingName={null}
         onSubmit={() => {}}
         onClose={() => {}}
       />,
@@ -146,6 +153,7 @@ describe('SaveQueryDialog の IME 対応（ADR 0025）', () => {
       <SaveQueryDialog
         defaultName="売上"
         sql="select 1 from dual"
+        existingName={null}
         onSubmit={() => {}}
         onClose={() => (閉じた = true)}
       />,
@@ -165,6 +173,7 @@ describe('SaveQueryDialog の IME 対応（ADR 0025）', () => {
       <SaveQueryDialog
         defaultName="売上"
         sql="select 1 from dual"
+        existingName={null}
         onSubmit={() => {}}
         onClose={() => (閉じた = true)}
       />,
@@ -175,5 +184,44 @@ describe('SaveQueryDialog の IME 対応（ADR 0025）', () => {
 
     // Assert
     expect(閉じた).toBe(true)
+  })
+
+  it('同じ sql が保存済みならその名前を告げ、保存は押せるままにする', () => {
+    // Arrange
+    render(
+      <SaveQueryDialog
+        defaultName="売上"
+        sql="select * from sales"
+        existingName="月次の売上"
+        onSubmit={() => {}}
+        onClose={() => {}}
+      />,
+    )
+
+    // Act
+    const 告知 = screen.getByRole('note')
+
+    // Assert
+    expect(告知).toHaveTextContent('同じ SQL が「月次の売上」として保存済みです')
+    expect(screen.getByRole('button', { name: '保存' })).toBeEnabled()
+  })
+
+  it('保存済みに同じ sql が無ければ何も告げない', () => {
+    // Arrange
+    render(
+      <SaveQueryDialog
+        defaultName="売上"
+        sql="select * from sales"
+        existingName={null}
+        onSubmit={() => {}}
+        onClose={() => {}}
+      />,
+    )
+
+    // Act
+    const 告知 = screen.queryByRole('note')
+
+    // Assert
+    expect(告知).toBeNull()
   })
 })

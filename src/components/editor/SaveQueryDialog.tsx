@@ -17,13 +17,25 @@ interface SaveQueryDialogProps {
   defaultName: string
   /** 保存する SQL。確かめられるよう先頭だけを見せる。 */
   sql: string
+  /**
+   * 同じ SQL が既に保存済みならその名前（ADR 0041）。
+   *
+   * 保存は止めない。同じ SQL を別の名前で持ちたい場合があるためである。
+   */
+  existingName: string | null
   /** `⏎`。この名前で保存する。 */
   onSubmit: (name: string) => void
   /** `esc` または ✕。保存を取り消す。 */
   onClose: () => void
 }
 
-export function SaveQueryDialog({ defaultName, sql, onSubmit, onClose }: SaveQueryDialogProps) {
+export function SaveQueryDialog({
+  defaultName,
+  sql,
+  existingName,
+  onSubmit,
+  onClose,
+}: SaveQueryDialogProps) {
   const [name, setName] = useState(defaultName)
 
   // `esc` は `window` で受ける（ADR 0031）。焦点が外れていても閉じられる。
@@ -72,6 +84,12 @@ export function SaveQueryDialog({ defaultName, sql, onSubmit, onClose }: SaveQue
         <pre className="m-0 max-h-120px overflow-auto px-8px py-6px rounded-6px bg-bg border border-line text-11px text-fg4 whitespace-pre-wrap break-all">
           {sql}
         </pre>
+
+        {existingName !== null ? (
+          <p role="note" className="m-0 text-11px text-fg2 leading-[1.6]">
+            同じ SQL が「{existingName}」として保存済みです。保存するともう 1 件増えます。
+          </p>
+        ) : null}
 
         <p className="m-0 text-11px text-fg4 leading-[1.6]">
           保存するのは SQL 本体だけです。バインド変数の値は保存しません。
