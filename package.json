@@ -1,7 +1,7 @@
 {
   "name": "koduchi",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "notices": "bun run scripts/generate-third-party-notices.ts",
-    "worktree:sync": "./scripts/sync-worktree-ignored.sh"
+    "worktree:sync": "./scripts/sync-worktree-ignored.sh",
+    "version:bump": "./scripts/bump-version.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.3",

@@ -131,13 +131,16 @@ docker compose down -v && docker compose up -d
 添付する（[ADR 0011](adr/0011-cicdとリリース配布.md)）。公開は人間が行う。
 
 ```bash
-# 1. バージョンを上げる（package.json と src-tauri/Cargo.toml の 2 箇所。
-#    tauri.conf.json は package.json を参照するので触らない）
-# 2. main へマージする
-# 3. タグを打つ前に検査する
-./scripts/check-release-tag.sh v0.2.0
+# 1. ブランチでバージョンを上げる。package.json・src-tauri/Cargo.toml・
+#    src-tauri/Cargo.lock の 3 つを 1 回で書き換える（コミットはしない）。
+#    tauri.conf.json は package.json を参照するので触らない
+bun run version:bump 0.3.0
+# 2. コミットして PR を出し、main へマージする
+# 3. main の上でタグを打つ前に検査する
+git switch main && git pull
+./scripts/check-release-tag.sh v0.3.0
 # 4. タグを push する
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 `check-release-tag.sh` は、タグ名と 2 つのマニフェストのバージョンが一致すること、
