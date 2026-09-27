@@ -80,3 +80,6 @@ jobs:
 
       - name: latest.json の組み立てのテスト
         run: ./scripts/generate-latest-json.test.sh
+
+      - name: 版の書き換えのテスト
+        run: ./scripts/bump-version.test.sh

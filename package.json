@@ -14,7 +14,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "notices": "bun run scripts/generate-third-party-notices.ts",
-    "worktree:sync": "./scripts/sync-worktree-ignored.sh"
+    "worktree:sync": "./scripts/sync-worktree-ignored.sh",
+    "version:bump": "./scripts/bump-version.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.3",

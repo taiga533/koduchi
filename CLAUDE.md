@@ -167,7 +167,7 @@ mise run oracle:down     # コンテナを止める（ボリュームは残す�
 
 - TypeScript は `strict` に加えて `noUnusedLocals` / `noUnusedParameters` が有効。未使用の変数・引数はビルドエラーになる。
 - アプリ識別子は `ninja.taiga533.koduchi`（`tauri.conf.json`）。
-- バージョンの実体は `package.json` と `src-tauri/Cargo.toml` の 2 箇所だけ。`tauri.conf.json` の `version` は `"../package.json"` を参照しているので触らない。タグとの一致は `scripts/check-release-tag.sh` が見張る（ADR 0011）。
+- バージョンの実体は `package.json` と `src-tauri/Cargo.toml` の 2 箇所だけ。上げるときは `bun run version:bump <版>` で `Cargo.lock` と併せて 3 つを 1 回で書き換える（手で揃えない）。`tauri.conf.json` の `version` は `"../package.json"` を参照しているので触らない。タグとの一致は `scripts/check-release-tag.sh` が見張る（ADR 0011）。
 - 準拠法は日本法、第一審の専属的合意管轄は横浜地方裁判所小田原支部（`LICENSE` の追加許諾第 4 条）。
 - Rust の版は `rust-toolchain.toml` で `1.98.0` に固定してある。GitHub Actions は commit SHA でピン留めする（更新は Dependabot が PR を出す）。
 - 対応 OS は macOS 26.2 以降（`tauri.conf.json` の `minimumSystemVersion`）。リリースの dmg は **`macos-26` ランナーの上で** Xcode 26.3 で作る（`release.yml` の `runs-on` と `DEVELOPER_DIR`）。**この 3 つは組であり、1 つだけを動かさない**（ADR 0011）。Liquid Glass の `.icon` を焼く `actool` はホスト OS も 26 を要求し、`macos-15` では Xcode 26.3 を選んでも落ちる。
