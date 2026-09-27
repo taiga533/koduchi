@@ -9,9 +9,13 @@
  * 「`SELECT` を開く」と同じく**実行はしない**（ADR 0020）。
  *
  * 削除は `✕`、名前の変更は鉛筆と同じ動きであり、新しい裁定は無い。
+ *
+ * 「保存済みクエリへ追加」は履歴だけが持つ（ADR 0041）。行にボタンを足さず
+ * ここだけに置くのは、行には既に押す場所（本体と `✕`）が 2 つあり、たまに
+ * しか使わない操作のために押し間違いの的を増やさないためである。
  */
 
-import { Copy, FilePlus2, Pencil, TextCursorInput, Trash2 } from 'lucide-react'
+import { BookmarkPlus, Copy, FilePlus2, Pencil, TextCursorInput, Trash2 } from 'lucide-react'
 import type { ContextMenuEntry } from '../menu/ContextMenu'
 import { ContextMenu, SEPARATOR } from '../menu/ContextMenu'
 
@@ -23,6 +27,8 @@ interface SqlEntryContextMenuProps {
   onUse: () => void
   onOpenInNewTab: () => void
   onCopy: () => void
+  /** 保存済みクエリへ足す。省けば項目を出さない（保存済みクエリ自身には要らない）。 */
+  onSaveQuery?: () => void
   /** 名前を変える。省けば項目を出さない（履歴には名前が無い）。 */
   onRename?: () => void
   onRemove: () => void
@@ -37,6 +43,7 @@ export function SqlEntryContextMenu({
   onUse,
   onOpenInNewTab,
   onCopy,
+  onSaveQuery,
   onRename,
   onRemove,
   onClose,
@@ -57,6 +64,14 @@ export function SqlEntryContextMenu({
     { kind: 'item', label: 'SQL をコピー', icon: <Copy size={13} />, onSelect: onCopy },
     SEPARATOR,
   ]
+  if (onSaveQuery) {
+    entries.push({
+      kind: 'item',
+      label: '保存済みクエリへ追加',
+      icon: <BookmarkPlus size={13} />,
+      onSelect: onSaveQuery,
+    })
+  }
   if (onRename) {
     entries.push({
       kind: 'item',

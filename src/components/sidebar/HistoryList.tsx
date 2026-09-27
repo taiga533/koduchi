@@ -8,7 +8,7 @@
  * 行の右クリックでメニューを出す（ADR 0038。`SqlEntryContextMenu.tsx`）。
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { getClipboardApi } from '../../api/clipboard'
 import type { HistoryEntry } from '../../types/db'
@@ -35,7 +35,16 @@ interface HistoryListProps {
   onUse: (sql: string) => void
   /** 履歴の SQL を新しいタブに入れる。実行はしない（ADR 0038）。 */
   onOpenInNewTab: (sql: string) => void
+  /**
+   * 履歴の 1 件を保存済みクエリへ足す（ADR 0041）。
+   *
+   * 積めたときはその名前で解く。取り消しと失敗は `null`。
+   */
+  onSaveQuery: (entry: HistoryEntry) => Promise<string | null>
 }
+
+/** 「追加しました」を出しておく時間（ミリ秒）。コピーの一言と揃える。 */
+const NOTICE_MS = 2500
 
 /** 右クリックのメニューの状態。 */
 interface MenuState {
@@ -44,13 +53,36 @@ interface MenuState {
   entry: HistoryEntry
 }
 
-export function HistoryList({ onUse, onOpenInNewTab }: HistoryListProps) {
+export function HistoryList({ onUse, onOpenInNewTab, onSaveQuery }: HistoryListProps) {
   const entries = useHistoryStore((state) => state.entries)
   const scope = useHistoryStore((state) => state.scope)
   const setScope = useHistoryStore((state) => state.setScope)
   const remove = useHistoryStore((state) => state.remove)
   const loading = useHistoryStore((state) => state.loading)
   const [menu, setMenu] = useState<MenuState | null>(null)
+  /**
+   * 保存できたことを告げる一言（ADR 0041）。
+   *
+   * 保存済みの一覧は別のセグメントにあって見えないため、ここで告げないと
+   * 積めたのかが分からない。寿命がこの一覧と同じなので、ストアへは上げない。
+   */
+  const [notice, setNotice] = useState<{ name: string } | null>(null)
+
+  useEffect(() => {
+    if (notice === null) {
+      return
+    }
+    const timer = window.setTimeout(() => setNotice(null), NOTICE_MS)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  const saveQuery = (entry: HistoryEntry) => {
+    void onSaveQuery(entry).then((name) => {
+      if (name !== null) {
+        setNotice({ name })
+      }
+    })
+  }
 
   return (
     <div className="flex flex-col">
@@ -62,6 +94,13 @@ export function HistoryList({ onUse, onOpenInNewTab }: HistoryListProps) {
           全接続
         </ScopeButton>
       </div>
+      <p
+        role="status"
+        aria-live="polite"
+        className={`m-0 px-12px text-10.5px text-fg4 truncate ${notice === null ? 'hidden' : 'pb-4px'}`}
+      >
+        {notice === null ? '' : `「${notice.name}」を保存済みクエリへ追加しました`}
+      </p>
 
       {entries.length === 0 ? (
         <p className="m-0 px-14px py-16px text-12px leading-[1.6] text-fg5 text-center">
@@ -88,6 +127,7 @@ export function HistoryList({ onUse, onOpenInNewTab }: HistoryListProps) {
           onUse={() => onUse(menu.entry.sql)}
           onOpenInNewTab={() => onOpenInNewTab(menu.entry.sql)}
           onCopy={() => void getClipboardApi().writeText(menu.entry.sql)}
+          onSaveQuery={() => saveQuery(menu.entry)}
           onRemove={() => remove(menu.entry.id)}
           onClose={() => setMenu(null)}
         />

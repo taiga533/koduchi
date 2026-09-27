@@ -20,6 +20,7 @@ import { useSchemaStore } from './stores/schema'
 import type { ExecuteResponse, SchemaFilter, SchemaNode } from './types/db'
 import { selectActiveSqlTab, selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
+import { useHistoryStore } from './stores/history'
 import { defaultCsvOptions } from './types/db'
 
 /** 2 行 2 列の問い合わせ結果。 */
@@ -148,7 +149,9 @@ beforeEach(() => {
     editorHeight: EDITOR_HEIGHT_DEFAULT,
     keybindings: {},
     settingsOpen: false,
+    sidebarSegment: 'schema',
   })
+  useHistoryStore.setState({ scope: 'connection' })
 })
 
 afterEach(() => {
@@ -641,6 +644,46 @@ describe('App', () => {
       ]),
     )
     expect(screen.queryByLabelText('名前')).not.toBeInTheDocument()
+  })
+
+  it('履歴の右クリックから保存済みへ積み、履歴の接続名を添えて一言を出す', async () => {
+    // Arrange: 履歴は別の接続（本番）のもの
+    const { api, calls } = createFakeDbApi({
+      history: [
+        {
+          id: 1,
+          sql: 'select * from sales',
+          connectionName: '本番',
+          startedAt: 1_700_000_000_000,
+          elapsedMs: 3,
+          rowCount: 1,
+          succeeded: true,
+          errorMessage: null,
+        },
+      ],
+    })
+    setDbApi(api)
+    接続済みにする()
+    useUiStore.setState({ sidebarSegment: 'history' })
+    useHistoryStore.setState({ scope: 'all' })
+    render(<App />)
+    const user = userEvent.setup()
+
+    // Act
+    fireEvent.contextMenu(await screen.findByText('select * from sales'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '保存済みクエリへ追加' }))
+    const 名前 = await screen.findByLabelText('名前')
+    await user.clear(名前)
+    await user.type(名前, '売上')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    // Assert
+    await waitFor(() =>
+      expect(calls.createSavedQuery).toMatchObject([
+        { name: '売上', sql: 'select * from sales', connectionName: '本番' },
+      ]),
+    )
+    expect(await screen.findByText('「売上」を保存済みクエリへ追加しました')).toBeInTheDocument()
   })
 
   it('⌘W で選んでいるタブを閉じる', async () => {

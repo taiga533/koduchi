@@ -252,4 +252,15 @@ describe('保存済みクエリの右クリックメニュー', () => {
     expect(書いた).toEqual(['select * from users\nwhere id = 1'])
     expect(calls.deleteSavedQuery).toEqual([1])
   })
+
+  it('保存済みクエリ自身には保存済みクエリへ追加を出さない', () => {
+    // Arrange
+    render(<SavedQueryList onUse={() => {}} onOpenInNewTab={() => {}} />)
+
+    // Act
+    fireEvent.contextMenu(screen.getByText('利用者の一覧'))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: '保存済みクエリへ追加' })).not.toBeInTheDocument()
+  })
 })
