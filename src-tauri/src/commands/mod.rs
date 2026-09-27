@@ -16,6 +16,7 @@ pub mod schema;
 pub mod sessions;
 pub mod source;
 pub mod tns;
+pub mod updater;
 pub mod window;
 
 use crate::csv::CsvWriter;
