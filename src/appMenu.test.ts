@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
-import { OPEN_SETTINGS_EVENT, onOpenSettingsRequested } from './appMenu'
+import { readFileSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
+import { MENU_COMMAND_EVENT, onMenuCommand } from './appMenu'
+import { COMMANDS } from './mediator/commands'
 
 /**
  * Tauri の中で動いていることにする。
@@ -45,7 +48,7 @@ async function 未処理の拒否を拾う(act: () => void): Promise<unknown> {
   }
 }
 
-describe('onOpenSettingsRequested', () => {
+describe('onMenuCommand', () => {
   beforeEach(() => {
     delete (globalThis as { isTauri?: boolean }).isTauri
   })
@@ -55,21 +58,22 @@ describe('onOpenSettingsRequested', () => {
     clearMocks()
   })
 
-  it('メニューの「設定…」のイベントが届くと処理を呼ぶ', async () => {
+  it('メニューのイベントが届くとコマンドの識別子を渡して処理を呼ぶ', async () => {
     // Arrange
     Tauriの中にする()
     mockIPC(() => {}, { shouldMockEvents: true })
     const handler = vi.fn()
-    onOpenSettingsRequested(handler)
+    onMenuCommand(handler)
 
     // Act
     await waitFor(async () => {
-      await emit(OPEN_SETTINGS_EVENT)
+      await emit(MENU_COMMAND_EVENT, 'format')
       expect(handler).toHaveBeenCalled()
     })
 
     // Assert
     expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith('format')
   })
 
   it('後片付けの後に届いたイベントでは処理を呼ばない', async () => {
@@ -77,11 +81,11 @@ describe('onOpenSettingsRequested', () => {
     Tauriの中にする()
     mockIPC(() => {}, { shouldMockEvents: true })
     const handler = vi.fn()
-    const stop = onOpenSettingsRequested(handler)
+    const stop = onMenuCommand(handler)
     stop()
 
     // Act
-    await emit(OPEN_SETTINGS_EVENT)
+    await emit(MENU_COMMAND_EVENT, 'format')
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     // Assert
@@ -99,7 +103,7 @@ describe('onOpenSettingsRequested', () => {
     })
 
     // Act
-    const 拾った = await 未処理の拒否を拾う(() => onOpenSettingsRequested(vi.fn()))
+    const 拾った = await 未処理の拒否を拾う(() => onMenuCommand(vi.fn()))
 
     // Assert
     expect(拾った).toBe(失敗)
@@ -114,11 +118,28 @@ describe('onOpenSettingsRequested', () => {
     const handler = vi.fn()
 
     // Act
-    const stop = onOpenSettingsRequested(handler)
+    const stop = onMenuCommand(handler)
 
     // Assert
     expect(呼ばれたコマンド).toEqual([])
     expect(() => stop()).not.toThrow()
     expect(handler).not.toHaveBeenCalled()
+  })
+})
+
+describe('メニューの項目とコマンドの表', () => {
+  it('Rust 側のメニューが送る識別子はどれもコマンドの表に在る', () => {
+    // Arrange
+    // 識別子は言語をまたいで綴りを揃えるしかなく、食い違うと押したときに初めて
+    // 例外になる。Rust 側の定義を読んで突き合わせる。
+    const source = readFileSync(resolvePath(__dirname, '../src-tauri/src/menu.rs'), 'utf8')
+    const ids = [...source.matchAll(/command_id: "([^"]+)"/g)].map((match) => match[1])
+
+    // Act
+    const missing = ids.filter((id) => !COMMANDS.some((command) => command.id === id))
+
+    // Assert
+    expect(ids).toEqual(['settings', 'open-file', 'format'])
+    expect(missing).toEqual([])
   })
 })

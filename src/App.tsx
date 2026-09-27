@@ -52,7 +52,7 @@ import { SessionsPanel } from './components/sessions/SessionsPanel'
 import { SourceSearchPanel } from './components/source/SourceSearchPanel'
 import { SettingsPanel } from './components/settings/SettingsPanel'
 import { Sidebar } from './components/sidebar/Sidebar'
-import { onOpenSettingsRequested } from './appMenu'
+import { onMenuCommand } from './appMenu'
 import { onConnectionLost } from './connection/lost'
 import type { Command, CommandScreen } from './mediator/commands'
 import { resolveKeybindings } from './keybindings/bindings'
@@ -158,7 +158,6 @@ function AppWindow() {
 
   const setCursor = useUiStore((state) => state.setCursor)
   const settingsOpen = useUiStore((state) => state.settingsOpen)
-  const openSettings = useUiStore((state) => state.openSettings)
   const closeSettings = useUiStore((state) => state.closeSettings)
   const sessionsOpen = useUiStore((state) => state.sessionsOpen)
   const openSessions = useUiStore((state) => state.openSessions)
@@ -239,10 +238,6 @@ function AppWindow() {
     })
   }, [ask])
 
-  // メニューバーの「設定…」（⌘,）から設定画面を開く（ADR 0036）。書き換えるのは
-  // `ui` ストアだけであり、仲介者を通さずに繋ぐ。
-  useEffect(() => onOpenSettingsRequested(openSettings), [openSettings])
-
   // サーバ側で接続が切れたことを各ストアへ配る（ADR 0026）。
   useEffect(() => onConnectionLost(relayConnectionLost), [])
 
@@ -286,6 +281,12 @@ function AppWindow() {
   /** パレットのキーと同じ裁定と判定を、タイトルバーのボタンからも通す。 */
   const openPalette = useCallback(
     () => runCommand(commandById('palette'), commandScreen),
+    [commandScreen],
+  )
+
+  // メニューバーの項目（ADR 0036・0040）も、キーやパレットと同じ裁定と判定に通す。
+  useEffect(
+    () => onMenuCommand((id) => runCommand(commandById(id), commandScreen)),
     [commandScreen],
   )
 
