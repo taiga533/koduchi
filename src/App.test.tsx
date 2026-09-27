@@ -4,8 +4,10 @@ import userEvent from '@testing-library/user-event'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import { App } from './App'
-import { OPEN_SETTINGS_EVENT } from './appMenu'
+import { MENU_COMMAND_EVENT } from './appMenu'
 import { getDbApi, resetDbApi, setDbApi } from './api/db'
+import { resetDialogApi, setDialogApi } from './api/dialog'
+import { createFakeDialogApi } from './test/fakeDialogApi'
 import { createFakeDbApi, emptyResponse, queryResponse } from './test/fakeDbApi'
 import { SQLタブを一枚にする } from './test/activeConnection'
 import { resetPendingDialogs, setPendingDialogs } from './transaction/pendingChanges'
@@ -159,6 +161,7 @@ afterEach(() => {
   clearMocks()
   delete (globalThis as { isTauri?: boolean }).isTauri
   resetDbApi()
+  resetDialogApi()
   resetPendingDialogs()
   resetCloseTabDialog()
 })
@@ -227,12 +230,57 @@ describe('App', () => {
 
     // Act
     await waitFor(async () => {
-      await act(() => emit(OPEN_SETTINGS_EVENT))
+      await act(() => emit(MENU_COMMAND_EVENT, 'settings'))
       expect(useUiStore.getState().settingsOpen).toBe(true)
     })
 
     // Assert
     expect(await screen.findByRole('heading', { name: '設定' })).toBeInTheDocument()
+  })
+
+  it('メニューバーの「SQL を整形」のイベントが届くと選んでいるタブを整形する', async () => {
+    // Arrange: メニューはキーと同じコマンドの表の行を走らせる（ADR 0040）
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    mockWindows('main')
+    mockIPC(() => {}, { shouldMockEvents: true })
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    接続済みにする()
+    SQLタブを一枚にする({ content: 'select 1 from dual' })
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await waitFor(async () => {
+      await act(() => emit(MENU_COMMAND_EVENT, 'format'))
+      expect(selectActiveSqlTab(useTabStore.getState())?.content).not.toBe('select 1 from dual')
+    })
+
+    // Assert
+    expect(selectActiveSqlTab(useTabStore.getState())?.content).toBe('select\n  1\nfrom\n  dual')
+  })
+
+  it('メニューバーの「ファイルを開く…」のイベントが届くと選んだファイルを新しいタブで開く', async () => {
+    // Arrange
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    mockWindows('main')
+    mockIPC(() => {}, { shouldMockEvents: true })
+    const { api } = createFakeDbApi()
+    setDbApi({ ...api, readTextFile: async () => 'select 1 from dual' })
+    setDialogApi(createFakeDialogApi({ openPath: '/tmp/users.sql' }).api)
+    接続済みにする()
+    render(<App />)
+    await screen.findByText('SQL を実行すると、ここに結果が出ます')
+
+    // Act
+    await waitFor(async () => {
+      await act(() => emit(MENU_COMMAND_EVENT, 'open-file'))
+      expect(selectActiveSqlTab(useTabStore.getState())?.filePath).toBe('/tmp/users.sql')
+    })
+
+    // Assert
+    expect(selectActiveSqlTab(useTabStore.getState())?.content).toBe('select 1 from dual')
+    expect((await screen.findAllByText('users.sql')).length).toBeGreaterThan(0)
   })
 
   it('選ぶ画面の新しい接続から作成画面へ進む', async () => {

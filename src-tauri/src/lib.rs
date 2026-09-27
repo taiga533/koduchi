@@ -29,7 +29,7 @@ pub fn run() {
         // ウィンドウの位置とサイズの復元はプラグインに任せる（ADR 0009）。
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState::default())
-        // 既定のメニューに「設定…」（⌘,）を足す（ADR 0036）。
+        // 既定のメニューに「設定…」などを差し込む（ADR 0036・0040）。
         .menu(menu::build)
         .on_menu_event(|app, event| {
             // メニューの押下には結果を返す相手がいない。ここが大域の受け手である。
