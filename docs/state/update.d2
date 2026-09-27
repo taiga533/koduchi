@@ -1,0 +1,102 @@
+# 自動アップデートの段階の遷移（src/stores/update.ts の UpdateStatus、ADR 0042）
+#
+# 矢印はストアが受け付ける遷移。ここに無い遷移はストア自身が拒む。
+# 画面が入口を出さないのは見た目の手当てであり、関所はストアに置いてある。
+# 灰色の破線は、呼ばれても段階を動かさずに拒む呼び出しである。
+#
+# ダイアログを出すか（dialogOpen）は段階とは別に持つ。起動時の確認（launch）は
+# 新しい版を見つけたときだけ出し、手で確かめたとき（manual）は結果を必ず出す。
+#
+# 確認は同時に 1 本しか走らせないため、待ちの後に試行が古くなっていることは無い。
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+classes: {
+  initial: {
+    shape: circle
+    width: 16
+    height: 16
+    label: ""
+    style.fill: "#444"
+  }
+  state: {
+    style.border-radius: 8
+  }
+  rejected: {
+    style.stroke: "#888"
+    style.stroke-dash: 4
+    style.font-color: "#888"
+  }
+}
+
+start.class: initial
+
+idle: {
+  class: state
+  label: "idle\n何もしていない"
+}
+checking: {
+  class: state
+  label: "checking\n問い合わせ中"
+}
+upToDate: {
+  class: state
+  label: "upToDate\n最新"
+}
+available: {
+  class: state
+  label: "available\n新しい版を尋ねている"
+}
+downloading: {
+  class: state
+  label: "downloading\n取得して入れ替え中"
+}
+installed: {
+  class: state
+  label: "installed\n入れ替え済み・再起動待ち"
+}
+restarting: {
+  class: state
+  label: "restarting\nウィンドウを閉じている"
+}
+failed: {
+  class: state
+  label: "failed\n失敗"
+}
+
+start -> idle
+
+idle -> checking: "check(launch / manual)"
+upToDate -> checking: "check(manual)"
+failed -> checking: "check(manual)"
+
+checking -> upToDate: "新しい版が無い"
+checking -> available: "新しい版がある\n（launch ならここで初めて出す）"
+checking -> failed: "問い合わせに失敗\n（launch なら出さない）"
+
+available -> downloading: "install()"
+downloading -> installed: "入れ替え終えた\n（続けて restart()）"
+downloading -> failed: "取得・入れ替えに失敗"
+
+installed -> restarting: "restart()\n予約して全ウィンドウへ閉じる要求"
+restarting -> installed: "restartDeclined()\nこのウィンドウの関所で断られた"
+restarting -> failed: "再起動を頼めなかった"
+
+# 走っている確認や見つけた版はそのまま見せる（2 本目を走らせない）。
+checking -> checking: "check()\n問い合わせない（manual ならダイアログを出す）" {class: rejected}
+available -> available: "check()\n問い合わせない（manual ならダイアログを出す）" {class: rejected}
+installed -> installed: "check()\n問い合わせない（manual ならダイアログを出す）" {class: rejected}
+
+# 起動時の確認は 1 度だけ。既に結果を持っていれば走らせない。
+upToDate -> upToDate: "check(launch)\n走らせない" {class: rejected}
+failed -> failed: "check(launch)\n走らせない" {class: rejected}
+
+# 閉じても止まらないため、取得と再起動の最中は閉じない。
+downloading -> downloading: "dismiss() / check()\n何もしない" {class: rejected}
+restarting -> restarting: "dismiss() / check()\n何もしない" {class: rejected}

@@ -25,6 +25,7 @@ import { matchesChord } from '../keybindings/chord'
 import { useConnectionStore } from '../stores/connection'
 import { useTabStore } from '../stores/tab'
 import { useUiStore } from '../stores/ui'
+import { useUpdateStore } from '../stores/update'
 import type { Ask } from './ask'
 import { openNewConnectionWindow } from './connection'
 import type { EditorCursor, RunScreen } from './execution'
@@ -270,6 +271,15 @@ export const COMMANDS: readonly Command[] = [
     defaultKey: null,
     inPalette: true,
     run: () => useUiStore.getState().openSettings(),
+  },
+  {
+    // 繋がっていなくても確かめられる（ADR 0042）。入口はメニューとパレット。
+    id: 'check-update',
+    label: 'アップデートを確認',
+    scope: 'window',
+    defaultKey: null,
+    inPalette: true,
+    run: () => void useUpdateStore.getState().check('manual'),
   },
   {
     // タブを閉じる経路は `closeTabAndRelease` 1 つである（ADR 0023）。
