@@ -5,7 +5,12 @@ describe('createAskChannel', () => {
   it('尋ね事を出すと一覧に載り、答えると片付いて答えが届く', async () => {
     // Arrange
     const channel = createAskChannel()
-    const 答え = channel.ask({ kind: 'saveQuery', defaultName: '売上', sql: 'select 1 from dual' })
+    const 答え = channel.ask({
+      kind: 'saveQuery',
+      defaultName: '売上',
+      sql: 'select 1 from dual',
+      existingName: null,
+    })
 
     // Act
     channel.getSnapshot().saveQuery?.answer('売上集計')

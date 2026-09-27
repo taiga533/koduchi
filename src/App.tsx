@@ -77,6 +77,7 @@ import {
   runStatement,
 } from './mediator/execution'
 import { revealSchemaObject } from './mediator/schema'
+import { saveQueryFromHistory } from './mediator/savedQuery'
 import { restoreSession } from './mediator/session'
 import { saveTab, saveTabAs } from './mediator/files'
 import {
@@ -98,7 +99,7 @@ import { selectActiveTab, useTabStore } from './stores/tab'
 import { useUiStore } from './stores/ui'
 import { CLOSE_WORDING } from './transaction/pendingChanges'
 import { currentWindowLabel, onWindowCloseRequested } from './window'
-import type { ClientStatus, SavedConnection, SchemaFilter } from './types/db'
+import type { ClientStatus, HistoryEntry, SavedConnection, SchemaFilter } from './types/db'
 
 /** カーソルの初期位置。エディタから通知が来るまでの値。 */
 const INITIAL_POSITION: EditorPosition = {
@@ -260,6 +261,12 @@ function AppWindow() {
     editorRef.current?.insertAtCursor(text)
   }, [])
 
+  /** 履歴の行の「保存済みクエリへ追加」（ADR 0041）。 */
+  const saveHistoryQuery = useCallback(
+    (entry: HistoryEntry) => saveQueryFromHistory(entry, ask),
+    [ask],
+  )
+
   /**
    * コマンドの表（ADR 0035）へ渡す、画面にしか無いもの。
    *
@@ -393,6 +400,7 @@ function AppWindow() {
         <SaveQueryDialog
           defaultName={pendingAsks.saveQuery.request.defaultName}
           sql={pendingAsks.saveQuery.request.sql}
+          existingName={pendingAsks.saveQuery.request.existingName}
           onSubmit={(name) => pendingAsks.saveQuery?.answer(name)}
           onClose={() => pendingAsks.saveQuery?.answer(null)}
         />
@@ -430,6 +438,7 @@ function AppWindow() {
         onUseHistory={putSqlIntoEditor}
         onInsertIdentifier={insertIntoEditor}
         onOpenSelect={openSqlInNewTab}
+        onSaveHistoryQuery={saveHistoryQuery}
         onOpenDefinition={openDefinitionTab}
         width={sidebarWidth}
       />

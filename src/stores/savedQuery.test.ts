@@ -126,6 +126,57 @@ describe('useSavedQueryStore', () => {
     expect(calls.listSavedQueries).toHaveLength(1)
   })
 
+  it('保存できたら真を返す', async () => {
+    // Arrange
+    const store = useSavedQueryStore.getState()
+
+    // Act
+    const 積めた = await store.save('今日の売上', 'select * from sales', '開発')
+
+    // Assert
+    expect(積めた).toBe(true)
+  })
+
+  it('保存に失敗したら偽を返しエラーを残す', async () => {
+    // Arrange
+    setDbApi({
+      ...createFakeDbApi().api,
+      createSavedQuery: async () => {
+        throw new Error('書き込めません')
+      },
+    })
+
+    // Act
+    const 積めた = await useSavedQueryStore.getState().save('名前', 'select 1 from dual', '開発')
+
+    // Assert
+    expect(積めた).toBe(false)
+    expect(useSavedQueryStore.getState().error).toBe('書き込めません')
+  })
+
+  it('同じ sql の保存済みクエリを前後の空白を除いて全接続から探す', async () => {
+    // Arrange: 今のスコープは「この接続のみ」でも全接続から探す
+    useSavedQueryStore.setState({ scope: 'connection', connectionName: '開発' })
+
+    // Act
+    const 見つかった = await useSavedQueryStore.getState().findBySql('  select * from orders\n')
+
+    // Assert
+    expect(見つかった?.name).toBe('注文の一覧')
+    expect(calls.listSavedQueries[0].connectionName).toBeNull()
+  })
+
+  it('本文の一部にしか当たらなければ同じ sql とみなさない', async () => {
+    // Arrange
+    const store = useSavedQueryStore.getState()
+
+    // Act
+    const 見つかった = await store.findBySql('select * from')
+
+    // Assert
+    expect(見つかった).toBeNull()
+  })
+
   it('名前を変えても sql は元のまま渡す', async () => {
     // Arrange
     await useSavedQueryStore.getState().reload()

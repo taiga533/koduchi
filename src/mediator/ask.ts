@@ -14,8 +14,12 @@ export type AskRequest =
   | { kind: 'binds'; names: string[] }
   /** 実行中のため切断できないことを告げ、中止するかを尋ねる（ADR README「接続の切断と切り替え」）。 */
   | { kind: 'disconnectBlocked' }
-  /** 保存済みクエリの名前を尋ねる（ADR 0018）。 */
-  | { kind: 'saveQuery'; defaultName: string; sql: string }
+  /**
+   * 保存済みクエリの名前を尋ねる（ADR 0018）。
+   *
+   * `existingName` は同じ SQL が既に保存済みならその名前（ADR 0041）。
+   */
+  | { kind: 'saveQuery'; defaultName: string; sql: string; existingName: string | null }
 
 /** 尋ね事の種類。 */
 export type AskKind = AskRequest['kind']

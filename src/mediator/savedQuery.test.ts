@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi } from '../test/fakeDbApi'
 import { SQLタブを一枚にする, 接続済みにする, 未接続にする } from '../test/activeConnection'
+import type { HistoryEntry, SavedQuery } from '../types/db'
 import type { Ask, AskRequest } from './ask'
-import { saveQueryFromEditor } from './savedQuery'
+import { nameFromSql, saveQueryFromEditor, saveQueryFromHistory } from './savedQuery'
 
 beforeEach(() => {
   接続済みにする()
@@ -44,7 +45,9 @@ describe('saveQueryFromEditor', () => {
     await saveQueryFromEditor({ offset: 0, selectedText: null }, ask)
 
     // Assert
-    expect(尋ねた).toEqual([{ kind: 'saveQuery', defaultName: '売上', sql: 'select 1 from dual' }])
+    expect(尋ねた).toEqual([
+      { kind: 'saveQuery', defaultName: '売上', sql: 'select 1 from dual', existingName: null },
+    ])
     expect(calls.createSavedQuery).toMatchObject([
       { name: '売上集計', sql: 'select 1 from dual', connectionName: 'dev' },
     ])
@@ -100,5 +103,142 @@ describe('saveQueryFromEditor', () => {
 
     // Assert
     expect(calls.createSavedQuery).toEqual([])
+  })
+})
+
+/** 履歴 1 件を組み立てる。 */
+function 履歴(sql: string, connectionName = '本番'): HistoryEntry {
+  return {
+    id: 1,
+    sql,
+    connectionName,
+    startedAt: 1_700_000_000_000,
+    elapsedMs: 3,
+    rowCount: 1,
+    succeeded: true,
+    errorMessage: null,
+  }
+}
+
+/** 保存済みクエリ 1 件を組み立てる。 */
+function 保存済み(name: string, sql: string): SavedQuery {
+  return { id: 9, name, sql, connectionName: '開発', createdAt: 0, updatedAt: 0 }
+}
+
+describe('saveQueryFromHistory', () => {
+  it('1 行目を既定の名前にして尋ね、履歴の接続名を添えて保存する', async () => {
+    // Arrange: 今の接続は dev、履歴は本番のもの
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    const { ask, 尋ねた } = 尋ね方('月次の売上')
+
+    // Act
+    const 名前 = await saveQueryFromHistory(履歴('select *\n  from sales'), ask)
+
+    // Assert
+    expect(尋ねた).toEqual([
+      {
+        kind: 'saveQuery',
+        defaultName: 'select *',
+        sql: 'select *\n  from sales',
+        existingName: null,
+      },
+    ])
+    expect(calls.createSavedQuery).toMatchObject([
+      { name: '月次の売上', sql: 'select *\n  from sales', connectionName: '本番' },
+    ])
+    expect(名前).toBe('月次の売上')
+  })
+
+  it('同じ sql が保存済みならその名前を添えて尋ね、保存は止めない', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({
+      savedQueries: [保存済み('売上', 'select * from sales')],
+    })
+    setDbApi(api)
+    const { ask, 尋ねた } = 尋ね方('売上その2')
+
+    // Act
+    await saveQueryFromHistory(履歴('select * from sales'), ask)
+
+    // Assert
+    expect(尋ねた[0]).toMatchObject({ existingName: '売上' })
+    expect(calls.createSavedQuery).toHaveLength(1)
+  })
+
+  it('尋ねている間に切断されても履歴の接続名で保存する', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    await saveQueryFromHistory(履歴('select 1 from dual'), 尋ね方('名前', 未接続にする).ask)
+
+    // Assert
+    expect(calls.createSavedQuery).toMatchObject([{ connectionName: '本番' }])
+  })
+
+  it('取り消されたら保存せず null を返す', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+
+    // Act
+    const 名前 = await saveQueryFromHistory(履歴('select 1 from dual'), 尋ね方(null).ask)
+
+    // Assert
+    expect(名前).toBeNull()
+    expect(calls.createSavedQuery).toEqual([])
+  })
+
+  it('保存に失敗したら null を返す', async () => {
+    // Arrange
+    setDbApi({
+      ...createFakeDbApi().api,
+      createSavedQuery: async () => {
+        throw new Error('書き込めません')
+      },
+    })
+
+    // Act
+    const 名前 = await saveQueryFromHistory(履歴('select 1 from dual'), 尋ね方('名前').ask)
+
+    // Assert
+    expect(名前).toBeNull()
+  })
+})
+
+describe('nameFromSql', () => {
+  it('空行を飛ばした最初の行を空白を詰めて使う', () => {
+    // Arrange
+    const sql = '\n   select  a,\tb\nfrom t'
+
+    // Act
+    const 名前 = nameFromSql(sql)
+
+    // Assert
+    expect(名前).toBe('select a, b')
+  })
+
+  it('長い行は 40 文字で切って省略の印を付ける', () => {
+    // Arrange
+    const sql = 'x'.repeat(50)
+
+    // Act
+    const 名前 = nameFromSql(sql)
+
+    // Assert
+    expect(名前).toBe(`${'x'.repeat(40)}…`)
+  })
+
+  it('空白だけなら空にする', () => {
+    // Arrange
+    const sql = ' \n '
+
+    // Act
+    const 名前 = nameFromSql(sql)
+
+    // Assert
+    expect(名前).toBe('')
   })
 })

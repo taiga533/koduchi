@@ -11,7 +11,7 @@ import { Plus, Search } from 'lucide-react'
 import { formatColumnProgress, useSchemaStore } from '../../stores/schema'
 import { useHistoryStore } from '../../stores/history'
 import { useSavedQueryStore } from '../../stores/savedQuery'
-import type { DefinitionTarget } from '../../types/db'
+import type { DefinitionTarget, HistoryEntry } from '../../types/db'
 import type { SidebarSegment } from '../../stores/ui'
 import { useUiStore } from '../../stores/ui'
 import { HistoryList } from './HistoryList'
@@ -52,6 +52,8 @@ interface SidebarProps {
    * （ADR 0020）と、履歴・保存済みクエリの「新しいタブで開く」（ADR 0038）が使う。
    */
   onOpenSelect: (sql: string) => void
+  /** 履歴の 1 件を保存済みクエリへ足す（ADR 0041）。積めたらその名前で解く。 */
+  onSaveHistoryQuery: (entry: HistoryEntry) => Promise<string | null>
   /**
    * スキーマツリーから定義タブを開く（ADR 0022）。
    *
@@ -70,6 +72,7 @@ export function Sidebar({
   onUseHistory,
   onInsertIdentifier,
   onOpenSelect,
+  onSaveHistoryQuery,
   onOpenDefinition,
   width,
 }: SidebarProps) {
@@ -176,7 +179,11 @@ export function Sidebar({
           />
         ) : null}
         {segment === 'history' ? (
-          <HistoryList onUse={onUseHistory} onOpenInNewTab={onOpenSelect} />
+          <HistoryList
+            onUse={onUseHistory}
+            onOpenInNewTab={onOpenSelect}
+            onSaveQuery={onSaveHistoryQuery}
+          />
         ) : null}
         {segment === 'saved' ? (
           <SavedQueryList onUse={onUseHistory} onOpenInNewTab={onOpenSelect} />
