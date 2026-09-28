@@ -238,7 +238,13 @@ function PaneBody({
   }
 
   if (execution.status === 'failed') {
-    return <FailureNotice error={execution.error} progress={execution.progress} />
+    return (
+      <FailureNotice
+        error={execution.error}
+        progress={execution.progress}
+        preformatted={execution.compilationFailed}
+      />
+    )
   }
 
   if (execution.status === 'idle') {
@@ -366,9 +372,12 @@ function DiscardedNotice() {
 function FailureNotice({
   error,
   progress,
+  preformatted,
 }: {
   error: string | null
   progress: ScriptProgress | null
+  /** 改行と字下げを活かして左に揃えるか。コンパイルエラーの報告だけが真（ADR 0045）。 */
+  preformatted: boolean
 }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-9px px-24px">
@@ -377,7 +386,13 @@ function FailureNotice({
           {progress.total} 文中 {progress.index} 文目で失敗しました。以降の文は実行していません。
         </p>
       ) : null}
-      <p className="text-12px text-err text-center m-0 max-w-560px break-words">{error}</p>
+      <p
+        className={`text-12px text-err m-0 max-w-560px break-words ${
+          preformatted ? 'text-left whitespace-pre-wrap' : 'text-center'
+        }`}
+      >
+        {error}
+      </p>
       {error ? <ErrorCopyButton text={error} /> : null}
       <p className="text-11.5px text-fg4 m-0">詳細はメッセージタブに残ります</p>
     </div>

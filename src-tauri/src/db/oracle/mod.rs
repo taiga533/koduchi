@@ -4,6 +4,7 @@
 //! このモジュールに閉じ込める。
 
 pub mod bind;
+pub mod compilation;
 pub mod convert;
 pub mod definition;
 pub mod errors;
@@ -417,13 +418,20 @@ impl Driver for OracleDriver {
         // 行数の概念が無い文では数を返さない（ADR 0034）。
         let affected_rows =
             has_row_count(statement_type).then(|| statement.row_count().unwrap_or(0));
-        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let elapsed = started.elapsed();
+
+        // 警告は次の実行で上書きされるため、`DBMS_OUTPUT` を読むより先に見る
+        // （ADR 0045）。
+        let compilation = compilation::compilation_warning(&self.connection)
+            .map(|warning| compilation::load_report(&self.connection, warning, elapsed))
+            .transpose()?;
 
         Ok(ExecuteOutcome::Statement {
             affected_rows,
-            elapsed_ms,
+            elapsed_ms: elapsed.as_millis() as u64,
             notices: self.fetch_dbms_output(),
             in_transaction: self.in_transaction(),
+            compilation,
         })
     }
 

@@ -386,3 +386,51 @@ describe('showsResultTable', () => {
     expect(判定).toEqual([true, false, false, false])
   })
 })
+
+describe('ResultPane の失敗の表示の揃え（ADR 0045）', () => {
+  let 元の実行: ReturnType<typeof useExecutionStore.getState>
+  let 元の画面: ReturnType<typeof useUiStore.getState>
+
+  beforeEach(() => {
+    元の実行 = useExecutionStore.getState()
+    元の画面 = useUiStore.getState()
+    useUiStore.setState({ resultTab: 'result' })
+  })
+
+  afterEach(() => {
+    useExecutionStore.setState(元の実行, true)
+    useUiStore.setState(元の画面, true)
+  })
+
+  it('コンパイルエラーの報告は改行を活かして左に揃える', () => {
+    // Arrange
+    const 報告 = 'コンパイルエラーのため、オブジェクトは無効（INVALID）です\nKODUCHI.P（PROCEDURE）'
+    useExecutionStore.setState({
+      byTab: {
+        'tab-1': { ...emptyExecution, status: 'failed', error: 報告, compilationFailed: true },
+      },
+    })
+
+    // Act
+    描く()
+
+    // Assert
+    const 文言 = screen.getByText((_, element) => element?.textContent === 報告)
+    expect(文言).toHaveClass('text-left', 'whitespace-pre-wrap')
+  })
+
+  it('ほかのエラーは中央に揃えたまま変えない', () => {
+    // Arrange
+    useExecutionStore.setState({
+      byTab: { 'tab-1': { ...emptyExecution, status: 'failed', error: エラー } },
+    })
+
+    // Act
+    描く()
+
+    // Assert
+    const 文言 = screen.getByText(エラー)
+    expect(文言).toHaveClass('text-center')
+    expect(文言).not.toHaveClass('whitespace-pre-wrap')
+  })
+})

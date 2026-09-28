@@ -16,6 +16,7 @@ import { create } from 'zustand'
 import { getDbApi } from '../api/db'
 import type { Bind, Cell, Column, NewHistoryEntry } from '../types/db'
 import { toErrorMessage } from '../types/db'
+import { formatCompilationReport } from './compilation'
 
 /** 実行の段階。 */
 export type ExecutionStatus =
@@ -52,6 +53,13 @@ export interface TabExecution {
    */
   isStatement: boolean
   error: string | null
+  /**
+   * `error` がコンパイルエラーの報告か（ADR 0045）。
+   *
+   * 報告は字下げした複数行であり、結果ペインは改行を活かして左に揃えて描く。
+   * ほかのエラーの見た目（中央揃えで折り返す 1 行）は変えない。
+   */
+  compilationFailed: boolean
   /** 続きを取り出している最中か。二重に取りにいかないための見張り。 */
   loadingMore: boolean
   /**
@@ -96,6 +104,7 @@ export const emptyExecution: TabExecution = {
   affectedRows: null,
   isStatement: false,
   error: null,
+  compilationFailed: false,
   loadingMore: false,
   progress: null,
 }
@@ -408,6 +417,15 @@ type StatementOutcome =
       message: string
       /** 失敗するまでに要したミリ秒。 */
       elapsedMs: number
+      /**
+       * 接続を明け渡すために結果セットを閉じられたタブ（ADR 0003）。
+       *
+       * コンパイルエラー（ADR 0045）は文そのものは走り切っているため、巻き添えも
+       * 起きている。例外で返った失敗では分からず `null` になる。
+       */
+      discardedTab: string | null
+      /** コンパイルエラーの報告による失敗か（ADR 0045）。 */
+      compilation: boolean
     }
 
 /**
@@ -504,9 +522,21 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
               isStatement: true,
             }
 
+      // Oracle は警告付きの成功として返すが、失敗として扱う。無効なオブジェクトを
+      // 「完了しました」と見せず、スクリプトもそこで止める（ADR 0045）。
+      const compileError =
+        response.kind === 'statement' && response.compilation
+          ? formatCompilationReport(response.compilation)
+          : null
+
       // 行数の概念が無い文では履歴にも行数を残さない。`0 行` と書いてしまうと、
       // 後から履歴を読み返したときに空振りした DML と区別が付かない（ADR 0034）。
-      const rowCount = execution.isStatement ? execution.affectedRows : execution.rows.length
+      const rowCount =
+        compileError !== null
+          ? null
+          : execution.isStatement
+            ? execution.affectedRows
+            : execution.rows.length
 
       set((state) =>
         控えた区切り !== 区切り
@@ -522,7 +552,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
                   sql,
                   elapsedMs: response.elapsedMs,
                   rowCount,
-                  error: null,
+                  error: compileError,
                   notices: response.notices,
                   statement: progress,
                 },
@@ -536,9 +566,19 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         startedAt: startedAt.getTime(),
         elapsedMs: response.elapsedMs,
         rowCount,
-        succeeded: true,
-        errorMessage: null,
+        succeeded: compileError === null,
+        errorMessage: compileError,
       })
+
+      if (compileError !== null) {
+        return {
+          ok: false,
+          message: compileError,
+          elapsedMs: response.elapsedMs,
+          discardedTab: response.discardedTab,
+          compilation: true,
+        }
+      }
 
       return { ok: true, execution, discardedTab: response.discardedTab }
     } catch (error) {
@@ -576,7 +616,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         errorMessage: message,
       })
 
-      return { ok: false, message, elapsedMs }
+      return { ok: false, message, elapsedMs, discardedTab: null, compilation: false }
     } finally {
       // 成功でも失敗でも、応答が返れば文はもう走っていない。
       set((state) => ({
@@ -610,17 +650,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         if (!まだ有効か(state.byTab, tabId, 控え)) {
           return state
         }
-        if (!outcome.ok) {
-          return {
-            byTab: patchTab(state.byTab, tabId, {
+        let byTab = outcome.ok
+          ? patchTab(state.byTab, tabId, outcome.execution)
+          : patchTab(state.byTab, tabId, {
               ...emptyExecution,
               status: 'failed',
               error: outcome.message,
-            }),
-          }
-        }
-
-        let byTab = patchTab(state.byTab, tabId, outcome.execution)
+              compilationFailed: outcome.compilation,
+            })
 
         // 接続を明け渡すために閉じられたタブには、再実行を促す状態を残す。
         if (outcome.discardedTab) {
@@ -701,15 +738,24 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
           // ここまでの文は未コミットのまま残る。勝手にコミットもロールバックも
           // しない（ADR 0012）。未コミットかどうかは最後に受け取った応答の値が
           // そのまま残り、ステータスバーに出る。
-          set((state) => ({
-            byTab: patchTab(state.byTab, tabId, {
+          const 巻き添え =
+            outcome.discardedTab && outcome.discardedTab !== tabId
+              ? outcome.discardedTab
+              : discardedTab
+          set((state) => {
+            let byTab = patchTab(state.byTab, tabId, {
               ...emptyExecution,
               status: 'failed',
               error: outcome.message,
+              compilationFailed: outcome.compilation,
               elapsedMs: elapsedMs + outcome.elapsedMs,
               progress,
-            }),
-          }))
+            })
+            if (巻き添え) {
+              byTab = patchTab(byTab, 巻き添え, { status: 'discarded' })
+            }
+            return { byTab }
+          })
           cancelRequests.delete(tabId)
           return
         }

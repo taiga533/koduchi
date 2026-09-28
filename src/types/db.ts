@@ -91,7 +91,42 @@ export type ExecuteOutcome =
       notices: string[]
       /** 未コミットのトランザクションが残っているか（ADR 0012）。 */
       inTransaction: boolean
+      /**
+       * コンパイルの警告（`ORA-24344`）を受けたときの報告（ADR 0045）。
+       *
+       * Oracle は「警告付きの成功」として返すが、小槌は失敗として扱う。
+       * 無効なオブジェクトを「完了しました」と見せないためである。
+       */
+      compilation: CompilationReport | null
     }
+
+/** `ALL_ERRORS` の 1 行（ADR 0045）。 */
+export interface CompileDiagnostic {
+  owner: string
+  name: string
+  /** `ALL_ERRORS.TYPE`（`PROCEDURE` / `PACKAGE BODY` など）。 */
+  objectType: string
+  /** オブジェクトのソース（`ALL_SOURCE`）の上の行。エディタの行ではない。 */
+  line: number
+  position: number
+  severity: 'error' | 'warning'
+  /** Oracle の文言そのまま。 */
+  text: string
+}
+
+/** コンパイルの警告を受けた文の報告（ADR 0045）。 */
+export interface CompilationReport {
+  /** Oracle が返した警告の原文。 */
+  warning: string
+  /** 実行の間に定義が変わったオブジェクトの `ALL_ERRORS`。空でありうる。 */
+  diagnostics: CompileDiagnostic[]
+  /**
+   * `ALL_ERRORS` を読めなかったときの理由（`⌘.` の中止など）。読めたときは `null`。
+   *
+   * 読めなくても文そのものは走り切っているため、Rust 側はエラーにせずここに載せる。
+   */
+  lookupError: string | null
+}
 
 /** 実行結果と、その巻き添えで結果セットを閉じられたタブ。 */
 export type ExecuteResponse = ExecuteOutcome & {
@@ -334,6 +369,14 @@ export const defaultSchemaFilter: SchemaFilter = {
 export interface SchemaObject {
   name: string
   kind: ObjectKind
+  /**
+   * `ALL_OBJECTS.STATUS` が `INVALID` か（ADR 0045）。パッケージと型は本体が
+   * 無効なときも立つ。
+   *
+   * Rust 側は常に送るが、省略可能にしてある。ツリーの見本を書くテストが多く、
+   * 欠けたときは「有効」と読めば足りるためである。
+   */
+  invalid?: boolean
 }
 
 /** スキーマ 1 つ。段階 1 で返る（ADR 0007）。 */

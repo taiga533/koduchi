@@ -53,6 +53,7 @@ import {
   Boxes,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   Eye,
   Hash,
   Layers,
@@ -118,6 +119,8 @@ export type TreeRow =
       objectKind: ObjectKind
       expandable: boolean
       open: boolean
+      /** `STATUS = 'INVALID'` か（ADR 0045）。 */
+      invalid: boolean
       /** 表・ビュー・マテビューのコメント（ADR 0043）。無ければ `undefined`。 */
       comment?: string
     }
@@ -339,6 +342,7 @@ export function flattenSchemas(
           objectKind: object.kind,
           expandable,
           open: objectOpen,
+          invalid: object.invalid ?? false,
           comment: hasComment(object.kind) ? コメント[object.name] : undefined,
         })
 
@@ -657,6 +661,25 @@ function CommentText({ comment }: { comment: string | undefined }) {
   )
 }
 
+/**
+ * 無効（INVALID）の印（ADR 0045）。
+ *
+ * ツリーは取り直すまで古いままである（ADR 0007）。印も同じく、直した後は
+ * 再読み込みで消える。
+ */
+function InvalidMark() {
+  return (
+    <span
+      role="img"
+      aria-label="無効（INVALID）"
+      title="無効（INVALID）。コンパイルエラーがあります"
+      className="shrink-0 flex items-center"
+    >
+      <CircleAlert size={12} className="text-err" />
+    </span>
+  )
+}
+
 /** 平らにした 1 行を、種類に応じて描き分ける。 */
 function Row({ row, focused, showTypes, showComments, onToggle, onFocus }: RowProps) {
   // 焦点を持てるのは 1 行だけにする。仮想スクロールで描かれている行がすべて
@@ -727,14 +750,12 @@ function Row({ row, focused, showTypes, showComments, onToggle, onFocus }: RowPr
           ) : null}
         </span>
         <Icon size={13} className="text-fg5 shrink-0" />
-        {showComments && row.comment ? (
-          <>
-            <span className="truncate">{row.name}</span>
-            <CommentText comment={row.comment} />
-          </>
-        ) : (
-          <span className="flex-1 truncate">{row.name}</span>
-        )}
+        {/* 印は名前の直後に置き、縮めない。コメントの省略（…）に押し出されると、
+            長いコメントの付いた表で無効に気付けなくなる。名前に flex-1 を付けると
+            コメントの無い行で印が右端へ離れるため、付けない（ADR 0045）。 */}
+        <span className="truncate">{row.name}</span>
+        {row.invalid ? <InvalidMark /> : null}
+        {showComments && row.comment ? <CommentText comment={row.comment} /> : null}
       </button>
     )
   }

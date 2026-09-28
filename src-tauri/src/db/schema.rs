@@ -286,6 +286,13 @@ impl ObjectKind {
 pub struct SchemaObject {
     pub name: String,
     pub kind: ObjectKind,
+    /// `ALL_OBJECTS.STATUS` が `INVALID` か（ADR 0045）。
+    ///
+    /// パッケージと型は本体（`PACKAGE BODY` / `TYPE BODY`）が無効なときも立つ。
+    /// ツリーは本体を別の行に出さないため、ここで畳まないと最もよくある
+    /// 「本体だけが壊れている」が見えない。
+    #[serde(default)]
+    pub invalid: bool,
 }
 
 /// スキーマ 1 つ。段階 1 で返る。

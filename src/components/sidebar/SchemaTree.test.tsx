@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import type { DefinitionTarget, IdentifierCase, SchemaNode, TableColumn } from '../../types/db'
@@ -1111,5 +1111,59 @@ describe('ツリーのキーボード操作', () => {
 
     // Assert
     expect(クリップボード.writeText).toHaveBeenCalledWith('koduchi')
+  })
+
+  it('無効なオブジェクトの行にだけ印が付く（ADR 0045）', async () => {
+    // Arrange
+    useSchemaStore.setState({
+      schemas: [
+        {
+          name: 'KODUCHI',
+          objectCount: 2,
+          objects: [
+            { name: 'BROKEN', kind: 'procedure', invalid: true },
+            { name: 'SAY_HELLO', kind: 'procedure', invalid: false },
+          ],
+        },
+      ],
+      columns: {},
+    })
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /プロシージャ/ }))
+
+    // Assert
+    const 壊れた行 = screen.getByRole('button', { name: /BROKEN/ })
+    const 正しい行 = screen.getByRole('button', { name: /SAY_HELLO/ })
+    expect(within(壊れた行).getByRole('img', { name: '無効（INVALID）' })).toBeInTheDocument()
+    expect(within(正しい行).queryByRole('img', { name: '無効（INVALID）' })).toBeNull()
+  })
+
+  it('コメントの付いた無効なビューでは印が名前の直後に来てコメントより前に出る（ADR 0045）', () => {
+    // Arrange: 印がコメントの省略（…）に押し出されないよう、並びは名前・印・コメント
+    useSchemaStore.setState({
+      schemas: [
+        {
+          name: 'KODUCHI',
+          objectCount: 1,
+          objects: [{ name: 'BROKEN_V', kind: 'view', invalid: true }],
+        },
+      ],
+      columns: {},
+      objectComments: { KODUCHI: { BROKEN_V: '売上の集計。夜間に更新' } },
+      expanded: { KODUCHI: true, 'KODUCHI.#view': true },
+    })
+
+    // Act
+    renderTree()
+
+    // Assert
+    const 行 = screen.getByRole('button', { name: /BROKEN_V/ })
+    const 並び = Array.from(行.children).map(
+      (child) => child.getAttribute('aria-label') ?? child.textContent,
+    )
+    expect(並び.slice(-3)).toEqual(['BROKEN_V', '無効（INVALID）', '売上の集計。夜間に更新'])
   })
 })

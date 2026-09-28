@@ -13,6 +13,7 @@
 //! `oracle::InitParams::init()` がプロセス 1 回きりであるため、テストは
 //! `serial_test` で直列に走らせる。
 
+use koduchi_lib::db::compilation::{CompilationReport, DiagnosticSeverity};
 use koduchi_lib::db::definition::ConstraintKind;
 use koduchi_lib::db::driver::{
     Bind, BindKind, Chunk, ConnectTarget, ConnectionParams, ExecuteOutcome,
@@ -2580,4 +2581,215 @@ fn 統計を読んでも結果セットは壊れない() {
     // Assert
     let chunk = pool.fetch_more(TAB).unwrap();
     assert_eq!(chunk.rows.len(), DEFAULT_CHUNK_SIZE);
+}
+
+/// 実行結果からコンパイルの報告を取り出す（ADR 0045）。
+fn コンパイルの報告(pool: &ConnectionPool, sql: &str) -> Option<CompilationReport> {
+    match pool.execute(TAB, sql, &[]).unwrap().outcome {
+        ExecuteOutcome::Statement { compilation, .. } => compilation,
+        ExecuteOutcome::Query { .. } => panic!("問い合わせ以外の結果になるはず"),
+    }
+}
+
+/// 報告のうち、指定したオブジェクトの行だけを `(行, 桁, 文言)` で取り出す。
+fn オブジェクトの診断(
+    report: &CompilationReport,
+    name: &str,
+    object_type: &str,
+) -> Vec<(u32, u32, String)> {
+    report
+        .diagnostics
+        .iter()
+        .filter(|d| d.name == name && d.object_type == object_type)
+        .map(|d| (d.line, d.position, d.text.clone()))
+        .collect()
+}
+
+#[test]
+#[serial]
+fn コンパイルエラーのある手続きを作ると行と桁と文言が届く() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let sql = "create or replace procedure koduchi_adr45_broken is\nbegin\n  nul;\nend;";
+
+    // Act
+    let report = コンパイルの報告(&pool, sql);
+    pool.execute(TAB, "drop procedure koduchi_adr45_broken", &[])
+        .unwrap();
+
+    // Assert
+    let report = report.expect("ORA-24344 を受けて報告が付くはず");
+    assert!(report.warning.contains("ORA-24344"), "{}", report.warning);
+    let 診断 = オブジェクトの診断(&report, "KODUCHI_ADR45_BROKEN", "PROCEDURE");
+    assert_eq!(
+        診断.first(),
+        Some(&(
+            3,
+            3,
+            String::from("PLS-00201: identifier 'NUL' must be declared")
+        ))
+    );
+    assert!(report
+        .diagnostics
+        .iter()
+        .all(|d| d.severity == DiagnosticSeverity::Error));
+}
+
+#[test]
+#[serial]
+fn 正しく作れた手続きにはコンパイルの報告が付かない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let report = コンパイルの報告(
+        &pool,
+        "create or replace procedure koduchi_adr45_ok is\nbegin\n  null;\nend;",
+    );
+    pool.execute(TAB, "drop procedure koduchi_adr45_ok", &[])
+        .unwrap();
+
+    // Assert
+    assert_eq!(report, None);
+}
+
+#[test]
+#[serial]
+fn 警告だけで有効に作れた手続きにはコンパイルの報告が付かない() {
+    // Arrange: `PLW-` の警告だけでは Oracle は ORA-24344 を返さない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    pool.execute(TAB, "alter session set plsql_warnings = 'ENABLE:ALL'", &[])
+        .unwrap();
+
+    // Act
+    let report = コンパイルの報告(
+        &pool,
+        "create or replace procedure koduchi_adr45_warn is\n  x number;\nbegin\n  null;\nend;",
+    );
+    pool.execute(TAB, "alter session set plsql_warnings = 'DISABLE:ALL'", &[])
+        .unwrap();
+    pool.execute(TAB, "drop procedure koduchi_adr45_warn", &[])
+        .unwrap();
+
+    // Assert
+    assert_eq!(report, None);
+}
+
+#[test]
+#[serial]
+fn パッケージ本体のエラーは本体の種別で届く() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    コンパイルの報告(
+        &pool,
+        "create or replace package koduchi_adr45_pkg is\n  procedure run;\nend;",
+    );
+
+    // Act
+    let report = コンパイルの報告(
+        &pool,
+        "create or replace package body koduchi_adr45_pkg is\n  procedure run is\n  begin\n    nul;\n  end;\nend;",
+    );
+    pool.execute(TAB, "drop package koduchi_adr45_pkg", &[])
+        .unwrap();
+
+    // Assert
+    let report = report.expect("本体のエラーでも報告が付くはず");
+    let 診断 = オブジェクトの診断(&report, "KODUCHI_ADR45_PKG", "PACKAGE BODY");
+    assert_eq!(診断.first().map(|(line, _, _)| *line), Some(4));
+    assert!(オブジェクトの診断(&report, "KODUCHI_ADR45_PKG", "PACKAGE").is_empty());
+}
+
+#[test]
+#[serial]
+fn コンパイルし直しで出たエラーも届く() {
+    // Arrange: `ALTER ... COMPILE` は CREATE の構文を持たないが、同じ警告が返る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    コンパイルの報告(
+        &pool,
+        "create or replace procedure koduchi_adr45_recompile is\nbegin\n  nul;\nend;",
+    );
+
+    // Act
+    let report = コンパイルの報告(&pool, "alter procedure koduchi_adr45_recompile compile");
+    pool.execute(TAB, "drop procedure koduchi_adr45_recompile", &[])
+        .unwrap();
+
+    // Assert
+    let report = report.expect("コンパイルし直しでも報告が付くはず");
+    let 診断 = オブジェクトの診断(&report, "KODUCHI_ADR45_RECOMPILE", "PROCEDURE");
+    assert_eq!(診断.first().map(|(line, _, _)| *line), Some(3));
+}
+
+/// 段階 1 の結果から、`KODUCHI` のオブジェクト 1 つの無効の印を読む（ADR 0045）。
+fn 無効の印(
+    schemas: &[koduchi_lib::db::schema::SchemaNode],
+    name: &str,
+    kind: ObjectKind,
+) -> Option<bool> {
+    schemas
+        .iter()
+        .find(|schema| schema.name == "KODUCHI")?
+        .objects
+        .iter()
+        .find(|object| object.name == name && object.kind == kind)
+        .map(|object| object.invalid)
+}
+
+#[test]
+#[serial]
+fn 無効な手続きにはツリーで印が立つ() {
+    // Arrange: dev/oracle/initdb/010_invalid_objects.sql がわざと無効にしてある
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert_eq!(
+        無効の印(
+            &schemas,
+            "KODUCHI_ADR45_INVALID_PROC",
+            ObjectKind::Procedure
+        ),
+        Some(true)
+    );
+    assert_eq!(
+        無効の印(&schemas, "SAY_HELLO", ObjectKind::Procedure),
+        Some(false)
+    );
+}
+
+#[test]
+#[serial]
+fn 本体だけが無効なパッケージにも印が立つ() {
+    // Arrange: 仕様は有効で、本体だけが無効
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert_eq!(
+        無効の印(&schemas, "KODUCHI_ADR45_INVALID_PKG", ObjectKind::Package),
+        Some(true)
+    );
+    assert_eq!(
+        無効の印(&schemas, "ORDER_STATS", ObjectKind::Package),
+        Some(false)
+    );
 }
