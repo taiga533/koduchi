@@ -51,6 +51,8 @@ export interface CommandScreen {
   cursor: () => EditorCursor
   /** 利用者への尋ね方。 */
   ask: Ask
+  /** 流す文をエディタの上で光らせる（ADR 0047）。`RunScreen.highlight` へそのまま渡す。 */
+  highlightRun?: RunScreen['highlight']
   /** エディタの SQL を整形する（ADR 0024）。エディタが描かれていなければ何もしない。 */
   formatEditor: () => void
   /** コマンドパレットを開く（ADR 0018）。 */
@@ -94,7 +96,7 @@ function isConnected(): boolean {
  * @param screen コマンドの画面
  */
 function runScreenOf(screen: CommandScreen): RunScreen {
-  return { cursor: screen.cursor(), ask: screen.ask }
+  return { cursor: screen.cursor(), ask: screen.ask, highlight: screen.highlightRun }
 }
 
 /**

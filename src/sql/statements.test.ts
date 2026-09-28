@@ -5,6 +5,7 @@ import {
   collectBindVariables,
   collectBindVariablesAcross,
   isSelectStatement,
+  pickStatementAt,
   splitStatements,
   statementAt,
 } from './statements'
@@ -384,6 +385,29 @@ describe('statementAt', () => {
 
     // Act
     const statement = statementAt(sql, 0)
+
+    // Assert
+    expect(statement).toBeNull()
+  })
+})
+
+describe('pickStatementAt', () => {
+  it('切り出し済みの一覧から選んでも statementAt と同じ文を選ぶ', () => {
+    // Arrange
+    const sql = '\nselect 1 from dual;\n\nbegin null; end;\n  select 3 from dual\n'
+    const statements = splitStatements(sql)
+    const 位置 = Array.from({ length: sql.length + 1 }, (_, index) => index)
+
+    // Act
+    const 選んだ文 = 位置.map((cursor) => pickStatementAt(statements, cursor))
+
+    // Assert
+    expect(選んだ文).toEqual(位置.map((cursor) => statementAt(sql, cursor)))
+  })
+
+  it('一覧が空なら null を返す', () => {
+    // Arrange & Act
+    const statement = pickStatementAt([], 0)
 
     // Assert
     expect(statement).toBeNull()

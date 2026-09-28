@@ -282,8 +282,23 @@ export function splitStatements(sql: string): SqlStatement[] {
  * @param cursor カーソルの位置
  */
 export function statementAt(sql: string, cursor: number): SqlStatement | null {
-  const statements = splitStatements(sql)
+  return pickStatementAt(splitStatements(sql), cursor)
+}
 
+/**
+ * 切り出し済みの文の並びから、カーソル位置の文を選ぶ（ADR 0047）。
+ *
+ * `statementAt` から選び方だけを抜き出したもの。エディタの縦線は打鍵のたびに
+ * ではなく本文が変わったときだけ切り出し直し、カーソルが動いたときはここで
+ * 選び直すだけにする。選び方を 2 つ書くと、縦線と実際に実行される文がずれる。
+ *
+ * @param statements `splitStatements` の結果（位置の昇順）
+ * @param cursor カーソルの位置
+ */
+export function pickStatementAt(
+  statements: readonly SqlStatement[],
+  cursor: number,
+): SqlStatement | null {
   if (statements.length === 0) {
     return null
   }

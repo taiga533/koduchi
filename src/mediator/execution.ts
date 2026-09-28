@@ -11,6 +11,8 @@
 
 import { getDialogApi } from '../api/dialog'
 import { inferBindKinds } from '../sql/bindTypes'
+import type { RunScope, RunTarget } from '../sql/runTarget'
+import { runTargetOf } from '../sql/runTarget'
 import type { BindOccurrence } from '../sql/statements'
 import {
   collectBindOccurrences,
@@ -18,8 +20,6 @@ import {
   collectBindVariables,
   collectBindVariablesAcross,
   isSelectStatement,
-  splitStatements,
-  statementAt,
 } from '../sql/statements'
 import { useConnectionStore } from '../stores/connection'
 import { useExecutionStore } from '../stores/execution'
@@ -55,6 +55,14 @@ export interface RunScreen {
   cursor: EditorCursor
   /** 利用者への尋ね方。バインド変数の値を尋ねるのに使う。 */
   ask: Ask
+  /**
+   * 流す文をエディタの上で一瞬光らせる（ADR 0047）。
+   *
+   * 光らせる範囲は、ここで実際に流すと決めた文そのものを渡す。エディタが
+   * 自分で決め直すと、流した文と光った範囲がずれうる。エディタが描かれて
+   * いなければ省いてよい。
+   */
+  highlight?: (target: RunTarget) => void
 }
 
 /**
@@ -173,21 +181,14 @@ export async function startRun(run: PendingRun, ask: Ask): Promise<void> {
 }
 
 /**
- * 選択範囲を文に切り出す（issue #55）。
+ * 押された時点の実行の対象を決める。定義タブを選んでいるときは無い（ADR 0022）。
  *
- * 選択した文字列をそのまま渡すと、末尾の `;` や複数の文が Oracle に届いて
- * `ORA-00933` になる。カーソル位置の文やスクリプト実行と同じ切り出しを通し、
- * 渡す本文の決め方を経路ごとに割らない。
- *
+ * @param scope 実行の単位
  * @param cursor 押された時点のカーソル
- *
- * @returns 選択範囲の中の文。選択が無ければ `null`
  */
-function selectedStatements(cursor: EditorCursor): string[] | null {
-  if (cursor.selectedText === null) {
-    return null
-  }
-  return splitStatements(cursor.selectedText).map((statement) => statement.text)
+function targetOf(scope: RunScope, cursor: EditorCursor): RunTarget | null {
+  const tab = selectActiveSqlTab(useTabStore.getState())
+  return tab ? runTargetOf(scope, tab.content, cursor) : null
 }
 
 /**
@@ -200,14 +201,7 @@ function selectedStatements(cursor: EditorCursor): string[] | null {
  * @param selectionOnly 選択範囲だけを取り出すか
  */
 export function currentSql(cursor: EditorCursor, selectionOnly: boolean): string | null {
-  const tab = selectActiveSqlTab(useTabStore.getState())
-  if (!tab) {
-    return null
-  }
-  if (selectionOnly) {
-    return selectedStatements(cursor)?.[0] ?? null
-  }
-  return statementAt(tab.content, cursor.offset)?.text ?? null
+  return targetOf(selectionOnly ? 'selection' : 'statement', cursor)?.statements[0]?.text ?? null
 }
 
 /**
@@ -216,9 +210,10 @@ export function currentSql(cursor: EditorCursor, selectionOnly: boolean): string
  * @param screen 押された時点のカーソルと尋ね方
  */
 export function runStatement(screen: RunScreen): void {
-  const sql = currentSql(screen.cursor, false)
-  if (sql) {
-    void startRun({ kind: 'execute', sql }, screen.ask)
+  const target = targetOf('statement', screen.cursor)
+  if (target && target.statements.length > 0) {
+    screen.highlight?.(target)
+    void startRun({ kind: 'execute', sql: target.statements[0].text }, screen.ask)
   }
 }
 
@@ -231,10 +226,11 @@ export function runStatement(screen: RunScreen): void {
  * @param screen 押された時点のカーソルと尋ね方
  */
 export function runSelection(screen: RunScreen): void {
-  if (!selectActiveSqlTab(useTabStore.getState())) {
-    return
+  const target = targetOf('selection', screen.cursor)
+  const statements = target?.statements.map((statement) => statement.text) ?? []
+  if (target && statements.length > 0) {
+    screen.highlight?.(target)
   }
-  const statements = selectedStatements(screen.cursor) ?? []
   if (statements.length === 1) {
     void startRun({ kind: 'execute', sql: statements[0] }, screen.ask)
   } else if (statements.length > 1) {
@@ -252,14 +248,10 @@ export function runSelection(screen: RunScreen): void {
  * @param screen 押された時点のカーソルと尋ね方
  */
 export function runScript(screen: RunScreen): void {
-  const tab = selectActiveSqlTab(useTabStore.getState())
-  if (!tab) {
-    return
-  }
-
-  const source = screen.cursor.selectedText ?? tab.content
-  const statements = splitStatements(source).map((statement) => statement.text)
-  if (statements.length > 0) {
+  const target = targetOf('script', screen.cursor)
+  if (target && target.statements.length > 0) {
+    screen.highlight?.(target)
+    const statements = target.statements.map((statement) => statement.text)
     void startRun({ kind: 'script', statements }, screen.ask)
   }
 }
@@ -282,10 +274,19 @@ export async function runPlan(actual: boolean, screen: RunScreen): Promise<void>
   if (!useConnectionStore.getState().connection || !tabId) {
     return
   }
-  const sql = currentSql(screen.cursor, screen.cursor.selectedText !== null)
-  if (!sql || sql.trim() === '') {
+  const target = targetOf(
+    screen.cursor.selectedText !== null ? 'selection' : 'statement',
+    screen.cursor,
+  )
+  // 計画は 1 文にしか取れない。光らせるのも取る 1 文だけにする。
+  const statement = target?.statements[0]
+  if (!target || !statement) {
     return
   }
+  const sql = statement.text
+  // 押した瞬間に光らせる。確認やバインド変数のダイアログは、何を流すかを
+  // 見せた後に出るほうが答えやすい。
+  screen.highlight?.({ origin: target.origin, statements: [statement] })
 
   if (actual && !isSelectStatement(sql)) {
     const 続ける = await getDialogApi().confirm(ACTUAL_PLAN_QUESTION, {

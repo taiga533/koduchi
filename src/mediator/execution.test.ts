@@ -8,6 +8,7 @@ import { emptyExecution, useExecutionStore } from '../stores/execution'
 import { emptyBindInput, useTabStore } from '../stores/tab'
 import { useUiStore } from '../stores/ui'
 import type { Ask, AskRequest } from './ask'
+import type { RunTarget } from '../sql/runTarget'
 import type { EditorCursor, RunScreen } from './execution'
 import {
   bindVariablesOf,
@@ -450,5 +451,127 @@ describe('reportFormatFailure', () => {
     // Assert
     expect(useUiStore.getState().resultTab).toBe('messages')
     expect(useExecutionStore.getState().log.at(-1)?.error).toContain('整形を取りやめました')
+  })
+})
+
+/**
+ * 光らせた文の本文を並べる。
+ *
+ * @param 光らせた 頼まれた対象
+ */
+function 本文(光らせた: RunTarget[]): string[][] {
+  return 光らせた.map((target) => target.statements.map((statement) => statement.text))
+}
+
+describe('流す文を光らせる（ADR 0047）', () => {
+  /**
+   * 光らせるよう頼まれた対象を控える画面を作る。
+   *
+   * @param cursor カーソル
+   */
+  function 光らせる画面(cursor: EditorCursor): { screen: RunScreen; 光らせた: RunTarget[] } {
+    const 光らせた: RunTarget[] = []
+    return {
+      screen: { cursor, ask: 尋ね方().ask, highlight: (target) => 光らせた.push(target) },
+      光らせた,
+    }
+  }
+
+  it('カーソル位置の文の実行では流した文そのものを光らせる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'select 1 from dual;\nselect 2 from dual;' })
+    const { screen, 光らせた } = 光らせる画面({ offset: 25, selectedText: null })
+
+    // Act
+    runStatement(screen)
+
+    // Assert
+    await expect.poll(() => calls.execute.map((call) => call.sql)).toEqual(['select 2 from dual'])
+    expect(本文(光らせた)).toEqual([['select 2 from dual']])
+    expect(光らせた[0].origin).toBe('document')
+  })
+
+  it('選択範囲の実行では選択の中の文を選択の先頭から数えた位置で光らせる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'x select 1 from dual; select 2 from dual;' })
+    const { screen, 光らせた } = 光らせる画面({
+      offset: 0,
+      selectedText: ' select 1 from dual; select 2 from dual;',
+    })
+
+    // Act
+    runSelection(screen)
+
+    // Assert
+    await expect.poll(() => calls.execute).toHaveLength(2)
+    expect(光らせた[0].origin).toBe('selection')
+    expect(光らせた[0].statements.map((statement) => statement.start)).toEqual([1, 21])
+    expect(本文(光らせた)).toEqual([calls.execute.map((call) => call.sql)])
+  })
+
+  it('スクリプト実行では流すすべての文を 1 度に光らせる', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'begin null; end;\nselect 1 from dual;' })
+    const { screen, 光らせた } = 光らせる画面(先頭)
+
+    // Act
+    runScript(screen)
+
+    // Assert
+    await expect.poll(() => calls.execute).toHaveLength(2)
+    expect(本文(光らせた)).toEqual([['begin null; end;', 'select 1 from dual']])
+  })
+
+  it('実行計画では計画を取る 1 文だけを光らせる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'select 1 from dual; select 2 from dual;' })
+    const { screen, 光らせた } = 光らせる画面({
+      offset: 0,
+      selectedText: 'select 1 from dual; select 2 from dual;',
+    })
+
+    // Act
+    await runPlan(false, screen)
+
+    // Assert
+    expect(本文(光らせた)).toEqual([['select 1 from dual']])
+  })
+
+  it('流す文が無ければ光らせない', () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    SQLタブを一枚にする({ content: '-- memo' })
+    const { screen, 光らせた } = 光らせる画面({ offset: 0, selectedText: '-- memo' })
+
+    // Act
+    runStatement(screen)
+    runSelection(screen)
+    runScript(screen)
+
+    // Assert
+    expect(光らせた).toEqual([])
+  })
+
+  it('定義タブを選んでいるときは光らせない', () => {
+    // Arrange
+    SQLタブを一枚にする({ content: 'select 1 from dual' })
+    useTabStore.getState().openDefinitionTab({ owner: 'KODUCHI', name: 'USERS', kind: 'table' })
+    const { screen, 光らせた } = 光らせる画面(先頭)
+
+    // Act
+    runStatement(screen)
+    runScript(screen)
+
+    // Assert
+    expect(光らせた).toEqual([])
   })
 })
