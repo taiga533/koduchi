@@ -913,7 +913,7 @@ fn スキーマの列情報を取り出せる() {
     };
 
     // Act
-    let columns = pool.schema_columns("KODUCHI").unwrap();
+    let columns = pool.schema_columns("KODUCHI", false).unwrap().columns;
 
     // Assert
     let user_id = columns
@@ -929,6 +929,81 @@ fn スキーマの列情報を取り出せる() {
         .expect("USERS.EMAIL があるはず");
     assert_eq!(email.type_name, "VARCHAR2(255)");
     assert!(!email.nullable);
+}
+
+#[test]
+#[serial]
+fn コメントを出す設定ではスキーマの列とオブジェクトのコメントも取り出せる() {
+    // Arrange: コメントは 008_comments.sql が付けてある
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.schema_columns("KODUCHI", true).unwrap();
+
+    // Assert
+    let carrier = result
+        .columns
+        .iter()
+        .find(|column| column.object_name == "SHIPMENTS" && column.name == "CARRIER")
+        .expect("SHIPMENTS.CARRIER があるはず");
+    assert_eq!(carrier.comment.as_deref(), Some("配送業者コード"));
+
+    // コメントの無い表の列も外部結合で残る。
+    let email = result
+        .columns
+        .iter()
+        .find(|column| column.object_name == "USERS" && column.name == "EMAIL")
+        .expect("USERS.EMAIL があるはず");
+    assert_eq!(email.comment, None);
+
+    // 3 つ揃いの鍵で結合していれば、列は重複しない。
+    let shipment_ids = result
+        .columns
+        .iter()
+        .filter(|column| column.object_name == "SHIPMENTS" && column.name == "SHIPMENT_ID")
+        .count();
+    assert_eq!(shipment_ids, 1);
+
+    let comment_of = |name: &str| {
+        result
+            .object_comments
+            .iter()
+            .find(|comment| comment.object_name == name)
+            .map(|comment| comment.comment.clone())
+    };
+    assert_eq!(
+        comment_of("SHIPMENTS").as_deref(),
+        Some("出荷。受注 1 件に対して 1 行が立つ")
+    );
+    assert_eq!(
+        comment_of("SESSION_ROLLUP").as_deref(),
+        Some("セッションの集計ビュー")
+    );
+    // コメントの無い表は運ばない。
+    assert_eq!(comment_of("USERS"), None);
+}
+
+#[test]
+#[serial]
+fn コメントを出さない設定ではスキーマのコメントを取り出さない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.schema_columns("KODUCHI", false).unwrap();
+
+    // Assert
+    let carrier = result
+        .columns
+        .iter()
+        .find(|column| column.object_name == "SHIPMENTS" && column.name == "CARRIER")
+        .expect("SHIPMENTS.CARRIER があるはず");
+    assert_eq!(carrier.comment, None);
+    assert!(result.object_comments.is_empty());
 }
 
 #[test]

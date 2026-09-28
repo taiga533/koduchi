@@ -2,8 +2,9 @@
  * スキーマの絞り込み条件（ADR 0007・0014）。
  *
  * 検索入力の横のアイコンから開く。スキーマを隠す条件が 2 つと、ツリーに載せる
- * オブジェクト種別の可否が 12 個ある。どれも既定で有効である。変更すると
- * 取得し直す。設定は接続ごとに保存される（ADR 0004）。
+ * オブジェクト種別の可否が 12 個、行に添える型名とコメントの可否が 2 つある
+ * （ADR 0043）。どれも既定で有効である。取得の結果が変わる変更のときだけ
+ * 取得し直す（`needsRefetch`）。設定は接続ごとに保存される（ADR 0004）。
  *
  * 条件を変えずに取り直す入口はここではなく、隣の `SchemaReloadButton` である。
  * このメニューの持ち物は条件だけにしてある。
@@ -126,6 +127,27 @@ export function SchemaFilterMenu({ connectionId, savedConnectionId }: SchemaFilt
                 <span className="truncate">{OBJECT_KIND_LABELS[kind]}</span>
               </label>
             ))}
+          </div>
+          <p className="m-0 mt-2px pt-8px border-t border-line2 border-l-none border-r-none border-b-none text-10.5px text-fg4">
+            行に添えるもの
+          </p>
+          <div className="grid grid-cols-2 gap-x-8px gap-y-6px">
+            <label className="flex items-center gap-6px text-11px text-fg cursor-pointer min-w-0">
+              <input
+                type="checkbox"
+                checked={filter.showTypes}
+                onChange={(event) => change({ showTypes: event.target.checked })}
+              />
+              <span className="truncate">列の型</span>
+            </label>
+            <label className="flex items-center gap-6px text-11px text-fg cursor-pointer min-w-0">
+              <input
+                type="checkbox"
+                checked={filter.showComments}
+                onChange={(event) => change({ showComments: event.target.checked })}
+              />
+              <span className="truncate">コメント</span>
+            </label>
           </div>
         </div>
       ) : null}

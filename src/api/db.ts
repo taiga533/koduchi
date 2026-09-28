@@ -41,7 +41,7 @@ import type {
   SourceSearchRequest,
   SourceSearchResult,
   SourceTarget,
-  TableColumn,
+  SchemaColumns,
   TnsnamesFile,
 } from '../types/db'
 
@@ -120,8 +120,8 @@ export interface DbApi {
 
   /** スキーマツリーの段階 1 を取る（ADR 0007）。 */
   schemaOverview(id: string, filter: SchemaFilter): Promise<SchemaNode[]>
-  /** スキーマ 1 つぶんの列情報を取る（段階 2）。 */
-  schemaColumns(id: string, owner: string): Promise<TableColumn[]>
+  /** スキーマ 1 つぶんの列情報を取る（段階 2）。コメントは要るときだけ読む（ADR 0043）。 */
+  schemaColumns(id: string, owner: string, withComments: boolean): Promise<SchemaColumns>
 
   /**
    * テーブル定義ビュー 1 枚ぶんの内容を取る（ADR 0019）。
@@ -234,7 +234,7 @@ const tauriDbApi: DbApi = {
   loadSession: (windowLabel) => invoke('load_session', { windowLabel }),
 
   schemaOverview: (id, filter) => invoke('schema_overview', { id, filter }),
-  schemaColumns: (id, owner) => invoke('schema_columns', { id, owner }),
+  schemaColumns: (id, owner, withComments) => invoke('schema_columns', { id, owner, withComments }),
 
   objectDefinition: (id, owner, name, kind) =>
     invoke('object_definition', { id, owner, name, kind }),

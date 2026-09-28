@@ -10,7 +10,7 @@
 
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::error::DbResult;
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaColumns, SchemaFilter, SchemaNode};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use crate::db::value::{Cell, CellKind};
@@ -322,7 +322,8 @@ pub trait Driver: 'static {
     /// # 引数
     ///
     /// * `owner` - 対象のスキーマ名
-    fn schema_columns(&mut self, owner: &str) -> DbResult<Vec<TableColumn>>;
+    /// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
+    fn schema_columns(&mut self, owner: &str, with_comments: bool) -> DbResult<SchemaColumns>;
 
     /// 見積りだけの実行計画をテキストで返す（`⌘E`）。
     ///
