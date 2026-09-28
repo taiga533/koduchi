@@ -96,6 +96,18 @@ export function ResultPane({
   const display = resolveResultDisplay(displayDefaults, displayOverride)
   const [displayOpen, setDisplayOpen] = useState(false)
   const displayToggleRef = useRef<HTMLButtonElement>(null)
+  /**
+   * ボタンで開いた直後か。欄が描かれたときに 1 度だけ消費される。
+   *
+   * `displayOpen` は再実行やタブの行き来をまたいで残り、欄はそのたびに描き直される。
+   * 焦点を移してよいのは利用者が開いたその時だけである。
+   */
+  const displayFocusRequestRef = useRef(false)
+  const takeDisplayFocusRequest = () => {
+    const requested = displayFocusRequestRef.current
+    displayFocusRequestRef.current = false
+    return requested
+  }
 
   /**
    * 表示調整の欄を閉じる。焦点が欄の中にあったときだけ開閉のボタンへ戻す。
@@ -140,7 +152,10 @@ export function ResultPane({
             <button
               ref={displayToggleRef}
               type="button"
-              onClick={() => setDisplayOpen((open) => !open)}
+              onClick={() => {
+                displayFocusRequestRef.current = !displayOpen
+                setDisplayOpen(!displayOpen)
+              }}
               aria-label="表示を調整"
               aria-expanded={displayOpen}
               aria-controls={displayOpen ? DISPLAY_BAR_ID : undefined}
@@ -161,6 +176,7 @@ export function ResultPane({
             onChange={(patch) => setDisplayOverride(tabId, patch)}
             onReset={() => resetDisplay(tabId)}
             onClose={closeDisplay}
+            takeFocusRequest={takeDisplayFocusRequest}
           />
         ) : null}
       </div>

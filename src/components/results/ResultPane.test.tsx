@@ -287,6 +287,55 @@ describe('ResultPane の表示調整（ADR 0048）', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '表示を調整' }))
   })
 
+  it('開いたまま再実行しても欄は描き直されるだけで焦点はエディタに残る', () => {
+    // Arrange: エディタの代わりの入力欄に焦点を置く
+    描く()
+    fireEvent.click(screen.getByRole('button', { name: '表示を調整' }))
+    const エディタ = document.createElement('textarea')
+    document.body.appendChild(エディタ)
+    エディタ.focus()
+
+    // Act: 実行中で欄が消え、成功で描き直される
+    act(() => {
+      useExecutionStore.setState({
+        byTab: { 'tab-1': { ...成功した結果, status: 'running' } },
+      })
+    })
+    const 実行中の欄 = screen.queryByTestId('result-display-bar')
+    act(() => {
+      useExecutionStore.setState({ byTab: { 'tab-1': 成功した結果 } })
+    })
+
+    // Assert
+    expect(実行中の欄).not.toBeInTheDocument()
+    expect(screen.getByTestId('result-display-bar')).toBeInTheDocument()
+    expect(document.activeElement).toBe(エディタ)
+    エディタ.remove()
+  })
+
+  it('開いたままメッセージタブと行き来しても焦点を奪わない', () => {
+    // Arrange
+    useExecutionStore.setState({ log: [失敗の記録] })
+    描く()
+    fireEvent.click(screen.getByRole('button', { name: '表示を調整' }))
+    const エディタ = document.createElement('textarea')
+    document.body.appendChild(エディタ)
+    エディタ.focus()
+
+    // Act
+    act(() => {
+      useUiStore.setState({ resultTab: 'messages' })
+    })
+    act(() => {
+      useUiStore.setState({ resultTab: 'result' })
+    })
+
+    // Assert
+    expect(screen.getByTestId('result-display-bar')).toBeInTheDocument()
+    expect(document.activeElement).toBe(エディタ)
+    エディタ.remove()
+  })
+
   it('既定に戻すとこのタブの上書きが消え、ボタンは既定のときだけ戻る', () => {
     // Arrange
     useUiStore.setState({ resultDisplayOverrides: { 'tab-1': { showWhitespace: true } } })

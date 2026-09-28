@@ -12,6 +12,10 @@
  * `esc` は `useEscapeKey` で受ける（ADR 0031）。オーバーレイではないが、`esc` の
  * 受け手を 2 種類にしないためである。後から開いた詳細パネルやメニューが先に閉じる
  * 順序も、積みがそのまま守る。
+ *
+ * 焦点を最初の項目へ移すのは、利用者がボタンで開いたときだけである
+ * （`takeFocusRequest`）。開いたまま再実行すると欄は消えて描き直されるが、そのとき
+ * に焦点をエディタから奪ってはならない。
  */
 
 import { useEffect, useRef } from 'react'
@@ -31,6 +35,14 @@ interface ResultDisplayBarProps {
   onReset: () => void
   /** 欄を閉じる。 */
   onClose: () => void
+  /**
+   * 描かれた直後に焦点を取ってよいかを尋ねる。真は 1 度だけ返る。
+   *
+   * 欄は再実行やタブの行き来で消えては描き直される。描かれるたびに焦点を取ると、
+   * 実行直後にエディタで打った文字がチェックボックスへ入る。焦点を移すのは利用者が
+   * ボタンで開いたときだけにする。
+   */
+  takeFocusRequest: () => boolean
 }
 
 /** 並べる項目。並びは設定画面と揃える。 */
@@ -46,14 +58,19 @@ export function ResultDisplayBar({
   onChange,
   onReset,
   onClose,
+  takeFocusRequest,
 }: ResultDisplayBarProps) {
   useEscapeKey(onClose)
 
   const firstRef = useRef<HTMLInputElement>(null)
 
-  // 開いたらすぐキーボードで切り替えられるよう、最初の項目へ焦点を移す。
+  // ボタンで開いたときだけ、すぐキーボードで切り替えられるよう最初の項目へ焦点を移す。
   useEffect(() => {
-    firstRef.current?.focus()
+    if (takeFocusRequest()) {
+      firstRef.current?.focus()
+    }
+    // 描かれた直後の 1 度だけ尋ねる。描き直しで尋ね直すと焦点を奪う。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
