@@ -2,12 +2,12 @@
  * 大きな選択の集計を細切れに走らせることのテスト（ADR 0049）。
  *
  * 後回しの関数は手で進める。時間に頼らず、何回に分けて数えたかと、途中で止めたら
- * 結果が届かないことを見る。1 かたまりの所要時間だけは実測で見張る。
+ * 結果が届かないことを見る。壁時計の時間は見ない（実行環境の速さで結果が変わる）。実測値は ADR 0049 にある。
  */
 
 import { describe, expect, it } from 'vitest'
 import type { Cell } from '../../types/db'
-import { accumulateRows, computeSelectionStats, createAccumulator } from '../results/selectionStats'
+import { computeSelectionStats } from '../results/selectionStats'
 import type { SelectionStats } from '../results/selectionStats'
 import { rowsPerSlice, SLICE_CELLS, startSlicedStats } from './slicedStats'
 
@@ -118,25 +118,45 @@ describe('rowsPerSlice', () => {
   })
 })
 
-describe('SLICE_CELLS の所要時間', () => {
-  it('38 桁の数値 1 かたまりを 1 フレーム（16ms）以内に数える', () => {
-    // Arrange: 実測は約 3ms（ADR 0049）。テストの並走に揺られても落ちないよう、
-    // 中央値を 1 フレームと比べる。
-    const width = 10
-    const rows = 重い結果(rowsPerSlice(width), width)
-    const range = { top: 0, bottom: rows.length - 1, left: 0, right: width - 1 }
-    const times: number[] = []
+describe('SLICE_CELLS の上限', () => {
+  it('1 回の処理で数えるセルの数が SLICE_CELLS を超えない', () => {
+    // Arrange: 行を読むたびに数える器で包み、1 回の処理ごとに読んだ行の数を測る。
+    // 列の数は割り切れない 7 にして、端数のかたまりも見る。
+    const width = 7
+    const rows = 重い結果(5_000, width)
+    let 読んだ行 = 0
+    const 見張り = new Proxy(rows, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) {
+          読んだ行++
+        }
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    const 進め手 = 手で進める()
+    const 各回のセル数: number[] = []
+    startSlicedStats(
+      {
+        rows: 見張り,
+        range: { top: 0, bottom: 4_999, left: 0, right: width - 1 },
+        exhausted: true,
+      },
+      () => {},
+      進め手.schedule,
+    )
 
     // Act
-    for (let i = 0; i < 9; i++) {
-      const acc = createAccumulator()
-      const start = performance.now()
-      accumulateRows(acc, rows, range, 0, rows.length)
-      times.push(performance.now() - start)
+    for (;;) {
+      読んだ行 = 0
+      if (!進め手.step()) {
+        break
+      }
+      各回のセル数.push(読んだ行 * width)
     }
 
     // Assert
-    times.sort((a, b) => a - b)
-    expect(times[4]).toBeLessThan(16)
+    expect(各回のセル数.length).toBe(Math.ceil(5_000 / rowsPerSlice(width)))
+    expect(Math.max(...各回のセル数)).toBeLessThanOrEqual(SLICE_CELLS)
+    expect(各回のセル数.reduce((a, b) => a + b, 0)).toBe(5_000 * width)
   })
 })
