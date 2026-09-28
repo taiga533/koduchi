@@ -472,7 +472,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return entries.filter(
         (entry) =>
           (query.connectionName === null || entry.connectionName === query.connectionName) &&
-          (query.search === null || entry.sql.includes(query.search)),
+          (query.search === null || entry.sql.includes(query.search)) &&
+          (query.succeeded === null || entry.succeeded === query.succeeded),
       )
     },
 

@@ -100,7 +100,12 @@ export function CommandPalette({
         search: null,
         limit: PALETTE_FETCH_LIMIT,
       }),
-      getDbApi().listHistory({ connectionName, search: null, limit: PALETTE_FETCH_LIMIT }),
+      getDbApi().listHistory({
+        connectionName,
+        search: null,
+        succeeded: null,
+        limit: PALETTE_FETCH_LIMIT,
+      }),
     ])
       .then(([saved, entries]) => {
         if (生きている) {
