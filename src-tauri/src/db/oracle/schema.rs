@@ -211,10 +211,10 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
     // 無効なオブジェクトの印（ADR 0045）。本体の行は印のためだけに取る。
     let mut invalid = BTreeSet::new();
     if !types.is_empty() {
-        let types = with_body_types(types);
+        let listed = object_type_condition(&types);
         let sql = format!(
             "select owner, object_name, object_type, status from all_objects
-             where object_type in ({types}) and owner <> 'PUBLIC'
+             where {listed} and owner <> 'PUBLIC'
              order by owner, object_name"
         );
 
@@ -351,25 +351,33 @@ pub fn listed_object_types(kinds: &ObjectKindFilter) -> String {
         .join(",")
 }
 
-/// `in (...)` の並びへ、載せる種別の本体（`PACKAGE BODY` / `TYPE BODY`）を足す
-/// （ADR 0045）。
+/// 段階 1 の `ALL_OBJECTS` を絞る条件を組み立てる（ADR 0045）。
 ///
-/// 本体はツリーに行として出さない（`ObjectKind::from_object_type`）が、無効かどうかは
-/// 本体にしか現れないことが多い。仕様が有効のまま本体だけが壊れるのが、PL/SQL を
-/// 書いている最中のいちばんよくある形である。別の問い合わせにせず同じ往復で取る。
+/// 載せる種別に加え、**無効な**本体（`PACKAGE BODY` / `TYPE BODY`）だけを取る。
+/// 本体はツリーに行として出さない（`ObjectKind::from_object_type`）が、仕様が有効の
+/// まま本体だけが壊れるのが PL/SQL を書いている最中のいちばんよくある形であり、
+/// 印のためには本体の状態が要る。有効な本体まで取ると、システムスキーマの数千件が
+/// クライアント側の絞り込み（`exclude_system`）の手前まで流れてくる。
+/// 別の問い合わせにせず同じ往復で取る。
 ///
 /// # 引数
 ///
-/// * `types` - `listed_object_types` が組み立てた並び
-fn with_body_types(types: String) -> String {
-    let mut types = types;
-    for (spec, body) in [("'PACKAGE'", "'PACKAGE BODY'"), ("'TYPE'", "'TYPE BODY'")] {
-        if types.split(',').any(|listed| listed == spec) {
-            types.push(',');
-            types.push_str(body);
-        }
+/// * `types` - `listed_object_types` が組み立てた並び。空でないこと
+fn object_type_condition(types: &str) -> String {
+    let bodies: Vec<&str> = [("'PACKAGE'", "'PACKAGE BODY'"), ("'TYPE'", "'TYPE BODY'")]
+        .into_iter()
+        .filter(|(spec, _)| types.split(',').any(|listed| listed == *spec))
+        .map(|(_, body)| body)
+        .collect();
+
+    if bodies.is_empty() {
+        return format!("object_type in ({types})");
     }
-    types
+
+    format!(
+        "(object_type in ({types}) or (object_type in ({}) and status = 'INVALID'))",
+        bodies.join(",")
+    )
 }
 
 /// 本体の種別名なら、印を付ける先（仕様）の種別を返す（ADR 0045）。
@@ -736,27 +744,30 @@ mod tests {
     }
 
     #[test]
-    fn パッケージと型を載せるときは本体も取りにいく() {
+    fn パッケージと型を載せるときは無効な本体だけを取りにいく() {
         // Arrange
-        let types = String::from("'TABLE','TYPE','PACKAGE'");
+        let types = "'TABLE','TYPE','PACKAGE'";
 
         // Act
-        let types = with_body_types(types);
+        let condition = object_type_condition(types);
 
         // Assert
-        assert_eq!(types, "'TABLE','TYPE','PACKAGE','PACKAGE BODY','TYPE BODY'");
+        assert_eq!(
+            condition,
+            "(object_type in ('TABLE','TYPE','PACKAGE') or (object_type in ('PACKAGE BODY','TYPE BODY') and status = 'INVALID'))"
+        );
     }
 
     #[test]
     fn パッケージを落としたときは本体も取りにいかない() {
         // Arrange: 落とした種別は問い合わせにも行かない（ADR 0014）
-        let types = String::from("'TABLE','PROCEDURE'");
+        let types = "'TABLE','PROCEDURE'";
 
         // Act
-        let types = with_body_types(types);
+        let condition = object_type_condition(types);
 
         // Assert
-        assert_eq!(types, "'TABLE','PROCEDURE'");
+        assert_eq!(condition, "object_type in ('TABLE','PROCEDURE')");
     }
 
     #[test]

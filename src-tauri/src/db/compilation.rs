@@ -5,6 +5,7 @@
 //! 言わない。行・桁・文言は `ALL_ERRORS` にある。ここにはデータベースに依らない
 //! 型と、引く範囲の決め方だけを置き、引き方は `oracle::compilation` に置く。
 
+use crate::db::error::{DbError, DbErrorKind, DbResult};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -61,17 +62,52 @@ pub struct CompilationReport {
     pub warning: String,
     /// 実行の間に定義が変わったオブジェクトの `ALL_ERRORS`。
     ///
-    /// 空でありうる（権限で見えないなど）。空だからといって「問題なし」と
+    /// 空でありうる（見えない・読めなかったなど）。空だからといって「問題なし」と
     /// 読ませないよう、呼び出し側は `warning` と併せて扱う。
     pub diagnostics: Vec<CompileDiagnostic>,
+    /// `ALL_ERRORS` を読めなかったときの理由。読めたときは `None`。
+    pub lookup_error: Option<String>,
+}
+
+impl CompilationReport {
+    /// `ALL_ERRORS` を引いた結末から報告を組み立てる（ADR 0045）。
+    ///
+    /// **読めなくても文の結果は成功（警告付き）のまま返す。**文は既に走り切り、
+    /// DDL なら暗黙にコミットも済んでいる。ここでエラーにすると、未コミットの表示と
+    /// `DBMS_OUTPUT` の通知が捨てられ、「作れていない」と誤解させる。`⌘.` の中止
+    /// （`ORA-01013`）が報告の取得に当たったときなどに起きる。
+    ///
+    /// **接続断だけはエラーのまま返す。**断を報告の中へ畳むと、フロント側の見張り
+    /// （ADR 0026）に届かず、切れたことに気付けない。
+    ///
+    /// # 引数
+    ///
+    /// * `warning` - Oracle が返した警告の原文
+    /// * `lookup` - `ALL_ERRORS` を引いた結末。エラーは写し替え（ADR 0030）を通したもの
+    pub fn settle(warning: String, lookup: DbResult<Vec<CompileDiagnostic>>) -> DbResult<Self> {
+        match lookup {
+            Ok(diagnostics) => Ok(CompilationReport {
+                warning,
+                diagnostics,
+                lookup_error: None,
+            }),
+            Err(error) if error.kind == DbErrorKind::ConnectionLost => Err(error),
+            Err(DbError { message, .. }) => Ok(CompilationReport {
+                warning,
+                diagnostics: Vec::new(),
+                lookup_error: Some(message),
+            }),
+        }
+    }
 }
 
 /// `LAST_DDL_TIME` を遡って見る秒数（ADR 0045）。
 ///
-/// 文を投げてから応答が返るまでの時間に 2 秒を足す。`LAST_DDL_TIME` と
-/// `SYSDATE` はどちらも秒で切り捨てられた `DATE` であり、両端で 1 秒ずつ
-/// 取りこぼしうるためである。データベース側の時計どうしで比べるので、
-/// 手元の時計とのずれは効かない。
+/// 起点は辞書の中でいちばん新しい `LAST_DDL_TIME` であり、`SYSDATE` ではない
+/// （`SYSDATE` は構成によって辞書と別の時計を指す）。今しがたコンパイルした
+/// オブジェクトは、起点から「文を投げてから応答までの時間」より昔にはならない。
+/// そこへ 2 秒を足すのは、`LAST_DDL_TIME` が秒で切り捨てられた `DATE` であり、
+/// 両端で 1 秒ずつ取りこぼしうるためである。
 ///
 /// # 引数
 ///
@@ -144,6 +180,76 @@ mod tests {
         assert_eq!(seconds, 5);
     }
 
+    fn 診断の見本() -> CompileDiagnostic {
+        CompileDiagnostic {
+            owner: String::from("KODUCHI"),
+            name: String::from("P"),
+            object_type: String::from("PROCEDURE"),
+            line: 3,
+            position: 7,
+            severity: DiagnosticSeverity::Error,
+            text: String::from("PLS-00201: identifier 'NUL' must be declared"),
+        }
+    }
+
+    const 警告: &str = "ORA-24344: success with compilation error";
+
+    #[test]
+    fn 読めた診断はそのまま報告に載る() {
+        // Arrange
+        let lookup = Ok(vec![診断の見本()]);
+
+        // Act
+        let report = CompilationReport::settle(String::from(警告), lookup).unwrap();
+
+        // Assert
+        assert_eq!(report.diagnostics, vec![診断の見本()]);
+        assert_eq!(report.lookup_error, None);
+    }
+
+    #[test]
+    fn 読めなかったときは文を成功のまま理由を報告に添える() {
+        // Arrange: 報告の取得に `⌘.` の中止が当たった
+        let lookup = Err(DbError::execute(
+            "コンパイルエラーの内容を読めませんでした: ORA-01013: user requested cancel",
+        ));
+
+        // Act
+        let report = CompilationReport::settle(String::from(警告), lookup).unwrap();
+
+        // Assert
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(report.warning, 警告);
+        assert_eq!(
+            report.lookup_error.as_deref(),
+            Some("コンパイルエラーの内容を読めませんでした: ORA-01013: user requested cancel")
+        );
+    }
+
+    #[test]
+    fn 権限で読めなかったときも文を成功のまま返す() {
+        // Arrange
+        let lookup = Err(DbError::permission("ORA-01031: insufficient privileges"));
+
+        // Act
+        let report = CompilationReport::settle(String::from(警告), lookup).unwrap();
+
+        // Assert
+        assert!(report.lookup_error.is_some());
+    }
+
+    #[test]
+    fn 接続断は報告に畳まずエラーのまま返す() {
+        // Arrange: 畳むとフロント側の断の見張りに届かない（ADR 0026）
+        let lookup = Err(DbError::connection_lost("ORA-03113: end-of-file"));
+
+        // Act
+        let result = CompilationReport::settle(String::from(警告), lookup);
+
+        // Assert
+        assert_eq!(result.unwrap_err().kind, DbErrorKind::ConnectionLost);
+    }
+
     #[test]
     fn 報告はキャメルケースで届く() {
         // Arrange
@@ -158,6 +264,7 @@ mod tests {
                 severity: DiagnosticSeverity::Error,
                 text: String::from("PLS-00201: identifier 'NUL' must be declared"),
             }],
+            lookup_error: None,
         };
 
         // Act
@@ -166,7 +273,7 @@ mod tests {
         // Assert
         assert_eq!(
             json,
-            r#"{"warning":"ORA-24344: success with compilation error","diagnostics":[{"owner":"KODUCHI","name":"P","objectType":"PACKAGE BODY","line":3,"position":7,"severity":"error","text":"PLS-00201: identifier 'NUL' must be declared"}]}"#
+            r#"{"warning":"ORA-24344: success with compilation error","diagnostics":[{"owner":"KODUCHI","name":"P","objectType":"PACKAGE BODY","line":3,"position":7,"severity":"error","text":"PLS-00201: identifier 'NUL' must be declared"}],"lookupError":null}"#
         );
     }
 }

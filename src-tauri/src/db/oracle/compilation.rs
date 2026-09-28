@@ -44,8 +44,11 @@ pub fn compilation_warning(connection: &Connection) -> Option<String> {
 /// 拾いうるが、行ごとに名前を添えて出すため取り違えにはならない。**利用者の
 /// オブジェクトを取りこぼす向きには外れない**ことを、広く拾う側へ倒した理由とする。
 ///
-/// 読めなかったときは写し替え（ADR 0030）を通して返す。黙って空の報告に
-/// すると、画面には「内容が見つからなかった」と嘘が出る。
+/// 窓の起点は `SYSDATE` ではなく、辞書の中でいちばん新しい `LAST_DDL_TIME` に
+/// 置く。`SYSDATE` は構成（`SYSDATE_AT_DBTIMEZONE` など）によって辞書と別の時計を
+/// 指し、窓が何時間も外れうる。辞書どうしで比べれば時計の基準は効かない。
+///
+/// 読めなかったときも文の結果は成功のまま返す（`CompilationReport::settle`）。
 ///
 /// # 引数
 ///
@@ -57,13 +60,29 @@ pub fn load_report(
     warning: String,
     elapsed: Duration,
 ) -> DbResult<CompilationReport> {
+    CompilationReport::settle(warning, load_diagnostics(connection, elapsed))
+}
+
+/// `ALL_ERRORS` を引き、診断の並びにする。
+///
+/// 失敗は写し替え（ADR 0030）を通して返し、接続断を断として見分けられるようにする。
+///
+/// # 引数
+///
+/// * `connection` - 直前に文を実行した接続
+/// * `elapsed` - 文を投げてから応答が返るまでの時間
+fn load_diagnostics(
+    connection: &Connection,
+    elapsed: Duration,
+) -> DbResult<Vec<CompileDiagnostic>> {
     const SQL: &str = "select e.owner, e.name, e.type, e.line, e.position, e.attribute, e.text
                          from all_errors e
                          join all_objects o
                            on o.owner = e.owner
                           and o.object_name = e.name
                           and o.object_type = e.type
-                        where o.last_ddl_time >= sysdate - :seconds / 86400
+                        where o.last_ddl_time >=
+                              (select max(last_ddl_time) from all_objects) - :seconds / 86400
                         order by o.last_ddl_time desc, e.owner, e.name, e.type, e.sequence";
     const CONTEXT: &str = "コンパイルエラーの内容を読めませんでした";
 
@@ -88,8 +107,5 @@ pub fn load_report(
         });
     }
 
-    Ok(CompilationReport {
-        warning,
-        diagnostics,
-    })
+    Ok(diagnostics)
 }
