@@ -21,7 +21,7 @@
 | `ALTER ... COMPILE` | `LAST_DDL_TIME` が進む |
 | 巻き添えで無効になった依存先 | `LAST_DDL_TIME` は動かない |
 | 警告の読み取り | 往復しない |
-| 報告の取得を含む実行 | 数十 ms |
+| 報告の取得を含む実行 | 数十 ms（開発用 DB） |
 
 警告は `oracle` crate の `Connection::last_warning()` で読める。ODPI-C が実行の直後に控えた値であり、読むときにデータベースへ往復しない。
 
@@ -40,11 +40,14 @@ select e.owner, e.name, e.type, e.line, e.position, e.attribute, e.text
   from all_errors e
   join all_objects o
     on o.owner = e.owner and o.object_name = e.name and o.object_type = e.type
- where o.last_ddl_time >= sysdate - :seconds / 86400
+ where o.last_ddl_time >=
+       (select max(last_ddl_time) from all_objects) - :seconds / 86400
  order by o.last_ddl_time desc, e.owner, e.name, e.type, e.sequence
 ```
 
-`:seconds` は「文を投げてから応答までの秒数 + 2」である。`LAST_DDL_TIME` と `SYSDATE` はどちらも秒で切り捨てた `DATE` であり、両端で 1 秒ずつ取りこぼしうる。比べるのはデータベースの時計どうしなので、手元の時計のずれは効かない。
+窓の起点は、辞書の中でいちばん新しい `LAST_DDL_TIME` である。今しがたコンパイルしたオブジェクトは、起点から「文を投げてから応答までの時間」より昔にはならない。後から別のセッションが DDL を流して起点が進んでも、その差はこの時間に収まる。`:seconds` はこの時間の秒数に 2 を足したものである。`LAST_DDL_TIME` は秒で切り捨てた `DATE` であり、両端で 1 秒ずつ取りこぼしうる。
+
+起点に `SYSDATE` を使わないのは、構成によって辞書と別の時計を指すためである。`SYSDATE_AT_DBTIMEZONE` のような構成では基準が何時間もずれ、窓が丸ごと外れる。辞書の値どうしで比べれば、時計の基準は効かない。手元の時計も使わない。
 
 所有者では絞らない。`CREATE PROCEDURE other.p` のように他のスキーマへ作る文があるためである。
 
@@ -54,7 +57,9 @@ select e.owner, e.name, e.type, e.line, e.position, e.attribute, e.text
 
 報告は `OracleDriver::execute` の中で、実行に使った接続のまま引く。`DBMS_OUTPUT` の取り出しや未コミットの確認と同じ置き場所である。問い合わせではないため、開いている結果セットは無く、カーソルの約束（[[0003-結果セットのカーソル保持と接続プール]]）に触れない。警告は次の実行で上書きされるため、`DBMS_OUTPUT` を読むより先に見る。
 
-`ALL_ERRORS` を読めなかったときは、`errors.rs` の写し替え（[[0030-接続が切れていることの気付き方と繋ぎ直し]]）を通してエラーで返す。空の報告にすると、画面には「内容が見つからなかった」という嘘が出る。
+`ALL_ERRORS` を読めなかったときも、**文の結果は成功（警告付き）のまま返す。**文は走り切り、DDL なら暗黙にコミットも済んでいる。エラーにすると未コミットの表示と通知が捨てられ、「作れていない」と誤解させる。報告の取得に `⌘.` の中止（`ORA-01013`）が当たったときなどに起きる。読めなかった理由は `CompilationReport.lookup_error` に載せ、画面には「見つからなかった」ではなく「読めなかった」とその理由を出す。
+
+**接続断だけはエラーのまま返す。**失敗は `errors.rs` の写し替え（[[0030-接続が切れていることの気付き方と繋ぎ直し]]）を通して区分し、断を報告の中へ畳まない。畳むと、フロント側の断の見張り（[[0026-接続断の検出と回復]]）に届かない。振り分けは `CompilationReport::settle` にある。
 
 ### 警告付きの成功は **失敗として扱う**
 
@@ -66,7 +71,7 @@ Rust 側は `ExecuteOutcome::Statement` の `compilation` に報告を載せて�
 - 履歴には `succeeded = false`、文言をエラーとして記録する。
 - スクリプト実行（`⌥⌘⏎`）はその文で止まる。無効なオブジェクトを前提として後続の文を流すと、害のほうが大きい（ADR README「SQL の実行単位」の「途中で失敗したら止める」）。
 
-報告の中身が空でも失敗とする。Oracle は既にエラーがあったと言っている。
+報告の中身が空でも、読めなかったときでも失敗とする。Oracle は既にエラーがあったと言っている。空のときの文言は原因を決めつけず、`ALL_OBJECTS` と `ALL_ERRORS` で確かめるよう案内する（見えない権限と時計の食い違いのどちらもありうる）。
 
 ### 行と桁は `ALL_ERRORS` の値のまま出す
 
@@ -87,7 +92,7 @@ KODUCHI.KODUCHI_ADR45_BROKEN（PROCEDURE）
 
 段階 1（[[0007-スキーマ取得の段階的ロード]]）の `ALL_OBJECTS` の問い合わせで `STATUS` も取り、`SchemaObject.invalid` に載せる。ツリーは行の名前の右に赤い `CircleAlert` を出し、`title` と読み上げで「無効（INVALID）」と言う。
 
-パッケージと型は、本体（`PACKAGE BODY` / `TYPE BODY`）が無効なときも仕様の行に印を立てる。ツリーは本体を行に出さない（[[0014-スキーマツリーのオブジェクト種別拡張]]）。仕様が有効なまま本体だけが壊れるのが最もよくある形であり、畳まないと見えない。本体の行は印のためだけに同じ問い合わせで取り、往復は増やさない。パッケージや型の種別を落としていれば、本体も取りにいかない。
+パッケージと型は、本体（`PACKAGE BODY` / `TYPE BODY`）が無効なときも仕様の行に印を立てる。ツリーは本体を行に出さない（[[0014-スキーマツリーのオブジェクト種別拡張]]）。仕様が有効なまま本体だけが壊れるのが最もよくある形であり、畳まないと見えない。本体の行は**無効なものだけ**を同じ問い合わせで取り、往復は増やさない。条件は `... or (object_type in ('PACKAGE BODY', 'TYPE BODY') and status = 'INVALID')` である。有効な本体まで取ると、システムスキーマの数千件がクライアント側の絞り込み（`exclude_system`）の手前まで流れてくる。パッケージや型の種別を落としていれば、本体も取りにいかない。
 
 印はツリーの他の情報と同じく、取り直すまで古いままである。直した後は `SchemaReloadButton` で消える。コンパイルのたびにツリーを取り直すことはしない（段階 1 は全スキーマを引き直すため重い）。
 
@@ -119,6 +124,8 @@ KODUCHI.KODUCHI_ADR45_BROKEN（PROCEDURE）
 - `ExecuteOutcome::Statement` に `compilation`（`CompilationReport | null`）が増えた。型は `src-tauri/src/db/compilation.rs`、取得は `src-tauri/src/db/oracle/compilation.rs` にある。
 - `SchemaObject` に `invalid` が増えた。フロントエンドの型では省略可能にしてあり、欠けたときは有効と読む。
 - `src/stores/execution.ts` の失敗の結末に `discardedTab` が増えた。コンパイルエラーの文は走り切っており、巻き添えで閉じたタブも破棄済みにするためである。
-- 結果ペインの失敗の通知は、改行を活かして左へ揃えるようにした。1 行の文言は幅が縮むため、見た目は変わらない。
+- 結果ペインの失敗の通知は、**コンパイルエラーのときだけ**改行を活かして左へ揃える（`TabExecution.compilationFailed`）。ほかのエラーは中央揃えのまま変えていない。
 - 開発用データベースに `dev/oracle/initdb/010_invalid_objects.sql` を足した。わざと無効にした手続きと、本体だけが無効なパッケージを置く。
 - 窓の混入は残る。同じ数秒の間に他のセッションがコンパイルし、エラーが残ったオブジェクトは報告に並ぶ。
+- 報告の問い合わせは `ALL_OBJECTS` を 2 度走査する。`LAST_DDL_TIME` に索引は無い。開発用 DB（`ALL_OBJECTS` 1.7 万件）では 0.3 秒弱だったが、大きな環境では秒単位になりうる。払うのは警告を受けた実行だけである。
+- 既知の制約として、辞書に未来の `LAST_DDL_TIME` を持つオブジェクトがあると起点がそこへ引っ張られる（サーバの時計を巻き戻した後など）。このとき窓は外れ、報告は空になる。画面は原因を決めつけない案内を出す。
