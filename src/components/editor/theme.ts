@@ -9,6 +9,22 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { EditorView, drawSelection } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import type { Extension } from '@codemirror/state'
+import { FLASH_DURATION_MS } from './statementRange'
+
+/**
+ * 流した文を光らせる地の色（ADR 0047）。
+ *
+ * アクセントを薄めて使う。新しいトークンを足さないのは、「今流したもの」を
+ * 示す色はアクセントそのものであり、ライトとダークの両方で `--ac` が既に
+ * 決めてあるためである。
+ */
+const FLASH_BACKGROUND = 'color-mix(in srgb, var(--ac) 24%, transparent)'
+
+/** 光を消していくアニメーション。交互の class に別の名前で当てる（`statementRange.ts`）。 */
+const flashKeyframes = {
+  from: { backgroundColor: FLASH_BACKGROUND },
+  to: { backgroundColor: 'transparent' },
+}
 
 /** SQL の字句に割り当てる色。デザインの `--kw` などをそのまま使う。 */
 const highlightStyle = HighlightStyle.define([
@@ -81,9 +97,61 @@ export const editorThemeSpec = {
     fontFamily: 'var(--font-mono)',
     lineHeight: '1.7',
   },
+  /*
+   * 右の余白は縦線の溝（3px）のぶんだけ詰め、本文の位置を変えない。
+   */
   '.cm-lineNumbers .cm-gutterElement': {
-    padding: '0 12px 0 14px',
+    padding: '0 9px 0 14px',
     minWidth: '30px',
+  },
+  /*
+   * `⌘⏎` で流れる文の縦線（ADR 0047）。溝は常に同じ幅を取る。カーソルが
+   * 動くたびに溝が出たり消えたりすると、本文が横へずれる。
+   */
+  '.cm-runRangeGutter': {
+    width: '3px',
+  },
+  '.cm-runRange': {
+    position: 'relative',
+  },
+  '.cm-runRange::before': {
+    content: '""',
+    position: 'absolute',
+    left: '0',
+    width: '2px',
+    top: '0',
+    bottom: '0',
+    backgroundColor: 'var(--ac)',
+    opacity: '0.6',
+  },
+  // 文の端の行だけ縦線を行の内側へ縮め、隣の文の縦線と繋がって見えないようにする。
+  '.cm-runRange-first::before, .cm-runRange-only::before': {
+    top: '3px',
+    borderTopLeftRadius: '1px',
+    borderTopRightRadius: '1px',
+  },
+  '.cm-runRange-last::before, .cm-runRange-only::before': {
+    bottom: '3px',
+    borderBottomLeftRadius: '1px',
+    borderBottomRightRadius: '1px',
+  },
+  '.cm-runFlash-a': {
+    animation: `koduchi-run-flash-a ${FLASH_DURATION_MS}ms ease-out`,
+  },
+  '.cm-runFlash-b': {
+    animation: `koduchi-run-flash-b ${FLASH_DURATION_MS}ms ease-out`,
+  },
+  '@keyframes koduchi-run-flash-a': flashKeyframes,
+  '@keyframes koduchi-run-flash-b': flashKeyframes,
+  /*
+   * 動きを減らす設定では消えていく動きを見せず、光らせている間だけ地を敷く。
+   * 何が流れたかを示すこと自体は動きではないため、やめはしない。
+   */
+  '@media (prefers-reduced-motion: reduce)': {
+    '.cm-runFlash': {
+      animation: 'none',
+      backgroundColor: FLASH_BACKGROUND,
+    },
   },
   '.cm-gutters .cm-activeLineGutter': {
     backgroundColor: 'transparent',
