@@ -19,9 +19,10 @@ use crate::db::actor::ConnectionHandle;
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome, Liveness};
 use crate::db::error::{DbError, DbErrorKind, DbResult};
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaColumns, SchemaFilter, SchemaNode};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
+use crate::db::stats::ObjectStats;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -731,8 +732,12 @@ impl ConnectionPool {
     /// # 引数
     ///
     /// * `owner` - 対象のスキーマ名
-    pub fn schema_columns(&self, owner: &str) -> DbResult<Vec<TableColumn>> {
-        self.見張る(|| self.background_handle()?.schema_columns(owner))
+    /// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
+    pub fn schema_columns(&self, owner: &str, with_comments: bool) -> DbResult<SchemaColumns> {
+        self.見張る(|| {
+            self.background_handle()?
+                .schema_columns(owner, with_comments)
+        })
     }
 
     /// 見積りだけの実行計画を取る（`⌘E`）。
@@ -827,6 +832,24 @@ impl ConnectionPool {
     /// * `kind` - オブジェクトの種類
     pub fn object_ddl(&self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl> {
         self.見張る(|| self.background_handle()?.object_ddl(owner, name, kind))
+    }
+
+    /// 表 1 つの統計とセグメントの大きさを取る（ADR 0044）。
+    ///
+    /// 定義の取得と同じく、結果セットを保持していない接続で読む。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    pub fn object_stats(
+        &self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<Option<ObjectStats>> {
+        self.見張る(|| self.background_handle()?.object_stats(owner, name, kind))
     }
 
     /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
@@ -960,7 +983,11 @@ mod tests {
             Err(断のエラー())
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
             Err(断のエラー())
         }
 
@@ -995,6 +1022,15 @@ mod tests {
             _name: &str,
             _kind: ObjectKind,
         ) -> DbResult<ObjectDdl> {
+            Err(断のエラー())
+        }
+
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
             Err(断のエラー())
         }
 
@@ -1117,8 +1153,12 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
-            Ok(Vec::new())
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
+            Ok(SchemaColumns::default())
         }
 
         fn commit(&mut self) -> DbResult<()> {
@@ -1164,6 +1204,15 @@ mod tests {
                 kind,
                 parts: Vec::new(),
             })
+        }
+
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
+            Ok(None)
         }
 
         fn list_sessions(&mut self) -> DbResult<SessionOverview> {
@@ -1580,7 +1629,11 @@ mod tests {
             unimplemented!("カーソルの順序のテストでは使わない")
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
             unimplemented!("カーソルの順序のテストでは使わない")
         }
 
@@ -1615,6 +1668,15 @@ mod tests {
             _name: &str,
             _kind: ObjectKind,
         ) -> DbResult<ObjectDdl> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
             unimplemented!("カーソルの順序のテストでは使わない")
         }
 
@@ -1950,7 +2012,11 @@ mod tests {
             unimplemented!("中止のテストでは使わない")
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
             unimplemented!("中止のテストでは使わない")
         }
 
@@ -1985,6 +2051,15 @@ mod tests {
             _name: &str,
             _kind: ObjectKind,
         ) -> DbResult<ObjectDdl> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
             unimplemented!("中止のテストでは使わない")
         }
 
