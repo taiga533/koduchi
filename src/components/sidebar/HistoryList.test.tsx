@@ -438,10 +438,12 @@ describe('HistoryList の全文プレビュー', () => {
     expect(screen.getByRole('tooltip')).toBeInTheDocument()
   })
 
-  it('一覧がスクロールすると全文を閉じるが、全文の中のスクロールでは閉じない', () => {
+  it('ホバーで開いた全文は一覧のスクロールで閉じるが、全文の中のスクロールでは閉じない', () => {
     // Arrange
+    vi.useFakeTimers()
     一覧を描く()
-    act(() => 行の本体('select * from users').focus())
+    fireEvent.pointerEnter(screen.getByText('select * from users').closest('li') as HTMLElement)
+    act(() => vi.advanceTimersByTime(HOVER_OPEN_DELAY_MS))
 
     // Act
     fireEvent.scroll(screen.getByRole('tooltip').querySelector('pre') as HTMLElement)
@@ -450,6 +452,112 @@ describe('HistoryList の全文プレビュー', () => {
 
     // Assert
     expect(中のスクロールの後).not.toBeNull()
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+})
+
+/**
+ * 行の位置を決め打ちにする。jsdom は配置をしないため、行は一覧の中の並び順 × 40px の
+ * 高さに、送った量だけ上へずれて並んでいることにする。
+ */
+function 行の配置を決める(): { 送る: (px: number) => void } {
+  let 送り = 0
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    if (this.tagName !== 'LI' || this.parentElement === null) {
+      return new DOMRect(0, 0, 0, 0)
+    }
+    const index = Array.from(this.parentElement.children).indexOf(this)
+    return new DOMRect(0, 100 + index * 40 - 送り, 260, 40)
+  })
+  return {
+    送る: (px) => {
+      送り = px
+    },
+  }
+}
+
+/** プレビューの上端（px）。 */
+function プレビューの上端(): string {
+  return screen.getByRole('tooltip').style.top
+}
+
+describe('HistoryList の全文プレビューの位置', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('スクロールを伴う下矢印でも全文は開いたまま、送った後の行の横に出る', () => {
+    // Arrange
+    const 配置 = 行の配置を決める()
+    const 送った: unknown[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (
+      this: Element,
+      options?: boolean | ScrollIntoViewOptions,
+    ) {
+      送った.push(options)
+      配置.送る(30)
+      fireEvent.scroll(screen.getByRole('list'))
+    })
+    一覧を描く()
+    act(() => 行の本体('select * from users').focus())
+
+    // Act
+    fireEvent.keyDown(行の本体('select * from users'), { key: 'ArrowDown' })
+
+    // Assert
+    expect(送った).toEqual([{ block: 'nearest' }])
+    expect(screen.getByRole('tooltip').querySelector('pre')?.textContent).toBe(
+      'select * from nowhere',
+    )
+    expect(プレビューの上端()).toBe(`${100 + 40 - 30}px`)
+  })
+
+  it('端の行の下矢印は器をスクロールさせない', () => {
+    // Arrange
+    一覧を描く()
+    act(() => 行の本体('select * from nowhere').focus())
+
+    // Act
+    const 既定の動きが残った = fireEvent.keyDown(行の本体('select * from nowhere'), {
+      key: 'ArrowDown',
+    })
+
+    // Assert
+    expect(既定の動きが残った).toBe(false)
+    expect(行の本体('select * from nowhere')).toHaveFocus()
+  })
+
+  it('一覧の先頭に行が入ると全文は同じ履歴の行の横へ測り直す', () => {
+    // Arrange
+    行の配置を決める()
+    一覧を描く()
+    act(() => 行の本体('select * from users').focus())
+    const 前の上端 = プレビューの上端()
+    const 新しい履歴: HistoryEntry = { ...履歴一覧[0], id: 3, sql: 'select 3 from dual' }
+
+    // Act
+    act(() => useHistoryStore.setState({ entries: [新しい履歴, ...履歴一覧] }))
+
+    // Assert
+    expect(前の上端).toBe('100px')
+    expect(プレビューの上端()).toBe('140px')
+    expect(screen.getByRole('tooltip').querySelector('pre')?.textContent).toBe(
+      'select * from users\nwhere id = 1',
+    )
+  })
+
+  it('全文を出している行が一覧から消えると閉じ、戻っても勝手に開かない', () => {
+    // Arrange
+    一覧を描く()
+    act(() => 行の本体('select * from users').focus())
+
+    // Act
+    act(() => useHistoryStore.setState({ entries: [履歴一覧[1]] }))
+    const 消えた後 = screen.queryByRole('tooltip')
+    act(() => useHistoryStore.setState({ entries: 履歴一覧 }))
+
+    // Assert
+    expect(消えた後).toBeNull()
     expect(screen.queryByRole('tooltip')).toBeNull()
   })
 })

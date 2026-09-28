@@ -26,6 +26,8 @@ interface HistoryPreviewProps {
   onPointerEnter: () => void
   onPointerLeave: () => void
   onClose: () => void
+  /** プレビューの外がスクロールした。閉じるか測り直すかは呼ぶ側が決める。 */
+  onOuterScroll: () => void
 }
 
 /** プレビューの幅。エディタの上に重なるので、読める幅に留めて覆いすぎない。 */
@@ -39,6 +41,7 @@ export function HistoryPreview({
   onPointerEnter,
   onPointerLeave,
   onClose,
+  onOuterScroll,
 }: HistoryPreviewProps) {
   const ref = useRef<HTMLDivElement | null>(null)
   const [position, setPosition] = useState({ left: anchor.right, top: anchor.top })
@@ -52,11 +55,11 @@ export function HistoryPreview({
       if (event.target instanceof Node && ref.current?.contains(event.target)) {
         return
       }
-      onClose()
+      onOuterScroll()
     }
     window.addEventListener('scroll', onScroll, true)
     return () => window.removeEventListener('scroll', onScroll, true)
-  }, [onClose])
+  }, [onOuterScroll])
 
   // 高さは SQL の長さで決まるため、描いた直後、塗る前に実寸を測って置き直す。
   // 対象の行が変われば `anchor` も作り直されるので、それだけを見れば足りる。

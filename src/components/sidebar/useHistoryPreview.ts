@@ -21,6 +21,13 @@ export interface PreviewTarget {
   source: 'focus' | 'hover'
 }
 
+/**
+ * 行の今の位置を測る。行が一覧から消えていれば `null`。
+ *
+ * 位置は DOM にしか無いため、一覧の部品が測り方を渡す。
+ */
+export type MeasureRow = (entryId: number) => RowAnchor | null
+
 /** 行とプレビューから呼ぶ口。 */
 export interface HistoryPreviewControl {
   target: PreviewTarget | null
@@ -36,6 +43,18 @@ export interface HistoryPreviewControl {
   keep: () => void
   /** すぐに閉じる（`esc`・右クリックのメニュー）。 */
   close: () => void
+  /**
+   * 一覧が変わった（読み直し・削除）。出している行を測り直し、消えていれば閉じる。
+   */
+  reanchor: (measure: MeasureRow) => void
+  /**
+   * プレビューの外がスクロールした。
+   *
+   * 焦点で開いたものは測り直す。`↑` / `↓` で見えていない行へ送ると器が
+   * スクロールするが、焦点はその行に残るため、閉じると開き直す道が無い。
+   * ホバーで開いたものは閉じる。行がポインタの下から動いて去ったからである。
+   */
+  scrolled: (measure: MeasureRow) => void
 }
 
 /**
@@ -121,5 +140,35 @@ export function useHistoryPreview(): HistoryPreviewControl {
     show(null)
   }, [cancel, show])
 
-  return { target, focusRow, blurRow, enterRow, leave, keep: cancel, close }
+  const reanchor = useCallback(
+    (measure: MeasureRow) => {
+      const shown = current.current
+      if (shown === null) {
+        return
+      }
+      const anchor = measure(shown.entryId)
+      if (anchor === null) {
+        cancel()
+        show(null)
+        return
+      }
+      if (anchor.top !== shown.anchor.top || anchor.right !== shown.anchor.right) {
+        show({ ...shown, anchor })
+      }
+    },
+    [cancel, show],
+  )
+
+  const scrolled = useCallback(
+    (measure: MeasureRow) => {
+      if (current.current?.source === 'focus') {
+        reanchor(measure)
+      } else {
+        close()
+      }
+    },
+    [reanchor, close],
+  )
+
+  return { target, focusRow, blurRow, enterRow, leave, keep: cancel, close, reanchor, scrolled }
 }

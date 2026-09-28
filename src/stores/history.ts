@@ -48,6 +48,15 @@ export function outcomeToSucceeded(outcome: HistoryOutcome): boolean | null {
   }
 }
 
+/**
+ * 読み出しの世代。
+ *
+ * 絞り込みを続けて切り替えると読み出しが重なり、遅れて返った古い条件の結果が
+ * 今の条件の結果を上書きする（「失敗」を選んでいるのに一覧が「すべて」のまま）。
+ * 依頼ごとに世代を進め、今の世代でない応答は捨てる。スキーマのストアと同じ形。
+ */
+let generation = 0
+
 interface HistoryState {
   entries: HistoryEntry[]
   scope: HistoryScope
@@ -109,6 +118,8 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
 
   reload: async () => {
     const { scope, outcome, search, connectionName } = get()
+    generation += 1
+    const current = generation
     set({ loading: true, error: null })
 
     try {
@@ -119,9 +130,13 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
         succeeded: outcomeToSucceeded(outcome),
         limit: HISTORY_LIMIT,
       })
-      set({ entries, loading: false })
+      if (current === generation) {
+        set({ entries, loading: false })
+      }
     } catch (error) {
-      set({ loading: false, error: toErrorMessage(error) })
+      if (current === generation) {
+        set({ loading: false, error: toErrorMessage(error) })
+      }
     }
   },
 
@@ -137,7 +152,9 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
   clearAll: async () => {
     try {
       await getDbApi().clearHistory()
-      set({ entries: [] })
+      // 消す前に走り出した読み出しが、消した行を一覧へ戻さないようにする。
+      generation += 1
+      set({ entries: [], loading: false })
     } catch (error) {
       set({ error: toErrorMessage(error) })
     }

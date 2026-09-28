@@ -81,6 +81,29 @@ describe('useHistoryStore', () => {
     expect(calls.listHistory.at(-1)?.succeeded).toBe(false)
   })
 
+  it('絞り込みを続けて切り替えると遅れて返った古い応答を捨てる', async () => {
+    // Arrange
+    const fake = createFakeDbApi({ history: 保存済みの履歴 })
+    const 応答待ち: ((entries: HistoryEntry[]) => void)[] = []
+    setDbApi({
+      ...fake.api,
+      listHistory: () => new Promise<HistoryEntry[]>((resolve) => 応答待ち.push(resolve)),
+    })
+    const 失敗だけ = [{ ...履歴(3, 'select * from nowhere', '開発'), succeeded: false }]
+
+    // Act
+    useHistoryStore.getState().setOutcome('all')
+    useHistoryStore.getState().setOutcome('failed')
+    応答待ち[1](失敗だけ)
+    await Promise.resolve()
+    応答待ち[0](保存済みの履歴)
+    await Promise.resolve()
+
+    // Assert
+    expect(useHistoryStore.getState().entries.map((entry) => entry.id)).toEqual([3])
+    expect(useHistoryStore.getState().loading).toBe(false)
+  })
+
   it('成否を問わないときは絞り込みを渡さない', async () => {
     // Arrange
     useHistoryStore.setState({ outcome: 'all' })

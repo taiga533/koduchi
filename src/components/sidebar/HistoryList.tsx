@@ -11,7 +11,7 @@
  * 出す（ADR 0046。`HistoryPreview.tsx`）。
  */
 
-import { useEffect, useId, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { getClipboardApi } from '../../api/clipboard'
 import type { HistoryEntry } from '../../types/db'
@@ -20,7 +20,7 @@ import { type HistoryOutcome, useHistoryStore } from '../../stores/history'
 import type { RowAnchor } from './previewPlacement'
 import { HistoryPreview } from './HistoryPreview'
 import { SqlEntryContextMenu } from './SqlEntryContextMenu'
-import { useHistoryPreview } from './useHistoryPreview'
+import { type MeasureRow, useHistoryPreview } from './useHistoryPreview'
 
 /** SQL の 1 行目だけを取り出して詰める。一覧では全文を出さない。 */
 function summarize(sql: string): string {
@@ -82,6 +82,9 @@ function emptyMessage(outcome: HistoryOutcome): string {
 /** 行の本体の印。`↑` / `↓` で焦点を送る先を DOM から引くために付ける。 */
 const ROW_ATTRIBUTE = 'data-history-row'
 
+/** 行（`li`）の印。プレビューの位置を測り直すときに履歴の ID から引く。 */
+const ENTRY_ATTRIBUTE = 'data-history-id'
+
 /**
  * `↑` / `↓` で隣の行の本体へ焦点を送る。
  *
@@ -105,11 +108,18 @@ function moveRowFocus(event: React.KeyboardEvent<HTMLUListElement>): void {
   if (index === -1) {
     return
   }
+  // 端の行でも既定の動きは止める。止めないと器が矢印でスクロールし、焦点は
+  // 動かないのにプレビューだけが行からずれる。
+  event.preventDefault()
   const next = rows[event.key === 'ArrowDown' ? index + 1 : index - 1]
-  if (next !== undefined) {
-    event.preventDefault()
-    next.focus()
+  if (next === undefined) {
+    return
   }
+  // `focus()` に任せたスクロールは焦点が当たった後に起き、`onFocus` で測った
+  // 位置が古くなる。見せる分だけを自分で送り、スクロールの後で測り直させる
+  // （`useHistoryPreview` の `scrolled`）。
+  next.focus({ preventScroll: true })
+  next.scrollIntoView({ block: 'nearest' })
 }
 
 /** 右クリックのメニューの状態。 */
@@ -129,7 +139,44 @@ export function HistoryList({ onUse, onOpenInNewTab, onSaveQuery }: HistoryListP
   const loading = useHistoryStore((state) => state.loading)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const preview = useHistoryPreview()
+  const { close: closePreview, reanchor, scrolled } = preview
   const previewId = useId()
+  const listRef = useRef<HTMLUListElement | null>(null)
+
+  // 一覧に居ない行は測らない。絞り込みや削除で消えた行のプレビューを閉じさせる。
+  const measure = useCallback<MeasureRow>(
+    (entryId) => {
+      if (!entries.some((entry) => entry.id === entryId)) {
+        return null
+      }
+      const row = listRef.current?.querySelector(`[${ENTRY_ATTRIBUTE}="${entryId}"]`)
+      return row ? anchorOf(row) : null
+    },
+    [entries],
+  )
+
+  // 読み直し（実行のたびに先頭へ行が入る）や削除で行が動いたら、塗る前に測り
+  // 直す。古い座標のままだと別の行の横に残る。`measure` は一覧ごとに作り直される。
+  useLayoutEffect(() => {
+    reanchor(measure)
+  }, [reanchor, measure])
+
+  const onOuterScroll = useCallback(() => scrolled(measure), [scrolled, measure])
+
+  // 行は描き直しを省く（`memo`）ため、親から来る関数の同一性を保つ。
+  const latestOnUse = useRef(onUse)
+  useEffect(() => {
+    latestOnUse.current = onUse
+  }, [onUse])
+  const use = useCallback((sql: string) => latestOnUse.current(sql), [])
+
+  const openMenu = useCallback(
+    (entry: HistoryEntry, x: number, y: number) => {
+      closePreview()
+      setMenu({ x, y, entry })
+    },
+    [closePreview],
+  )
   // 絞り込みや削除で消えた行のプレビューは出さない。
   const previewed =
     preview.target === null
@@ -195,21 +242,18 @@ export function HistoryList({ onUse, onOpenInNewTab, onSaveQuery }: HistoryListP
           {loading ? '読み込んでいます…' : emptyMessage(outcome)}
         </p>
       ) : (
-        <ul className="list-none m-0 p-0 flex flex-col" onKeyDown={moveRowFocus}>
+        <ul ref={listRef} className="list-none m-0 p-0 flex flex-col" onKeyDown={moveRowFocus}>
           {entries.map((entry) => (
             <HistoryRow
               key={entry.id}
               entry={entry}
               previewId={previewed?.id === entry.id ? previewId : undefined}
-              onUse={onUse}
+              onUse={use}
               onRemove={remove}
-              onContextMenu={(x, y) => {
-                preview.close()
-                setMenu({ x, y, entry })
-              }}
-              onFocusRow={(anchor) => preview.focusRow(entry.id, anchor)}
-              onBlurRow={() => preview.blurRow(entry.id)}
-              onEnterRow={(anchor) => preview.enterRow(entry.id, anchor)}
+              onContextMenu={openMenu}
+              onFocusRow={preview.focusRow}
+              onBlurRow={preview.blurRow}
+              onEnterRow={preview.enterRow}
               onLeaveRow={preview.leave}
             />
           ))}
@@ -224,6 +268,7 @@ export function HistoryList({ onUse, onOpenInNewTab, onSaveQuery }: HistoryListP
           onPointerEnter={preview.keep}
           onPointerLeave={preview.leave}
           onClose={preview.close}
+          onOuterScroll={onOuterScroll}
         />
       ) : null}
       {menu ? (
@@ -278,19 +323,25 @@ interface HistoryRowProps {
   onUse: (sql: string) => void
   onRemove: (id: number) => void
   /** 右クリックされた。押した点を渡す。 */
-  onContextMenu: (x: number, y: number) => void
+  onContextMenu: (entry: HistoryEntry, x: number, y: number) => void
   /** 本体に焦点が当たった。 */
-  onFocusRow: (anchor: RowAnchor) => void
+  onFocusRow: (entryId: number, anchor: RowAnchor) => void
   /** 本体から焦点が抜けた。 */
-  onBlurRow: () => void
+  onBlurRow: (entryId: number) => void
   /** ポインタが行に入った。 */
-  onEnterRow: (anchor: RowAnchor) => void
+  onEnterRow: (entryId: number, anchor: RowAnchor) => void
   /** ポインタが行から出た。 */
   onLeaveRow: () => void
 }
 
-/** 履歴 1 件。押すとエディタへ入り、✕ で 1 件だけ消える。 */
-function HistoryRow({
+/**
+ * 履歴 1 件。押すとエディタへ入り、✕ で 1 件だけ消える。
+ *
+ * `memo` で包むのは、ホバーで行を移るたびにプレビューの対象が変わり、包まないと
+ * 200 行すべてが時刻と行数の整形ごと描き直るためである。関数の引数は履歴の
+ * ID を受け取る形にして、行ごとに関数を作らない。
+ */
+const HistoryRow = memo(function HistoryRow({
   entry,
   previewId,
   onUse,
@@ -304,11 +355,12 @@ function HistoryRow({
   return (
     <li
       className="flex items-start gap-6px px-10px py-6px hover:bg-fill"
+      {...{ [ENTRY_ATTRIBUTE]: entry.id }}
       onContextMenu={(event) => {
         event.preventDefault()
-        onContextMenu(event.clientX, event.clientY)
+        onContextMenu(entry, event.clientX, event.clientY)
       }}
-      onPointerEnter={(event) => onEnterRow(anchorOf(event.currentTarget))}
+      onPointerEnter={(event) => onEnterRow(entry.id, anchorOf(event.currentTarget))}
       onPointerLeave={onLeaveRow}
     >
       <button
@@ -319,10 +371,10 @@ function HistoryRow({
         onFocus={(event) => {
           const row = event.currentTarget.closest('li')
           if (row !== null) {
-            onFocusRow(anchorOf(row))
+            onFocusRow(entry.id, anchorOf(row))
           }
         }}
-        onBlur={onBlurRow}
+        onBlur={() => onBlurRow(entry.id)}
         className="flex-1 min-w-0 flex flex-col gap-3px bg-transparent border-none p-0 cursor-pointer font-inherit text-left"
       >
         <span className="text-11.5px text-fg2 truncate w-full">{summarize(entry.sql)}</span>
@@ -338,7 +390,7 @@ function HistoryRow({
       </button>
     </li>
   )
-}
+})
 
 /** スコープ切替のボタン。 */
 function ScopeButton({
