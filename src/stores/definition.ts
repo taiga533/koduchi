@@ -12,13 +12,18 @@
  * 権限にも敏感であり、定義ビュー全体がそれで開けなくなってはいけない。取った
  * DDL はそのタブが開いている間だけ覚え、内訳のタブを行き来しても取り直さない。
  *
+ * **表の統計とセグメントの大きさは定義と並んで別に取る**（ADR 0044）。
+ * 見出しに出すものなので開いた時点で取りにいくが、他人の表では
+ * `DBA_SEGMENTS` を要する。その失敗で列も制約も見られなくなってはいけない
+ * ため、状態も定義とは別に持つ。
+ *
  * **一度読んだ定義は取り直さない。**タブを行き来するたびに問い合わせるのでは、
  * 開いた枚数だけ往復が増える。読み直したいときはタブを閉じて開き直す。
  */
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
-import type { DefinitionTarget, ObjectDdl, ObjectDefinition } from '../types/db'
+import type { DefinitionTarget, ObjectDdl, ObjectDefinition, ObjectStats } from '../types/db'
 import { isDbError, toErrorMessage } from '../types/db'
 
 /** 取得の状態。 */
@@ -53,6 +58,11 @@ export interface DefinitionEntry {
   ddlError: string | null
   /** DDL が読めなかった理由が権限不足か（ADR 0019）。 */
   ddlPermissionDenied: boolean
+
+  /** 表の統計とセグメントの大きさ（ADR 0044）。持たない種別では `null` のまま。 */
+  stats: ObjectStats | null
+  statsStatus: DefinitionStatus
+  statsError: string | null
 
   /** 列・制約・索引に当てる絞り込み語。 */
   search: string
@@ -109,6 +119,9 @@ function 読み込み中の状態(target: DefinitionTarget): DefinitionEntry {
     ddlStatus: 'idle',
     ddlError: null,
     ddlPermissionDenied: false,
+    stats: null,
+    statsStatus: 'loading',
+    statsError: null,
     search: '',
     tab: 'columns',
   }
@@ -125,6 +138,9 @@ export const useDefinitionStore = create<DefinitionState>((set, get) => ({
 
     const current = 世代を進める(tabId)
     set((state) => ({ byTab: { ...state.byTab, [tabId]: 読み込み中の状態(target) } }))
+
+    // 定義の往復を待たずに並べて走らせる。どちらが先に返っても書き込む場所は別である。
+    const 統計 = 統計を読む(connectionId, tabId, target, set, current)
 
     try {
       const definition = await getDbApi().objectDefinition(
@@ -155,6 +171,8 @@ export const useDefinitionStore = create<DefinitionState>((set, get) => ({
         permissionDenied: isDbError(error) && error.kind === 'permission',
       }))
     }
+
+    await 統計
   },
 
   drop: (tabId) =>
@@ -269,6 +287,49 @@ async function DDLを読む(
       ddl: null,
       ddlError: toErrorMessage(error),
       ddlPermissionDenied: isDbError(error) && error.kind === 'permission',
+    }))
+  }
+}
+
+/**
+ * 表の統計とセグメントの大きさを取って状態へ流し込む（ADR 0044）。
+ *
+ * 失敗しても定義の状態には触れない。見出しの 1 行が出ないだけで、列も制約も
+ * 見られる。セグメントの権限不足は失敗ではなく、値（`size.status`）として届く。
+ *
+ * @param connectionId 接続の識別子
+ * @param tabId 対象のタブ
+ * @param target 対象のオブジェクト
+ * @param set 状態を書き換える関数
+ * @param current この取得の世代
+ */
+async function 統計を読む(
+  connectionId: string,
+  tabId: string,
+  target: DefinitionTarget,
+  set: SetState,
+  current: number,
+): Promise<void> {
+  try {
+    const stats = await getDbApi().objectStats(connectionId, target.owner, target.name, target.kind)
+    if (current !== generations[tabId]) {
+      return
+    }
+    書き換える(set, tabId, (entry) => ({
+      ...entry,
+      stats,
+      statsStatus: 'ready',
+      statsError: null,
+    }))
+  } catch (error) {
+    if (current !== generations[tabId]) {
+      return
+    }
+    書き換える(set, tabId, (entry) => ({
+      ...entry,
+      stats: null,
+      statsStatus: 'failed',
+      statsError: toErrorMessage(error),
     }))
   }
 }

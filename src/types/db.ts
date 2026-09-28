@@ -738,6 +738,56 @@ export interface ObjectDdl {
 }
 
 /**
+ * セグメントの大きさ、または測れなかった理由（ADR 0044）。
+ *
+ * **権限が無くて測れないことを 0 バイトとして受け取らない。**「空の表」と
+ * 「見えない表」を取り違えさせないためである。
+ */
+export type SegmentSize =
+  | {
+      status: 'measured'
+      /** 表の本体。パーティションは足し上げ、索引構成表では主キーの索引を含む。 */
+      tableBytes: number
+      /** 表に付いた索引（LOB の索引を除く）。 */
+      indexBytes: number
+      /** LOB のセグメントと、その索引。 */
+      lobBytes: number
+      /**
+       * 数えたセグメントの数。0 なら、まだセグメントが作られていないか
+       * `TRUNCATE … DROP ALL STORAGE` で解放されている。
+       */
+      segmentCount: number
+    }
+  /** セグメントを読む権限が無い（他人の表で `DBA_SEGMENTS` が読めない）。 */
+  | { status: 'permissionDenied' }
+  /** 一時表であり、永続のセグメントを持たない。 */
+  | { status: 'temporary' }
+  /** 外部表であり、行はデータベースの外のファイルにある。 */
+  | { status: 'external' }
+  /** クラスタ化表。行はクラスタのセグメントに他の表と一緒に入り、表だけの大きさは測れない。 */
+  | { status: 'clustered'; clusterName: string }
+
+/**
+ * 表 1 つの統計とセグメントの大きさ（ADR 0044）。
+ *
+ * **`numRows` は統計を採った時点の行数であり、今の行数ではない。**
+ */
+export interface ObjectStats {
+  /** 統計を採った時点の行数。統計を採っていなければ `null`（0 行ではない）。 */
+  numRows: number | null
+  /** 統計を採った日時（`YYYY-MM-DD HH:MM`、データベースの時計）。 */
+  lastAnalyzed: string | null
+  /** 統計を採ってから経った日数。 */
+  daysSinceAnalyzed: number | null
+  /** データベースが統計を古いと見なしているか。分からなければ `null`。 */
+  stale: boolean | null
+  partitioned: boolean
+  indexOrganized: boolean
+  temporary: boolean
+  size: SegmentSize
+}
+
+/**
  * 定義ビューを開く対象（ADR 0019）。
  *
  * スキーマツリーの行がそのまま指す 3 つ組である。
