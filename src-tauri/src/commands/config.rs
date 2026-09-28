@@ -79,12 +79,34 @@ impl Default for AppearanceSettings {
     }
 }
 
+/// 結果テーブルの表示調整の既定（ADR 0048）。
+///
+/// 値の意味はフロントエンドの `src/components/results/resultDisplay.ts` と対応する。
+/// 結果タブのヘッダーから一時的に上書きでき、ここにはその既定だけを置く。
+///
+/// **項目は寛容に読む**（`lenient`）。真偽値の欄に `"yes"` と手で書かれただけで
+/// `AppSettings` の読み取りごと失敗すると、テーマもキーの割り当ても既定へ戻る。
+/// 既定がどちらも `false` なので `bool::default()` へ落とせばよい。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultDisplaySettings {
+    /// 数値を 3 桁ごとに区切って描くか。
+    #[serde(default, deserialize_with = "lenient")]
+    pub thousands_separator: bool,
+    /// 前後の空白・タブ・改行を記号で描くか。
+    #[serde(default, deserialize_with = "lenient")]
+    pub show_whitespace: bool,
+}
+
 /// アプリ全体の設定。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default)]
     pub appearance: AppearanceSettings,
+    /// 結果テーブルの表示調整の既定（ADR 0048）。
+    #[serde(default, deserialize_with = "lenient")]
+    pub result_display: ResultDisplaySettings,
     /// CSV 保存ダイアログで前回選ばれた書式。
     #[serde(default)]
     pub csv: CsvOptions,
@@ -96,6 +118,29 @@ pub struct AppSettings {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub keybindings: BTreeMap<String, String>,
+}
+
+/// 読めればその値、読めなければ捨てる。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OrIgnored<T> {
+    Value(T),
+    Other(serde::de::IgnoredAny),
+}
+
+/// 型の合わない値を既定へ落として読む。
+///
+/// 手で書かれうる項目 1 つの書き損じで `AppSettings` の読み取りごと失敗させない
+/// ため（`lenient_keybindings` と同じ理由）。
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(match OrIgnored::<T>::deserialize(deserializer)? {
+        OrIgnored::Value(value) => value,
+        OrIgnored::Other(_) => T::default(),
+    })
 }
 
 /// `[keybindings]` の 1 行。文字列でない値は読んで捨てる。
@@ -297,6 +342,10 @@ rowHeight = \"comfortable\"
                 row_height: String::from("comfortable"),
                 editor_font_size: String::from("xlarge"),
             },
+            result_display: ResultDisplaySettings {
+                thousands_separator: true,
+                show_whitespace: true,
+            },
             csv: CsvOptions::default(),
             keybindings: BTreeMap::from([
                 (String::from("palette"), String::from("cmd+k")),
@@ -378,6 +427,73 @@ rollback = \"\"
         // Assert
         assert_eq!(settings.appearance.theme, "light");
         assert!(settings.keybindings.is_empty());
+    }
+
+    #[test]
+    fn 表示調整を持たない古い設定でも他の項目が保たれ表示調整は既定になる() {
+        // Arrange
+        let old = "[appearance]\ntheme = \"dark\"\n";
+
+        // Act
+        let settings: AppSettings = toml::from_str(old).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance.theme, "dark");
+        assert_eq!(settings.result_display, ResultDisplaySettings::default());
+        assert!(!settings.result_display.thousands_separator);
+    }
+
+    #[test]
+    fn 表示調整の型の合わない項目だけを既定へ落とし他の項目とテーマは保たれる() {
+        // Arrange
+        let text = "\
+[appearance]
+theme = \"dark\"
+
+[resultDisplay]
+thousandsSeparator = true
+showWhitespace = \"yes\"
+";
+
+        // Act
+        let settings: AppSettings = toml::from_str(text).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance.theme, "dark");
+        assert!(settings.result_display.thousands_separator);
+        assert!(!settings.result_display.show_whitespace);
+    }
+
+    #[test]
+    fn 表示調整が表でなくても他の項目は保たれる() {
+        // Arrange
+        let text = "resultDisplay = 3\n\n[appearance]\ntheme = \"light\"\n";
+
+        // Act
+        let settings: AppSettings = toml::from_str(text).unwrap();
+
+        // Assert
+        assert_eq!(settings.appearance.theme, "light");
+        assert_eq!(settings.result_display, ResultDisplaySettings::default());
+    }
+
+    #[test]
+    fn 表示調整はフロントエンドと同じ鍵の形で読める() {
+        // Arrange
+        let settings = AppSettings {
+            result_display: ResultDisplaySettings {
+                thousands_separator: true,
+                show_whitespace: false,
+            },
+            ..AppSettings::default()
+        };
+
+        // Act
+        let json = serde_json::to_value(&settings).unwrap();
+
+        // Assert
+        assert_eq!(json["resultDisplay"]["thousandsSeparator"], true);
+        assert_eq!(json["resultDisplay"]["showWhitespace"], false);
     }
 
     #[test]

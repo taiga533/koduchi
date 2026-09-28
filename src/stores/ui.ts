@@ -21,6 +21,13 @@ import {
 import type { Appearance, EditorFontSize, RowHeight, ThemePreference } from '../theme/appearance'
 import { applyAppearance, defaultAppearance, parseEditorFontSize } from '../theme/appearance'
 import type { KeybindingOverrides } from '../keybindings/bindings'
+import type { FrozenColumn } from '../components/results/columnSizing'
+import type { ResultDisplay, ResultDisplayOverride } from '../components/results/resultDisplay'
+import {
+  applyOverride,
+  defaultResultDisplay,
+  parseResultDisplay,
+} from '../components/results/resultDisplay'
 import type { AppSettings, CsvOptions } from '../types/db'
 import { defaultCsvOptions } from '../types/db'
 
@@ -84,6 +91,18 @@ interface UiState {
    * セッション（ADR 0005）へは保存しない。再起動すれば既定の幅に戻る。
    */
   resultColumnWidths: Record<string, Record<string, number>>
+  /** 結果テーブルの表示調整の既定（ADR 0048）。`settings.toml` へ保存する。 */
+  resultDisplayDefaults: ResultDisplay
+  /**
+   * 結果タブのヘッダーで触った表示調整。タブ ID → 既定と違う項目だけ。
+   *
+   * 列幅と同じ寿命である。再実行をまたいで残し、タブを閉じたら捨て、保存はしない。
+   * 「この結果だけ区切って読みたい」は一時的な用事であり、既定を変えたいなら設定
+   * 画面がある。
+   */
+  resultDisplayOverrides: Record<string, ResultDisplayOverride>
+  /** 結果テーブルで固定した列の境目。タブ ID → 境目（ADR 0048）。寿命は列幅と同じ。 */
+  resultFrozenColumns: Record<string, FrozenColumn>
 
   selectSidebarSegment: (segment: SidebarSegment) => void
   selectResultTab: (tab: ResultTab) => void
@@ -98,8 +117,20 @@ interface UiState {
   setKeybindings: (keybindings: KeybindingOverrides) => void
   /** 結果テーブルの列幅を覚える。 */
   setResultColumnWidth: (tabId: string, columnName: string, width: number) => void
-  /** タブぶんの列幅を忘れる。タブを閉じたときに呼ぶ。 */
-  clearResultColumnWidths: (tabId: string) => void
+  /** 表示調整の既定を変えて保存する。 */
+  setResultDisplayDefaults: (patch: Partial<ResultDisplay>) => void
+  /** そのタブだけ表示調整を変える。既定と同じ値へ戻した項目は上書きから落ちる。 */
+  setResultDisplayOverride: (tabId: string, patch: Partial<ResultDisplay>) => void
+  /** そのタブの表示調整を既定へ戻す。 */
+  resetResultDisplay: (tabId: string) => void
+  /** 列の固定を決める。`null` で解除する。 */
+  setResultFrozenColumn: (tabId: string, frozen: FrozenColumn | null) => void
+  /**
+   * タブぶんの結果の見え方（列幅・表示調整・固定）を忘れる。タブを閉じたときに呼ぶ。
+   *
+   * 3 つは寿命が同じなので 1 つの入口にまとめ、閉じる関所が 1 つ呼べば済むようにする。
+   */
+  forgetResultView: (tabId: string) => void
   /** サイドバーの幅を変える。値は許される範囲へ丸める。 */
   setSidebarWidth: (width: number) => void
   /**
@@ -143,7 +174,10 @@ function reflect(appearance: Appearance): void {
 }
 
 /** `settings.toml` へ書く値。 */
-type SavedSettings = Pick<UiState, 'appearance' | 'csvOptions' | 'keybindings'>
+type SavedSettings = Pick<
+  UiState,
+  'appearance' | 'csvOptions' | 'keybindings' | 'resultDisplayDefaults'
+>
 
 /**
  * 保存する形へ変換する。
@@ -151,7 +185,12 @@ type SavedSettings = Pick<UiState, 'appearance' | 'csvOptions' | 'keybindings'>
  * `theme` / `rowHeight` / `editorFontSize` は Rust 側では文字列として扱う。値の
  * 意味を知っているのはフロントエンドだけである。
  */
-function toSettings({ appearance, csvOptions: csv, keybindings }: SavedSettings): AppSettings {
+function toSettings({
+  appearance,
+  csvOptions: csv,
+  keybindings,
+  resultDisplayDefaults,
+}: SavedSettings): AppSettings {
   return {
     appearance: {
       theme: appearance.theme,
@@ -159,6 +198,7 @@ function toSettings({ appearance, csvOptions: csv, keybindings }: SavedSettings)
       rowHeight: appearance.rowHeight,
       editorFontSize: appearance.editorFontSize,
     },
+    resultDisplay: { ...resultDisplayDefaults },
     csv,
     keybindings: { ...keybindings },
   }
@@ -176,6 +216,29 @@ function persist(settings: SavedSettings): void {
     .catch(() => {})
 }
 
+/**
+ * タブ ID を鍵にした表の 1 行を差し替えた表を返す。`undefined` ならその行を消す。
+ *
+ * タブごとに持つ値（列幅・表示調整・固定）を同じ形で足し引きするため。
+ *
+ * @param table 元の表
+ * @param tabId 差し替えるタブ
+ * @param value 新しい値。消すなら `undefined`
+ */
+function withEntry<T>(
+  table: Record<string, T>,
+  tabId: string,
+  value: T | undefined,
+): Record<string, T> {
+  if (value !== undefined) {
+    return { ...table, [tabId]: value }
+  }
+  if (!(tabId in table)) {
+    return table
+  }
+  return Object.fromEntries(Object.entries(table).filter(([id]) => id !== tabId))
+}
+
 export const useUiStore = create<UiState>((set, get) => ({
   sidebarSegment: 'schema',
   resultTab: 'result',
@@ -190,6 +253,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   sessionsOpen: false,
   sourceSearchOpen: false,
   resultColumnWidths: {},
+  resultDisplayDefaults: defaultResultDisplay,
+  resultDisplayOverrides: {},
+  resultFrozenColumns: {},
 
   selectSidebarSegment: (segment) => set({ sidebarSegment: segment }),
   selectResultTab: (tab) => set({ resultTab: tab }),
@@ -259,15 +325,57 @@ export const useUiStore = create<UiState>((set, get) => ({
       },
     })),
 
-  clearResultColumnWidths: (tabId) =>
+  setResultDisplayDefaults: (patch) =>
     set((state) => {
-      if (!(tabId in state.resultColumnWidths)) {
+      const resultDisplayDefaults = { ...state.resultDisplayDefaults, ...patch }
+      persist({ ...state, resultDisplayDefaults })
+      // 既定と同じになった上書きを落とし直す。残すと、そのタブだけ既定を変えても
+      // 追随しない理由の無い差分が残る。
+      const resultDisplayOverrides = Object.fromEntries(
+        Object.entries(state.resultDisplayOverrides).flatMap(([tabId, override]) => {
+          const kept = applyOverride(resultDisplayDefaults, override, {})
+          return kept === undefined ? [] : [[tabId, kept]]
+        }),
+      )
+      return { resultDisplayDefaults, resultDisplayOverrides }
+    }),
+
+  setResultDisplayOverride: (tabId, patch) =>
+    set((state) => {
+      const next = applyOverride(
+        state.resultDisplayDefaults,
+        state.resultDisplayOverrides[tabId],
+        patch,
+      )
+      return { resultDisplayOverrides: withEntry(state.resultDisplayOverrides, tabId, next) }
+    }),
+
+  resetResultDisplay: (tabId) =>
+    set((state) =>
+      tabId in state.resultDisplayOverrides
+        ? { resultDisplayOverrides: withEntry(state.resultDisplayOverrides, tabId, undefined) }
+        : state,
+    ),
+
+  setResultFrozenColumn: (tabId, frozen) =>
+    set((state) => ({
+      resultFrozenColumns: withEntry(state.resultFrozenColumns, tabId, frozen ?? undefined),
+    })),
+
+  forgetResultView: (tabId) =>
+    set((state) => {
+      if (
+        !(tabId in state.resultColumnWidths) &&
+        !(tabId in state.resultDisplayOverrides) &&
+        !(tabId in state.resultFrozenColumns)
+      ) {
         return state
       }
-      const rest = Object.fromEntries(
-        Object.entries(state.resultColumnWidths).filter(([id]) => id !== tabId),
-      )
-      return { resultColumnWidths: rest }
+      return {
+        resultColumnWidths: withEntry(state.resultColumnWidths, tabId, undefined),
+        resultDisplayOverrides: withEntry(state.resultDisplayOverrides, tabId, undefined),
+        resultFrozenColumns: withEntry(state.resultFrozenColumns, tabId, undefined),
+      }
     }),
 
   setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
@@ -311,7 +419,12 @@ export const useUiStore = create<UiState>((set, get) => ({
         editorFontSize: parseEditorFontSize(settings.appearance.editorFontSize),
       }
       reflect(appearance)
-      set({ appearance, csvOptions: settings.csv, keybindings: settings.keybindings ?? {} })
+      set({
+        appearance,
+        csvOptions: settings.csv,
+        keybindings: settings.keybindings ?? {},
+        resultDisplayDefaults: parseResultDisplay(settings.resultDisplay),
+      })
     } catch {
       // 設定が読めなくても既定値で動く。起動を止める理由にはしない。
       reflect(get().appearance)

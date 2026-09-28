@@ -26,6 +26,7 @@ import type {
   ObjectComment,
   ObjectDefinition,
   ObjectKind,
+  ObjectStats,
   SavedConnection,
   SavedQuery,
   SavedQueryQuery,
@@ -68,6 +69,7 @@ export interface FakeCalls {
   schemaColumns: { id: string; owner: string; withComments: boolean }[]
   objectDefinition: { id: string; owner: string; name: string; kind: ObjectKind }[]
   objectDdl: { id: string; owner: string; name: string; kind: ObjectKind }[]
+  objectStats: { id: string; owner: string; name: string; kind: ObjectKind }[]
   listSessions: string[]
   killSession: { id: string; sid: number; serial: number }[]
   searchSource: { id: string; request: SourceSearchRequest }[]
@@ -134,6 +136,10 @@ export interface FakeDbApiOptions {
   ddl?: ObjectDdl
   /** DDL の取得で投げるエラー。 */
   ddlError?: unknown
+  /** 表の統計とセグメントの大きさの応答（ADR 0044）。既定は `null`（持たない種別）。 */
+  stats?: ObjectStats | null
+  /** 統計の取得で投げるエラー。 */
+  statsError?: unknown
   /** 復元するセッション。 */
   session?: SessionState
   /** 実行計画のテキスト。 */
@@ -357,6 +363,7 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     schemaColumns: [],
     objectDefinition: [],
     objectDdl: [],
+    objectStats: [],
     listSessions: [],
     killSession: [],
     searchSource: [],
@@ -474,7 +481,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return entries.filter(
         (entry) =>
           (query.connectionName === null || entry.connectionName === query.connectionName) &&
-          (query.search === null || entry.sql.includes(query.search)),
+          (query.search === null || entry.sql.includes(query.search)) &&
+          (query.succeeded === null || entry.succeeded === query.succeeded),
       )
     },
 
@@ -563,6 +571,14 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
           parts: [{ label: '定義', sql: `create table ${owner}.${name} (id number);` }],
         }
       )
+    },
+
+    objectStats: async (id, owner, name, kind) => {
+      calls.objectStats.push({ id, owner, name, kind })
+      if (options.statsError !== undefined) {
+        throw options.statsError
+      }
+      return options.stats ?? null
     },
 
     listSessions: async (id) => {

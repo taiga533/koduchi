@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { editorThemeSpec, koduchiEditorTheme } from './theme'
+import { FLASH_DURATION_MS } from './statementRange'
 
 /** 箱の大きさを決める property。`&` にはどれも書いてはならない。 */
 const 寸法のproperty = [
@@ -128,5 +129,70 @@ describe('選択の描き方（issue #54）', () => {
 
     // Assert
     expect(当たる規則?.[1]).toMatchObject({ backgroundColor: 'var(--fill2)' })
+  })
+})
+
+/**
+ * 選択子の宣言を引く。
+ *
+ * @param selector 選択子
+ */
+function 宣言(selector: string): Record<string, unknown> {
+  return (editorThemeSpec as Record<string, Record<string, unknown>>)[selector]
+}
+
+describe('流れる文の範囲の見た目（ADR 0047）', () => {
+  it('縦線の溝の幅ぶんだけ行番号の右の余白を詰め、本文の位置を変えない', () => {
+    // Arrange
+    const 行番号 = 宣言('.cm-lineNumbers .cm-gutterElement')
+    const 溝 = 宣言('.cm-runRangeGutter')
+
+    // Act
+    const 右の余白 = Number.parseInt(String(行番号.padding).split(' ')[1], 10)
+    const 溝の幅 = Number.parseInt(String(溝.width), 10)
+
+    // Assert（元の右の余白は 12px）
+    expect(右の余白 + 溝の幅).toBe(12)
+  })
+
+  it.each(['a', 'b'])('光 %s のアニメーションは光らせておく時間と同じ長さで走る', (suffix) => {
+    // Arrange
+    const 光 = 宣言(`.cm-runFlash-${suffix}`)
+
+    // Act
+    const animation = String(光.animation)
+
+    // Assert
+    expect(animation).toContain(`koduchi-run-flash-${suffix} ${FLASH_DURATION_MS}ms`)
+    expect(宣言(`@keyframes koduchi-run-flash-${suffix}`)).toBeDefined()
+  })
+
+  it('動きを減らす設定では消えていく動きを止め、地だけを敷く', () => {
+    // Arrange
+    const 動きを減らす = 宣言('@media (prefers-reduced-motion: reduce)') as Record<
+      string,
+      Record<string, unknown>
+    >
+
+    // Act
+    const 光 = 動きを減らす['.cm-runFlash']
+
+    // Assert
+    expect(光.animation).toBe('none')
+    expect(String(光.backgroundColor)).toContain('var(--ac)')
+  })
+
+  it('色は値を書かずにトークンを参照する', () => {
+    // Arrange
+    const 縦線 = 宣言('.cm-runRange::before')
+    const 光の始まり = (
+      宣言('@keyframes koduchi-run-flash-a') as Record<string, Record<string, unknown>>
+    ).from
+
+    // Act & Assert
+    expect(縦線.backgroundColor).toBe('var(--ac)')
+    expect(String(光の始まり.backgroundColor)).toMatch(
+      /^color-mix\(in srgb, var\(--ac\) \d+%, transparent\)$/,
+    )
   })
 })

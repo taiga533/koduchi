@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { ResultPane } from './ResultPane'
+import { ResultPane, showsResultTable } from './ResultPane'
+import { defaultResultDisplay } from './resultDisplay'
 import { emptyExecution, useExecutionStore, type LogEntry } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
@@ -219,6 +220,170 @@ describe('メッセージタブのログの右クリック（ADR 0038）', () =>
     // Assert
     expect(既定動作).toBe(true)
     expect(screen.queryByTestId('message-log-context-menu')).not.toBeInTheDocument()
+  })
+})
+
+describe('ResultPane の表示調整（ADR 0048）', () => {
+  let 元の実行: ReturnType<typeof useExecutionStore.getState>
+  let 元の画面: ReturnType<typeof useUiStore.getState>
+
+  /** 1 行 1 列の成功した結果。 */
+  const 成功した結果 = {
+    ...emptyExecution,
+    status: 'succeeded' as const,
+    columns: [{ name: 'AMOUNT', typeName: 'NUMBER', kind: 'number' as const }],
+    rows: [[{ text: '1234567', kind: 'number' as const }]],
+    exhausted: true,
+  }
+
+  beforeEach(() => {
+    元の実行 = useExecutionStore.getState()
+    元の画面 = useUiStore.getState()
+    useUiStore.setState({
+      resultTab: 'result',
+      resultDisplayDefaults: defaultResultDisplay,
+      resultDisplayOverrides: {},
+    })
+    useExecutionStore.setState({ byTab: { 'tab-1': 成功した結果 }, log: [] })
+  })
+
+  afterEach(() => {
+    useExecutionStore.setState(元の実行, true)
+    useUiStore.setState(元の画面, true)
+  })
+
+  it('押すとヘッダーが広がり、切り替えはこのタブにだけ効く', () => {
+    // Arrange
+    描く()
+    fireEvent.click(screen.getByRole('button', { name: '表示を調整' }))
+
+    // Act
+    fireEvent.click(screen.getByRole('checkbox', { name: '数値を 3 桁で区切る' }))
+
+    // Assert
+    expect(screen.getByRole('button', { name: '表示を調整' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(useUiStore.getState().resultDisplayOverrides).toEqual({
+      'tab-1': { thousandsSeparator: true },
+    })
+    expect(screen.getByRole('button', { name: '表示を調整' })).toHaveClass('text-ac')
+  })
+
+  it('開いたら最初の項目に焦点が移り、esc で閉じるとボタンへ焦点が戻る', () => {
+    // Arrange
+    描く()
+    fireEvent.click(screen.getByRole('button', { name: '表示を調整' }))
+    const 最初の項目 = screen.getByRole('checkbox', { name: '数値を 3 桁で区切る' })
+    const 開いた直後の焦点 = document.activeElement
+
+    // Act
+    fireEvent.keyDown(最初の項目, { key: 'Escape' })
+
+    // Assert
+    expect(開いた直後の焦点).toBe(最初の項目)
+    expect(screen.queryByTestId('result-display-bar')).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '表示を調整' }))
+  })
+
+  it('開いたまま再実行しても欄は描き直されるだけで焦点はエディタに残る', () => {
+    // Arrange: エディタの代わりの入力欄に焦点を置く
+    描く()
+    fireEvent.click(screen.getByRole('button', { name: '表示を調整' }))
+    const エディタ = document.createElement('textarea')
+    document.body.appendChild(エディタ)
+    エディタ.focus()
+
+    // Act: 実行中で欄が消え、成功で描き直される
+    act(() => {
+      useExecutionStore.setState({
+        byTab: { 'tab-1': { ...成功した結果, status: 'running' } },
+      })
+    })
+    const 実行中の欄 = screen.queryByTestId('result-display-bar')
+    act(() => {
+      useExecutionStore.setState({ byTab: { 'tab-1': 成功した結果 } })
+    })
+
+    // Assert
+    expect(実行中の欄).not.toBeInTheDocument()
+    expect(screen.getByTestId('result-display-bar')).toBeInTheDocument()
+    expect(document.activeElement).toBe(エディタ)
+    エディタ.remove()
+  })
+
+  it('開いたままメッセージタブと行き来しても焦点を奪わない', () => {
+    // Arrange
+    useExecutionStore.setState({ log: [失敗の記録] })
+    描く()
+    fireEvent.click(screen.getByRole('button', { name: '表示を調整' }))
+    const エディタ = document.createElement('textarea')
+    document.body.appendChild(エディタ)
+    エディタ.focus()
+
+    // Act
+    act(() => {
+      useUiStore.setState({ resultTab: 'messages' })
+    })
+    act(() => {
+      useUiStore.setState({ resultTab: 'result' })
+    })
+
+    // Assert
+    expect(screen.getByTestId('result-display-bar')).toBeInTheDocument()
+    expect(document.activeElement).toBe(エディタ)
+    エディタ.remove()
+  })
+
+  it('既定に戻すとこのタブの上書きが消え、ボタンは既定のときだけ戻る', () => {
+    // Arrange
+    useUiStore.setState({ resultDisplayOverrides: { 'tab-1': { showWhitespace: true } } })
+    描く()
+    fireEvent.click(screen.getByRole('button', { name: '表示を調整' }))
+
+    // Act
+    fireEvent.click(screen.getByRole('button', { name: '既定に戻す' }))
+
+    // Assert
+    expect(useUiStore.getState().resultDisplayOverrides).toEqual({})
+    expect(screen.queryByRole('button', { name: '既定に戻す' })).not.toBeInTheDocument()
+  })
+
+  it('結果の表が無いときはボタンを出さない', () => {
+    // Arrange
+    useExecutionStore.setState({
+      byTab: { 'tab-1': { ...emptyExecution, status: 'failed', error: エラー } },
+    })
+
+    // Act
+    描く()
+
+    // Assert
+    expect(screen.queryByRole('button', { name: '表示を調整' })).not.toBeInTheDocument()
+  })
+})
+
+describe('showsResultTable', () => {
+  it('成功して列を持つ結果を結果タブで見ているときだけ真になる', () => {
+    // Arrange
+    const 表あり = {
+      ...emptyExecution,
+      status: 'succeeded' as const,
+      columns: [{ name: 'A', typeName: 'NUMBER', kind: 'number' as const }],
+    }
+    const 列なし = { ...emptyExecution, status: 'succeeded' as const }
+
+    // Act
+    const 判定 = [
+      showsResultTable('result', 表あり),
+      showsResultTable('messages', 表あり),
+      showsResultTable('result', 列なし),
+      showsResultTable('result', { ...表あり, status: 'running' as const }),
+    ]
+
+    // Assert
+    expect(判定).toEqual([true, false, false, false])
   })
 })
 

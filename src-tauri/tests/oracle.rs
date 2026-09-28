@@ -26,6 +26,7 @@ use koduchi_lib::db::source::{
     SourceKind, SourceKindFilter, SourceObjectMatches, SourceSearchRequest, SourceSearchResult,
     SOURCE_SEARCH_DEFAULT_LIMIT,
 };
+use koduchi_lib::db::stats::{ObjectStats, SegmentSize};
 use koduchi_lib::db::value::{Cell, CellKind};
 use serial_test::serial;
 
@@ -2293,6 +2294,293 @@ fn 当たった行の前後を読める() {
     assert!(lines.len() > 1, "前後の行が添えられるはず");
     assert!(lines.iter().any(|line| line.line == 当たり行));
     assert!(lines.windows(2).all(|pair| pair[0].line < pair[1].line));
+}
+
+/// 統計と大きさの見本（`009_table_stats.sql`）を統合テストで引く（ADR 0044）。
+///
+/// # 引数
+///
+/// * `pool` - 使う接続
+/// * `name` - `KODUCHI` スキーマの表の名前
+fn 統計を引く(pool: &ConnectionPool, name: &str) -> ObjectStats {
+    pool.object_stats("KODUCHI", name, ObjectKind::Table)
+        .unwrap()
+        .unwrap_or_else(|| panic!("{name} の統計が返るはず。009_table_stats.sql を流したか"))
+}
+
+/// 測れたセグメントの大きさを取り出す。測れなかったらテストを失敗させる。
+fn 測れた大きさ(stats: &ObjectStats) -> (u64, u64, u64, u64) {
+    match stats.size {
+        SegmentSize::Measured {
+            table_bytes,
+            index_bytes,
+            lob_bytes,
+            segment_count,
+        } => (table_bytes, index_bytes, lob_bytes, segment_count),
+        ref other => panic!("測れるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn 統計を採った表は行数と採った日時を返す() {
+    // Arrange: 統計はロックしてあり、自動統計収集で動かない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_SAMPLE");
+
+    // Assert
+    assert_eq!(stats.num_rows, Some(120));
+    assert!(stats.last_analyzed.is_some());
+    assert!(stats.days_since_analyzed.is_some_and(|days| days >= 0));
+    assert_eq!(stats.stale, Some(false));
+    assert!(!stats.partitioned);
+    assert!(!stats.index_organized);
+    assert!(!stats.temporary);
+}
+
+#[test]
+#[serial]
+fn 自分の表は表と索引とlobに分けて測る() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_SAMPLE");
+
+    // Assert: 表・主キーの索引・LOB セグメント・LOB の索引の 4 つ
+    let (table, index, lob, count) = 測れた大きさ(&stats);
+    assert!(table > 0);
+    assert!(index > 0);
+    assert!(lob > 0);
+    assert_eq!(count, 4);
+}
+
+#[test]
+#[serial]
+fn 統計を採っていない表の行数は0ではなく不明になる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_UNANALYZED");
+
+    // Assert: 行も無いためセグメントもまだ作られていない
+    assert_eq!(stats.num_rows, None);
+    assert_eq!(stats.last_analyzed, None);
+    assert_eq!(stats.days_since_analyzed, None);
+    assert_eq!(stats.stale, None);
+    assert_eq!(測れた大きさ(&stats), (0, 0, 0, 0));
+}
+
+#[test]
+#[serial]
+fn パーティション表はパーティションのセグメントを足し上げる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_PARTITIONED");
+
+    // Assert
+    assert!(stats.partitioned);
+    assert_eq!(stats.num_rows, Some(200));
+    let (table, _, _, count) = 測れた大きさ(&stats);
+    assert_eq!(count, 2);
+    assert!(table > 0);
+}
+
+#[test]
+#[serial]
+fn 索引構成表は主キーの索引を表の本体として数える() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_IOT");
+
+    // Assert
+    assert!(stats.index_organized);
+    let (table, index, _, count) = 測れた大きさ(&stats);
+    assert!(table > 0);
+    assert_eq!(index, 0);
+    assert_eq!(count, 1);
+}
+
+#[test]
+#[serial]
+fn 一時表はセグメントを測らない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_TEMP");
+
+    // Assert
+    assert!(stats.temporary);
+    assert_eq!(stats.size, SegmentSize::Temporary);
+}
+
+#[test]
+#[serial]
+fn クラスタ化表は行があってもセグメントが無いとは言わない() {
+    // Arrange: 行はクラスタのセグメントに他の表と一緒に入る（009_table_stats.sql）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_CLUSTERED");
+
+    // Assert
+    assert_eq!(
+        stats.size,
+        SegmentSize::Clustered {
+            cluster_name: String::from("STATS_CLUSTER")
+        }
+    );
+}
+
+#[test]
+#[serial]
+fn 外部表はセグメントを測らない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_EXTERNAL");
+
+    // Assert
+    assert_eq!(stats.size, SegmentSize::External);
+}
+
+#[test]
+#[serial]
+fn 索引構成表のoverflowは表に数える() {
+    // Arrange: overflow は `SYS_IOT_OVER_*` という別の名前のセグメントに入る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_IOT_OVERFLOW");
+
+    // Assert: 主キーの索引と overflow の 2 つとも表
+    let (table, index, _, count) = 測れた大きさ(&stats);
+    assert_eq!(count, 2);
+    assert_eq!(index, 0);
+    assert!(table > 65_536);
+}
+
+#[test]
+#[serial]
+fn ネストした表の格納表は表に数える() {
+    // Arrange: 入れ子の行は `NESTED TABLE` 区分の別のセグメントに入る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_NESTED");
+
+    // Assert: 親と格納表のどちらも最初のエクステント（64 KB）を持つため、格納表を
+    // 取りこぼすと表は 64 KB になる。親に付く入れ子の識別子の索引は索引に数える
+    let (table, index, _, _) = 測れた大きさ(&stats);
+    assert!(table >= 2 * 65_536);
+    assert!(index > 0);
+}
+
+#[test]
+#[serial]
+fn 他人の表はdbaのビューで測る() {
+    // Arrange: 接続する KODUCHI は SELECT_CATALOG_ROLE を持つ（001_schemas.sql）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = pool
+        .object_stats("KODUCHI_ANALYTICS", "DAILY_GMV", ObjectKind::Table)
+        .unwrap()
+        .unwrap();
+
+    // Assert
+    let (table, _, _, count) = 測れた大きさ(&stats);
+    assert!(count > 0);
+    assert!(table > 0);
+}
+
+#[test]
+#[serial]
+fn セグメントを読む権限が無くても統計は返り大きさは権限不足になる() {
+    // Arrange: SELECT_CATALOG_ROLE を持たない利用者で繋ぐ（009_table_stats.sql）
+    let Some(mut params) = 接続に使う情報() else {
+        return;
+    };
+    params.username = String::from("koduchi_stats_viewer");
+    params.password = String::from("koduchi_dev");
+    let pool = ConnectionPool::open(&params, 1, DEFAULT_CHUNK_SIZE).unwrap();
+
+    // Act
+    let stats = pool
+        .object_stats("KODUCHI", "STATS_SAMPLE", ObjectKind::Table)
+        .unwrap()
+        .unwrap();
+
+    // Assert: 0 バイトと取り違えない
+    assert_eq!(stats.num_rows, Some(120));
+    assert_eq!(stats.size, SegmentSize::PermissionDenied);
+}
+
+#[test]
+#[serial]
+fn 統計を持たない種別では問い合わせずに何も返さない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let view = pool
+        .object_stats("KODUCHI", "SESSION_ROLLUP", ObjectKind::View)
+        .unwrap();
+
+    // Assert
+    assert_eq!(view, None);
+}
+
+#[test]
+#[serial]
+fn 統計を読んでも結果セットは壊れない() {
+    // Arrange: 開いたままのカーソルを持たせてから統計を読む（ADR 0003）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    pool.execute(TAB, "select event_id from koduchi.events", &[])
+        .unwrap();
+
+    // Act
+    pool.object_stats("KODUCHI", "STATS_SAMPLE", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let chunk = pool.fetch_more(TAB).unwrap();
+    assert_eq!(chunk.rows.len(), DEFAULT_CHUNK_SIZE);
 }
 
 /// 実行結果からコンパイルの報告を取り出す（ADR 0045）。
