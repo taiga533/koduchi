@@ -1196,6 +1196,7 @@ describe('selectResultTabs', () => {
         elapsedMs: 3,
         notices: ['小槌からの通知'],
         inTransaction: false,
+        compilation: null,
         discardedTab: null,
       }),
     })
@@ -1806,5 +1807,164 @@ describe('formatStatementOutcome（結果ペインの本文）', () => {
 
     // Assert
     expect(text).toBe('完了しました')
+  })
+})
+
+describe('コンパイルエラー（ADR 0045）', () => {
+  const 報告 = {
+    warning: 'ORA-24344: A compilation error occurred while creating an object.',
+    diagnostics: [
+      {
+        owner: 'KODUCHI',
+        name: 'BROKEN',
+        objectType: 'PROCEDURE',
+        line: 3,
+        position: 3,
+        severity: 'error' as const,
+        text: "PLS-00201: identifier 'NUL' must be declared",
+      },
+    ],
+    lookupError: null,
+  }
+
+  it('報告の付いた文は完了ではなく失敗として行と桁つきで出る', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => statementResponse(null, { compilation: 報告 }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore
+      .getState()
+      .execute('c1', TAB, 'create or replace procedure broken is ...', '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.status).toBe('failed')
+    expect(execution.error).toContain('KODUCHI.BROKEN（PROCEDURE）\n  3 行 3 桁: PLS-00201')
+    expect(execution.compilationFailed).toBe(true)
+    const [entry] = useExecutionStore.getState().log
+    expect(entry.error).toBe(execution.error)
+    expect(entry.rowCount).toBeNull()
+  })
+
+  it('報告の付いた文でも未コミットの表示と通知は応答の値を使う', async () => {
+    // Arrange: 文そのものは走り切っており、DDL の暗黙のコミットも起きている
+    useExecutionStore.setState({ inTransaction: true })
+    const { api } = createFakeDbApi({
+      onExecute: () =>
+        statementResponse(null, {
+          compilation: 報告,
+          inTransaction: false,
+          notices: ['小槌からの通知'],
+        }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'create ...', '開発', [])
+
+    // Assert
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+    expect(useExecutionStore.getState().log[0].notices).toEqual(['小槌からの通知'])
+  })
+
+  it('報告の付いた文は履歴に失敗として残る', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({
+      onExecute: () => statementResponse(null, { compilation: 報告 }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'create ...', '開発', [])
+
+    // Assert
+    expect(calls.recordHistory[0]).toMatchObject({ succeeded: false, rowCount: null })
+    expect(calls.recordHistory[0].errorMessage).toContain('PLS-00201')
+  })
+
+  it('スクリプト実行は報告の付いた文で止まる', async () => {
+    // Arrange: 無効なオブジェクトを前提に後続の文を流させない
+    const 実行した順: string[] = []
+    const { api } = createFakeDbApi({
+      onExecute: (sql) => {
+        実行した順.push(sql)
+        return sql === '文2' ? statementResponse(null, { compilation: 報告 }) : emptyResponse
+      },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().executeScript('c1', TAB, ['文1', '文2', '文3'], '開発', [])
+
+    // Assert
+    expect(実行した順).toEqual(['文1', '文2'])
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.status).toBe('failed')
+    expect(execution.progress).toEqual({ index: 2, total: 3 })
+  })
+
+  it('報告の付いた文の巻き添えで閉じられたタブは破棄済みになる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => statementResponse(null, { compilation: 報告, discardedTab: 'tab-a' }),
+    })
+    setDbApi(api)
+    useExecutionStore.setState({
+      byTab: { 'tab-a': { ...emptyExecution, status: 'succeeded', exhausted: false } },
+    })
+
+    // Act
+    await useExecutionStore.getState().execute('c1', 'tab-b', 'create ...', '開発', [])
+
+    // Assert
+    expect(selectExecution(useExecutionStore.getState(), 'tab-a').status).toBe('discarded')
+    expect(selectExecution(useExecutionStore.getState(), 'tab-b').status).toBe('failed')
+  })
+
+  it('報告を読めなかった文も失敗として出し未コミットの表示と通知は応答の値を使う', async () => {
+    // Arrange: 文は走り切っており、報告の取得だけが中止された
+    useExecutionStore.setState({ inTransaction: true })
+    const { api } = createFakeDbApi({
+      onExecute: () =>
+        statementResponse(null, {
+          compilation: {
+            ...報告,
+            diagnostics: [],
+            lookupError: 'コンパイルエラーの内容を読めませんでした: ORA-01013',
+          },
+          inTransaction: false,
+          notices: ['小槌からの通知'],
+        }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'create ...', '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.status).toBe('failed')
+    expect(execution.error).toContain('コンパイルエラーの内容を読めませんでした: ORA-01013')
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+    expect(useExecutionStore.getState().log[0].notices).toEqual(['小槌からの通知'])
+  })
+
+  it('例外で返った失敗はコンパイルエラーとして扱わない', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => {
+        throw { kind: 'execute', message: 'ORA-00942' }
+      },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発', [])
+
+    // Assert
+    expect(selectExecution(useExecutionStore.getState(), TAB).compilationFailed).toBe(false)
   })
 })

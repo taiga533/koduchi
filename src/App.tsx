@@ -68,6 +68,7 @@ import {
   relayConnectionLost,
 } from './mediator/connection'
 import type { RunScreen } from './mediator/execution'
+import type { RunTarget } from './sql/runTarget'
 import {
   cancelExecution,
   reportFormatFailure,
@@ -221,8 +222,16 @@ function AppWindow() {
   const pendingAsks = useSyncExternalStore(asks.subscribe, asks.getSnapshot)
   const ask = asks.ask
 
+  /** 流す文をエディタの上で光らせる（ADR 0047）。エディタが無ければ何もしない。 */
+  const highlightRun = useCallback((target: RunTarget) => {
+    editorRef.current?.flashRunTarget(target)
+  }, [])
+
   /** 押された時点のカーソルと尋ね方。実行の裁定へ渡す。 */
-  const runScreen = useCallback((): RunScreen => ({ cursor: positionRef.current, ask }), [ask])
+  const runScreen = useCallback(
+    (): RunScreen => ({ cursor: positionRef.current, ask, highlight: highlightRun }),
+    [ask, highlightRun],
+  )
 
   const onRunStatement = useCallback(() => runStatement(runScreen()), [runScreen])
   const onRunSelection = useCallback(() => runSelection(runScreen()), [runScreen])
@@ -272,11 +281,12 @@ function AppWindow() {
     () => ({
       cursor: () => positionRef.current,
       ask,
+      highlightRun,
       formatEditor: () => editorRef.current?.formatDocument(),
       openPalette: () => setPaletteOpen(true),
       openCsvDialog: () => setCsvOpen(true),
     }),
-    [ask],
+    [ask, highlightRun],
   )
 
   /** パレットで選ばれたコマンドを、キーと同じ裁定と判定に通す。 */

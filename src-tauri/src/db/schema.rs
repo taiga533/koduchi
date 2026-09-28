@@ -28,6 +28,18 @@ pub struct SchemaFilter {
     /// 項目を持たない古い設定ファイルでは全種別が有効になる。
     #[serde(default)]
     pub kinds: ObjectKindFilter,
+    /// 列の行に型名を出すか（ADR 0043）。
+    ///
+    /// 見た目だけの設定であり、問い合わせは変わらない。型名は補完の並べ替えにも
+    /// 使うため、隠しても段階 2 は読み続ける。
+    #[serde(default = "default_true")]
+    pub show_types: bool,
+    /// 表・ビュー・列のコメントを出すか（ADR 0043）。
+    ///
+    /// 偽のときは段階 2 でコメントを**読みにいかない。**種別と同じく
+    /// 「出さないものは取らない」である（ADR 0014）。
+    #[serde(default = "default_true")]
+    pub show_comments: bool,
 }
 
 impl Default for SchemaFilter {
@@ -36,6 +48,8 @@ impl Default for SchemaFilter {
             exclude_system: true,
             hide_empty: true,
             kinds: ObjectKindFilter::default(),
+            show_types: true,
+            show_comments: true,
         }
     }
 }
@@ -272,6 +286,13 @@ impl ObjectKind {
 pub struct SchemaObject {
     pub name: String,
     pub kind: ObjectKind,
+    /// `ALL_OBJECTS.STATUS` が `INVALID` か（ADR 0045）。
+    ///
+    /// パッケージと型は本体（`PACKAGE BODY` / `TYPE BODY`）が無効なときも立つ。
+    /// ツリーは本体を別の行に出さないため、ここで畳まないと最もよくある
+    /// 「本体だけが壊れている」が見えない。
+    #[serde(default)]
+    pub invalid: bool,
 }
 
 /// スキーマ 1 つ。段階 1 で返る。
@@ -298,15 +319,38 @@ pub struct TableColumn {
     pub kind: CellKind,
     /// 列に付いたコメント（`ALL_COL_COMMENTS.COMMENTS`。ADR 0033）。
     ///
-    /// **埋めるのはテーブル定義タブ（ADR 0019）の取得だけである。**段階 2
-    /// （ADR 0007）はスキーマ 1 つぶんの列をまとめて読むため、ここへコメントを
-    /// 載せると数万行ぶんの `VARCHAR2(4000)` が IPC に乗る。ツリーも補完も
-    /// コメントを出さない以上、払う値打ちが無い。
+    /// テーブル定義タブ（ADR 0019）の取得は常に埋める。段階 2（ADR 0007）は
+    /// ツリーにコメントを出す設定のときだけ埋める（ADR 0043。ADR 0033 の
+    /// 「段階 2 には載せない」を覆した）。
     ///
     /// 無いときは `None` であり、JSON には現れない。Oracle は空文字列と `NULL` を
     /// 区別しないため、空白だけのコメントも `None` へ畳む（`normalize_comment`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+}
+
+/// 表・ビュー・マテリアライズドビューのコメント 1 件（ADR 0043）。
+///
+/// コメントの付いたものだけが届く。付いていないオブジェクトまで送ると、
+/// スキーマ 1 つぶんの表の数だけ空の行が IPC に乗る。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectComment {
+    /// `ALL_TAB_COMMENTS.TABLE_NAME`。
+    pub object_name: String,
+    pub comment: String,
+}
+
+/// 段階 2 でスキーマ 1 つぶんに返すもの（ADR 0007・0043）。
+///
+/// 列とオブジェクトのコメントを 1 度の IPC で運ぶ。コメントのために往復を
+/// 分けると、段階 2 の進捗（`8/23 スキーマ`）が 2 通りの完了を持つことになる。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaColumns {
+    pub columns: Vec<TableColumn>,
+    /// コメントを出さない設定のときは空である。
+    pub object_comments: Vec<ObjectComment>,
 }
 
 #[cfg(test)]
@@ -360,6 +404,31 @@ mod tests {
 
         // Assert
         assert_eq!(filter.kinds, ObjectKindFilter::default());
+    }
+
+    #[test]
+    fn 表示の項目が無い古い設定は型もコメントも出す設定として読める() {
+        // Arrange: 0043 より前に書かれた schemaFilter を模す
+        let json = r#"{ "excludeSystem": true, "hideEmpty": false, "kinds": { "index": false } }"#;
+
+        // Act
+        let filter: SchemaFilter = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert!(filter.show_types);
+        assert!(filter.show_comments);
+        assert!(!filter.hide_empty);
+        assert!(!filter.kinds.index);
+    }
+
+    #[test]
+    fn 型とコメントの表示の既定はどちらも出すである() {
+        // Arrange & Act
+        let filter = SchemaFilter::default();
+
+        // Assert
+        assert!(filter.show_types);
+        assert!(filter.show_comments);
     }
 
     #[test]

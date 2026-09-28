@@ -20,12 +20,22 @@
  * | 操作               | 起きること                                              |
  * | ------------------ | ------------------------------------------------------- |
  * | 行を単クリック     | 開閉する（開けない行では何も起きない）                  |
- * | 行をダブルクリック | 名前をエディタのカーソル位置へ挿入する                  |
+ * | 行をダブルクリック | 開けない行でだけ、名前をエディタのカーソル位置へ挿入する |
  * | 行を右クリック     | コピー・挿入・`SELECT` を開く・定義を開くのメニュー     |
  *
  * ダブルクリックは 1 回目と 2 回目の押し下げでそれぞれ `onClick` が起き、開閉が
  * 2 度切り替わって元の状態へ戻る。**打ち消す細工はしない。**結果テーブルの
  * 「ダブルクリックは 1 回目の押し下げで選択も起こる」と同じ扱いである。
+ *
+ * **開閉できる行（スキーマ・種別の束・表・ビュー・マテビュー）ではダブルクリックで
+ * 挿入しない**（ADR 0043。issue #72）。開閉を素早く繰り返すことと
+ * ダブルクリックは、ブラウザから見て区別がつかない。単クリックに意味のある行へ
+ * ダブルクリックの別の意味を重ねると、開け閉めしただけで名前が入る。そうした
+ * 行の名前は `⌥⏎` か右クリックの「エディタへ挿入」で入れる。
+ *
+ * 表・ビュー・列のコメントは名前の右に淡く 1 行で出し、収まらないぶんは `…` で
+ * 省いて `title` で全文を読ませる（ADR 0043）。型名とコメントを出すかは
+ * 絞り込みメニューで切り替える。
  *
  * **行の右に押しどころは無い。**テーブル定義ビューの入口だった「定義」の
  * ボタンは、右クリックのメニューへ移した（ADR 0022）。行の中に押しどころを
@@ -43,6 +53,7 @@ import {
   Boxes,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   Eye,
   Hash,
   Layers,
@@ -60,7 +71,14 @@ import { getClipboardApi } from '../../api/clipboard'
 import type { DefinitionTarget, ObjectKind, SchemaNode, TableColumn } from '../../types/db'
 import { OBJECT_KIND_LABELS, OBJECT_KIND_ORDER, defaultCompletionSettings } from '../../types/db'
 import { useConnectionStore } from '../../stores/connection'
-import { filterSchemas, kindGroupKey, nodeKey, useSchemaStore } from '../../stores/schema'
+import type { ObjectCommentIndex } from '../../stores/schema'
+import {
+  filterSchemas,
+  hasComment,
+  kindGroupKey,
+  nodeKey,
+  useSchemaStore,
+} from '../../stores/schema'
 import { qualifiedIdentifier, selectAllStatement } from '../editor/insertion'
 import { SchemaTreeContextMenu } from './SchemaTreeContextMenu'
 
@@ -101,8 +119,12 @@ export type TreeRow =
       objectKind: ObjectKind
       expandable: boolean
       open: boolean
+      /** `STATUS = 'INVALID'` か（ADR 0045）。 */
+      invalid: boolean
+      /** 表・ビュー・マテビューのコメント（ADR 0043）。無ければ `undefined`。 */
+      comment?: string
     }
-  | { kind: 'column'; key: string; name: string; typeName: string }
+  | { kind: 'column'; key: string; name: string; typeName: string; comment?: string }
   | { kind: 'columnsLoading'; key: string }
 
 /**
@@ -181,6 +203,20 @@ export function definitionTargetOf(row: TreeRow): DefinitionTarget | null {
 }
 
 /**
+ * ダブルクリックで名前を挿入する行か（ADR 0043）。
+ *
+ * **開閉できる行では挿入しない。**単クリックが開閉に割り当てられた行では、
+ * 素早く開け閉めした 2 回の押し下げがそのままダブルクリックになる（issue #72）。
+ * `event.detail` を見て開閉の側を打ち消すと「1 回だけ開いた」半端な状態が残る
+ * （ADR 0020）ため、打ち消すのではなく挿入の側を外した。
+ *
+ * @param row 平らにした 1 行
+ */
+export function insertsOnDoubleClick(row: TreeRow): boolean {
+  return !isOpenable(row) && rowIdentifierPath(row) !== null
+}
+
+/**
  * 開閉できる行か。矢印キーの左右で開け閉めする対象である。
  *
  * @param row 平らにした 1 行
@@ -250,12 +286,14 @@ function groupByKind(objects: SchemaNode['objects']): [ObjectKind, SchemaNode['o
  * @param columns スキーマ名ごとの列
  * @param expanded 展開している節の表
  * @param groupsOpenByDefault 覚えていない束を開いたものとして扱うか。絞り込み中は真
+ * @param objectComments オブジェクトのコメント（ADR 0043）
  */
 export function flattenSchemas(
   schemas: SchemaNode[],
   columns: Record<string, TableColumn[]>,
   expanded: Record<string, boolean>,
   groupsOpenByDefault = false,
+  objectComments: ObjectCommentIndex = {},
 ): TreeRow[] {
   const rows: TreeRow[] = []
 
@@ -275,6 +313,7 @@ export function flattenSchemas(
     }
 
     const 列の束 = groupByObject(columns[schema.name] ?? [])
+    const コメント = objectComments[schema.name] ?? {}
 
     for (const [objectKind, objects] of groupByKind(schema.objects)) {
       const groupKey = kindGroupKey(schema.name, objectKind)
@@ -303,6 +342,8 @@ export function flattenSchemas(
           objectKind: object.kind,
           expandable,
           open: objectOpen,
+          invalid: object.invalid ?? false,
+          comment: hasComment(object.kind) ? コメント[object.name] : undefined,
         })
 
         if (!objectOpen) {
@@ -320,6 +361,7 @@ export function flattenSchemas(
             key: `${objectKey} ${column.name}`,
             name: column.name,
             typeName: column.typeName,
+            comment: column.comment,
           })
         }
       }
@@ -356,6 +398,9 @@ export function SchemaTree({ onOpenDefinition, onInsert, onOpenSelect }: SchemaT
   const toggle = useSchemaStore((state) => state.toggle)
   const status = useSchemaStore((state) => state.status)
   const error = useSchemaStore((state) => state.error)
+  const objectComments = useSchemaStore((state) => state.objectComments)
+  const showTypes = useSchemaStore((state) => state.filter.showTypes)
+  const showComments = useSchemaStore((state) => state.filter.showComments)
 
   // 挿入する綴りは接続ごとの設定である（ADR 0013）。補完と同じ値を引く。
   const identifierCase = useConnectionStore(
@@ -371,15 +416,16 @@ export function SchemaTree({ onOpenDefinition, onInsert, onOpenSelect }: SchemaT
   const focusPending = useRef(false)
 
   // 絞り込みは毎回新しい配列を作るため、ここで記憶しておく。
+  // 隠しているコメントには当てない（`filterSchemas` の説明を参照）。
   const schemas = useMemo(
-    () => filterSchemas(allSchemas, columns, search),
-    [allSchemas, columns, search],
+    () => filterSchemas(allSchemas, columns, search, showComments ? objectComments : null),
+    [allSchemas, columns, search, showComments, objectComments],
   )
   // 絞り込み中は束を開いたものとして扱う。当たったオブジェクトへ辿り着くのに
   // 束をいちいち開かせるのでは、検索の意味が薄れる。
   const rows = useMemo(
-    () => flattenSchemas(schemas, columns, expanded, search.trim() !== ''),
-    [columns, expanded, schemas, search],
+    () => flattenSchemas(schemas, columns, expanded, search.trim() !== '', objectComments),
+    [columns, expanded, schemas, search, objectComments],
   )
 
   const virtualizer = useVirtualizer({
@@ -496,9 +542,11 @@ export function SchemaTree({ onOpenDefinition, onInsert, onOpenSelect }: SchemaT
     }
   }
 
-  /** ダブルクリック。名前をカーソル位置へ入れる（ADR 0020）。 */
+  /** ダブルクリック。開けない行でだけ名前をカーソル位置へ入れる（ADR 0020・0043）。 */
   const onDoubleClick = (row: TreeRow) => {
-    insertRow(row)
+    if (insertsOnDoubleClick(row)) {
+      insertRow(row)
+    }
   }
 
   /** 右クリック。名前を持たない行ではメニューを出さない。 */
@@ -548,6 +596,8 @@ export function SchemaTree({ onOpenDefinition, onInsert, onOpenSelect }: SchemaT
             <Row
               row={rows[item.index]}
               focused={item.index === focused}
+              showTypes={showTypes}
+              showComments={showComments}
               onToggle={toggle}
               onFocus={() => setFocusedIndex(item.index)}
             />
@@ -588,12 +638,50 @@ interface RowProps {
   row: TreeRow
   /** 焦点を当てる行か。行き来する焦点は 1 つだけである（roving tabindex）。 */
   focused: boolean
+  /** 列の型名を出すか（ADR 0043）。 */
+  showTypes: boolean
+  /** 表・ビュー・列のコメントを出すか（ADR 0043）。 */
+  showComments: boolean
   onToggle: (key: string, open: boolean) => void
   onFocus: () => void
 }
 
+/**
+ * 名前の右に添えるコメント（ADR 0043）。
+ *
+ * 行の高さは仮想スクロールの見積もりに縛られるため折り返さず、1 行で `…` に
+ * 省いて `title` で全文を読ませる。定義タブ（ADR 0033）が全文を折り返して
+ * 出すのと役割を分けている。名前より先に縮むよう、幅は残りだけを使う。
+ */
+function CommentText({ comment }: { comment: string | undefined }) {
+  return (
+    <span className="flex-1 min-w-0 truncate text-10.5px text-fg5" title={comment}>
+      {comment}
+    </span>
+  )
+}
+
+/**
+ * 無効（INVALID）の印（ADR 0045）。
+ *
+ * ツリーは取り直すまで古いままである（ADR 0007）。印も同じく、直した後は
+ * 再読み込みで消える。
+ */
+function InvalidMark() {
+  return (
+    <span
+      role="img"
+      aria-label="無効（INVALID）"
+      title="無効（INVALID）。コンパイルエラーがあります"
+      className="shrink-0 flex items-center"
+    >
+      <CircleAlert size={12} className="text-err" />
+    </span>
+  )
+}
+
 /** 平らにした 1 行を、種類に応じて描き分ける。 */
-function Row({ row, focused, onToggle, onFocus }: RowProps) {
+function Row({ row, focused, showTypes, showComments, onToggle, onFocus }: RowProps) {
   // 焦点を持てるのは 1 行だけにする。仮想スクロールで描かれている行がすべて
   // タブ順に並ぶと、ツリーを抜けるのに数十回打鍵することになる。
   const focus = { tabIndex: focused ? 0 : -1, 'data-tree-focused': focused, onFocus }
@@ -662,7 +750,12 @@ function Row({ row, focused, onToggle, onFocus }: RowProps) {
           ) : null}
         </span>
         <Icon size={13} className="text-fg5 shrink-0" />
-        <span className="flex-1 truncate">{row.name}</span>
+        {/* 印は名前の直後に置き、縮めない。コメントの省略（…）に押し出されると、
+            長いコメントの付いた表で無効に気付けなくなる。名前に flex-1 を付けると
+            コメントの無い行で印が右端へ離れるため、付けない（ADR 0045）。 */}
+        <span className="truncate">{row.name}</span>
+        {row.invalid ? <InvalidMark /> : null}
+        {showComments && row.comment ? <CommentText comment={row.comment} /> : null}
       </button>
     )
   }
@@ -677,8 +770,9 @@ function Row({ row, focused, onToggle, onFocus }: RowProps) {
 
   return (
     <div {...focus} className="flex items-center gap-8px pl-64px pr-10px py-3px text-11px">
-      <span className="flex-1 truncate text-fg3">{row.name}</span>
-      <span className="text-10.5px text-fg5 shrink-0">{row.typeName}</span>
+      <span className="truncate text-fg3">{row.name}</span>
+      <CommentText comment={showComments ? row.comment : undefined} />
+      {showTypes ? <span className="text-10.5px text-fg5 shrink-0">{row.typeName}</span> : null}
     </div>
   )
 }

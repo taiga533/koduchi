@@ -14,18 +14,23 @@
 //!
 //! 段階 2 は `ALL_TAB_COLUMNS` をスキーマ 1 つずつ引く。`ALL_TAB_COLUMNS` は
 //! 中規模のデータベースでも 10 万行を超えるため、接続時に一括取得はできない。
+//! コメント（`ALL_TAB_COMMENTS` / `ALL_COL_COMMENTS`）も段階 2 で引く（ADR 0043）。
+//! 段階 1 は全スキーマぶんを 1 度に取るため、`SYS` の辞書ビューに付いた
+//! 数千件のコメントまで拾ってしまう。
 //!
 //! 所有者が `PUBLIC` のオブジェクトは列挙しない。`PUBLIC` は `ALL_USERS` に
 //! 載らない擬似的な所有者であり、そこに数万件の公開シノニムがぶら下がる。
 
+use crate::db::definition::normalize_comment;
 use crate::db::error::DbResult;
 use crate::db::oracle::errors;
 use crate::db::schema::{
-    ObjectKind, ObjectKindFilter, SchemaFilter, SchemaNode, SchemaObject, TableColumn,
+    ObjectComment, ObjectKind, ObjectKindFilter, SchemaColumns, SchemaFilter, SchemaNode,
+    SchemaObject, TableColumn,
 };
 use crate::db::value::CellKind;
 use oracle::Connection;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `ALL_OBJECTS` から取る種別（ADR 0014）。
 ///
@@ -208,28 +213,41 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
     }
 
     let types = listed_object_types(&filter.kinds);
+    // 無効なオブジェクトの印（ADR 0045）。本体の行は印のためだけに取る。
+    let mut invalid = BTreeSet::new();
     if !types.is_empty() {
+        let listed = object_type_condition(&types);
         let sql = format!(
-            "select owner, object_name, object_type from all_objects
-             where object_type in ({types}) and owner <> 'PUBLIC'
+            "select owner, object_name, object_type, status from all_objects
+             where {listed} and owner <> 'PUBLIC'
              order by owner, object_name"
         );
 
         let objects = connection
-            .query_as::<(String, String, String)>(&sql, &[])
+            .query_as::<(String, String, String, String)>(&sql, &[])
             .map_err(|error| {
                 errors::map_execute_error("オブジェクトを取得できませんでした", &error)
             })?;
 
         for object in objects {
-            let (owner, object_name, object_type) = object.map_err(|error| {
+            let (owner, object_name, object_type, status) = object.map_err(|error| {
                 errors::map_execute_error("オブジェクトを取得できませんでした", &error)
             })?;
+
+            if let Some(kind) = body_owner_kind(&object_type) {
+                if status == "INVALID" {
+                    invalid.insert((owner, object_name, kind));
+                }
+                continue;
+            }
 
             let Some(kind) = ObjectKind::from_object_type(&object_type) else {
                 continue;
             };
 
+            if status == "INVALID" {
+                invalid.insert((owner.clone(), object_name.clone(), kind));
+            }
             push_object(&mut schemas, owner, object_name, kind);
         }
     }
@@ -273,6 +291,7 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
     for node in &mut nodes {
         sort_objects(&mut node.objects);
     }
+    mark_invalid(&mut nodes, &invalid);
 
     Ok(apply_filter(nodes, filter))
 }
@@ -301,7 +320,11 @@ fn push_object(
     });
 
     schema.object_count += 1;
-    schema.objects.push(SchemaObject { name, kind });
+    schema.objects.push(SchemaObject {
+        name,
+        kind,
+        invalid: false,
+    });
 }
 
 /// スキーマ 1 つぶんのオブジェクトを名前順に並べ直す。
@@ -333,7 +356,117 @@ pub fn listed_object_types(kinds: &ObjectKindFilter) -> String {
         .join(",")
 }
 
-/// 段階 2。スキーマ 1 つぶんの列情報を取る。
+/// 段階 1 の `ALL_OBJECTS` を絞る条件を組み立てる（ADR 0045）。
+///
+/// 載せる種別に加え、**無効な**本体（`PACKAGE BODY` / `TYPE BODY`）だけを取る。
+/// 本体はツリーに行として出さない（`ObjectKind::from_object_type`）が、仕様が有効の
+/// まま本体だけが壊れるのが PL/SQL を書いている最中のいちばんよくある形であり、
+/// 印のためには本体の状態が要る。有効な本体まで取ると、システムスキーマの数千件が
+/// クライアント側の絞り込み（`exclude_system`）の手前まで流れてくる。
+/// 別の問い合わせにせず同じ往復で取る。
+///
+/// # 引数
+///
+/// * `types` - `listed_object_types` が組み立てた並び。空でないこと
+fn object_type_condition(types: &str) -> String {
+    let bodies: Vec<&str> = [("'PACKAGE'", "'PACKAGE BODY'"), ("'TYPE'", "'TYPE BODY'")]
+        .into_iter()
+        .filter(|(spec, _)| types.split(',').any(|listed| listed == *spec))
+        .map(|(_, body)| body)
+        .collect();
+
+    if bodies.is_empty() {
+        return format!("object_type in ({types})");
+    }
+
+    format!(
+        "(object_type in ({types}) or (object_type in ({}) and status = 'INVALID'))",
+        bodies.join(",")
+    )
+}
+
+/// 本体の種別名なら、印を付ける先（仕様）の種別を返す（ADR 0045）。
+///
+/// # 引数
+///
+/// * `raw` - `ALL_OBJECTS.OBJECT_TYPE` の値
+fn body_owner_kind(raw: &str) -> Option<ObjectKind> {
+    match raw {
+        "PACKAGE BODY" => Some(ObjectKind::Package),
+        "TYPE BODY" => Some(ObjectKind::Type),
+        _ => None,
+    }
+}
+
+/// 無効と分かったオブジェクトに印を立てる（ADR 0045）。
+///
+/// 本体の行は仕様の行より後に届くとは限らないため、読み終えてからまとめて当てる。
+///
+/// # 引数
+///
+/// * `nodes` - 組み立て終えたスキーマ
+/// * `invalid` - 無効なオブジェクトの `(所有者, 名前, 種別)`
+pub fn mark_invalid(nodes: &mut [SchemaNode], invalid: &BTreeSet<(String, String, ObjectKind)>) {
+    if invalid.is_empty() {
+        return;
+    }
+    for node in nodes {
+        for object in &mut node.objects {
+            object.invalid =
+                invalid.contains(&(node.name.clone(), object.name.clone(), object.kind));
+        }
+    }
+}
+
+/// 段階 2 の列の問い合わせ（ADR 0007）。コメントを読まないとき。
+const COLUMNS_SQL: &str = "select table_name, column_name, data_type, char_length,
+       data_precision, data_scale, nullable, cast(null as varchar2(1)) comments
+  from all_tab_columns
+ where owner = :owner
+ order by table_name, column_id";
+
+/// 段階 2 の列の問い合わせ。列のコメントを混ぜるとき（ADR 0043）。
+///
+/// 定義タブ（ADR 0033）と同じく `LEFT JOIN` で混ぜ、往復を増やさない。鍵は
+/// `(OWNER, TABLE_NAME, COLUMN_NAME)` の 3 つ揃いである。片方を欠くと列が
+/// 重複し、内部結合にするとコメントの無い表で列が丸ごと消える。
+const COLUMNS_WITH_COMMENTS_SQL: &str = "select c.table_name, c.column_name, c.data_type,
+       c.char_length, c.data_precision, c.data_scale, c.nullable, cc.comments
+  from all_tab_columns c
+  left join all_col_comments cc
+    on cc.owner = c.owner
+   and cc.table_name = c.table_name
+   and cc.column_name = c.column_name
+ where c.owner = :owner
+ order by c.table_name, c.column_id";
+
+/// スキーマ 1 つぶんのオブジェクトのコメントを取る問い合わせ（ADR 0043）。
+///
+/// 列の問い合わせへ混ぜると同じ 4000 文字が列の数だけ返るため、別に引く
+/// （ADR 0033 と同じ理由）。コメントの無い表も `ALL_TAB_COMMENTS` には 1 行
+/// 載るため、`NULL` をここで落として運ぶ量を減らす。
+const OBJECT_COMMENTS_SQL: &str = "select table_name, comments
+  from all_tab_comments
+ where owner = :owner and comments is not null
+ order by table_name";
+
+/// 段階 2 の列の問い合わせを選ぶ。
+///
+/// コメントを出さない設定では `ALL_COL_COMMENTS` へ行かない（ADR 0043）。
+/// 結合は列の数だけ効くため、見ないもののために払わない。
+///
+/// # 引数
+///
+/// * `with_comments` - 列のコメントを混ぜるか
+pub fn columns_sql(with_comments: bool) -> &'static str {
+    if with_comments {
+        COLUMNS_WITH_COMMENTS_SQL
+    } else {
+        COLUMNS_SQL
+    }
+}
+
+/// 段階 2。スキーマ 1 つぶんの列情報と、要ればコメントを取る。
 ///
 /// スキーマごとに分けて呼ぶのは、進捗（`列情報を読み込み中 8/23 スキーマ`）を
 /// 出しながら少しずつ流し込むためである。
@@ -342,29 +475,31 @@ pub fn listed_object_types(kinds: &ObjectKindFilter) -> String {
 ///
 /// * `connection` - 使う接続
 /// * `owner` - 対象のスキーマ名
-pub fn load_columns(connection: &Connection, owner: &str) -> DbResult<Vec<TableColumn>> {
-    let sql = "select table_name, column_name, data_type, char_length,
-                      data_precision, data_scale, nullable
-               from all_tab_columns
-               where owner = :owner
-               order by table_name, column_id";
+/// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
+pub fn load_columns(
+    connection: &Connection,
+    owner: &str,
+    with_comments: bool,
+) -> DbResult<SchemaColumns> {
+    type Row = (
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        String,
+        Option<String>,
+    );
 
     let rows = connection
-        .query_as::<(
-            String,
-            String,
-            String,
-            i64,
-            Option<i64>,
-            Option<i64>,
-            String,
-        )>(sql, &[&owner])
+        .query_as::<Row>(columns_sql(with_comments), &[&owner])
         .map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
     let mut columns = Vec::new();
 
     for row in rows {
-        let (object_name, name, data_type, char_length, precision, scale, nullable) =
+        let (object_name, name, data_type, char_length, precision, scale, nullable, comments) =
             row.map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
         columns.push(TableColumn {
@@ -373,12 +508,51 @@ pub fn load_columns(connection: &Connection, owner: &str) -> DbResult<Vec<TableC
             type_name: format_column_type(&data_type, char_length, precision, scale),
             nullable: nullable == "Y",
             kind: kind_of_type_name(&data_type),
-            // 段階 2 はコメントを読まない（ADR 0033）。定義タブだけが埋める。
-            comment: None,
+            comment: normalize_comment(comments),
         });
     }
 
-    Ok(columns)
+    let object_comments = if with_comments {
+        load_object_comments(connection, owner)?
+    } else {
+        Vec::new()
+    };
+
+    Ok(SchemaColumns {
+        columns,
+        object_comments,
+    })
+}
+
+/// スキーマ 1 つぶんの表・ビュー・マテビューのコメントを取る（ADR 0043）。
+///
+/// # 引数
+///
+/// * `connection` - 使う接続
+/// * `owner` - 対象のスキーマ名
+fn load_object_comments(connection: &Connection, owner: &str) -> DbResult<Vec<ObjectComment>> {
+    let rows = connection
+        .query_as::<(String, Option<String>)>(OBJECT_COMMENTS_SQL, &[&owner])
+        .map_err(|error| {
+            errors::map_execute_error("オブジェクトのコメントを取得できませんでした", &error)
+        })?;
+
+    let mut comments = Vec::new();
+
+    for row in rows {
+        let (object_name, raw) = row.map_err(|error| {
+            errors::map_execute_error("オブジェクトのコメントを取得できませんでした", &error)
+        })?;
+        // 空白だけのコメントは `is not null` を抜けてくる。
+        if let Some(comment) = normalize_comment(raw) {
+            comments.push(ObjectComment {
+                object_name,
+                comment,
+            });
+        }
+    }
+
+    Ok(comments)
 }
 
 #[cfg(test)]
@@ -575,14 +749,17 @@ mod tests {
             SchemaObject {
                 name: String::from("ORDERS"),
                 kind: ObjectKind::Index,
+                invalid: false,
             },
             SchemaObject {
                 name: String::from("EVENTS"),
                 kind: ObjectKind::Table,
+                invalid: false,
             },
             SchemaObject {
                 name: String::from("ORDERS"),
                 kind: ObjectKind::Table,
+                invalid: false,
             },
         ];
 
@@ -602,6 +779,46 @@ mod tests {
                 ("ORDERS", ObjectKind::Index),
             ]
         );
+    }
+
+    #[test]
+    fn コメントを出さない設定では列のコメントを引きにいかない() {
+        // Arrange & Act
+        let sql = columns_sql(false);
+
+        // Assert
+        assert!(!sql.contains("all_col_comments"));
+    }
+
+    #[test]
+    fn 列のコメントは3つ揃いの鍵で外部結合する() {
+        // Arrange & Act
+        let sql = columns_sql(true);
+
+        // Assert: 内部結合にするとコメントの無い表で列が消える
+        assert!(sql.contains("left join all_col_comments"));
+        assert!(sql.contains("cc.owner = c.owner"));
+        assert!(sql.contains("cc.table_name = c.table_name"));
+        assert!(sql.contains("cc.column_name = c.column_name"));
+    }
+
+    #[test]
+    fn 列の問い合わせはコメントの有無で列の並びが変わらない() {
+        // Arrange: 同じ型の行として読むため、選ぶ列の数を揃えておく
+        let count = |sql: &str| {
+            let select = &sql[..sql.find("from").unwrap()];
+            select.matches(',').count()
+        };
+
+        // Act & Assert
+        assert_eq!(count(columns_sql(false)), count(columns_sql(true)));
+    }
+
+    #[test]
+    fn オブジェクトのコメントはコメントの付いたものだけを引く() {
+        // Arrange & Act & Assert
+        assert!(OBJECT_COMMENTS_SQL.contains("all_tab_comments"));
+        assert!(OBJECT_COMMENTS_SQL.contains("comments is not null"));
     }
 
     #[test]
@@ -658,5 +875,98 @@ mod tests {
             CellKind::Datetime
         );
         assert_eq!(kind_of_type_name("BLOB"), CellKind::Binary);
+    }
+
+    #[test]
+    fn パッケージと型を載せるときは無効な本体だけを取りにいく() {
+        // Arrange
+        let types = "'TABLE','TYPE','PACKAGE'";
+
+        // Act
+        let condition = object_type_condition(types);
+
+        // Assert
+        assert_eq!(
+            condition,
+            "(object_type in ('TABLE','TYPE','PACKAGE') or (object_type in ('PACKAGE BODY','TYPE BODY') and status = 'INVALID'))"
+        );
+    }
+
+    #[test]
+    fn パッケージを落としたときは本体も取りにいかない() {
+        // Arrange: 落とした種別は問い合わせにも行かない（ADR 0014）
+        let types = "'TABLE','PROCEDURE'";
+
+        // Act
+        let condition = object_type_condition(types);
+
+        // Assert
+        assert_eq!(condition, "object_type in ('TABLE','PROCEDURE')");
+    }
+
+    #[test]
+    fn 本体の種別は仕様の種別へ写る() {
+        // Arrange & Act & Assert
+        assert_eq!(body_owner_kind("PACKAGE BODY"), Some(ObjectKind::Package));
+        assert_eq!(body_owner_kind("TYPE BODY"), Some(ObjectKind::Type));
+        assert_eq!(body_owner_kind("PACKAGE"), None);
+    }
+
+    #[test]
+    fn 無効なオブジェクトにだけ印が立つ() {
+        // Arrange: 同名でも種別が違えば別のオブジェクトである
+        let mut nodes = vec![SchemaNode {
+            name: String::from("KODUCHI"),
+            object_count: 2,
+            objects: vec![
+                SchemaObject {
+                    name: String::from("BILLING"),
+                    kind: ObjectKind::Package,
+                    invalid: false,
+                },
+                SchemaObject {
+                    name: String::from("BILLING"),
+                    kind: ObjectKind::Table,
+                    invalid: false,
+                },
+            ],
+        }];
+        let invalid = BTreeSet::from([(
+            String::from("KODUCHI"),
+            String::from("BILLING"),
+            ObjectKind::Package,
+        )]);
+
+        // Act
+        mark_invalid(&mut nodes, &invalid);
+
+        // Assert
+        let 印: Vec<bool> = nodes[0].objects.iter().map(|o| o.invalid).collect();
+        assert_eq!(印, vec![true, false]);
+    }
+
+    #[test]
+    fn 別のスキーマの同名オブジェクトには印が立たない() {
+        // Arrange
+        let mut nodes = vec![SchemaNode {
+            name: String::from("ANALYTICS"),
+            object_count: 1,
+            objects: vec![SchemaObject {
+                name: String::from("BILLING"),
+                kind: ObjectKind::Package,
+                invalid: false,
+            }],
+        }];
+        let invalid = BTreeSet::from([(
+            String::from("KODUCHI"),
+            String::from("BILLING"),
+            ObjectKind::Package,
+        )]);
+
+        // Act
+        mark_invalid(&mut nodes, &invalid);
+
+        // Assert
+        assert!(!nodes[0].objects[0].invalid);
     }
 }

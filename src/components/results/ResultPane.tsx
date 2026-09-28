@@ -3,9 +3,14 @@
  *
  * タブは内容があるときだけ出現する（ADR 0009）。通常は「結果」1 つだけであり、
  * その場合はタブ行を描かず、32px のヘッダーには行数と所要時間だけが残る。
+ *
+ * 結果の表を出しているときだけ、ヘッダーの右端に表示調整のボタン
+ * （`sliders-horizontal`）を置く。押すとヘッダーが下へ広がり、その結果タブの
+ * 表示調整を切り替えられる（ADR 0048。`ResultDisplayBar.tsx`）。
  */
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { SlidersHorizontal } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { getClipboardApi } from '../../api/clipboard'
 import { isOnSelectedText } from '../../input/nativeContextMenu'
@@ -21,7 +26,25 @@ import {
 import { useUiStore } from '../../stores/ui'
 import { ErrorCopyButton } from './ErrorCopyButton'
 import { MessageLogContextMenu } from './MessageLogContextMenu'
+import { ResultDisplayBar } from './ResultDisplayBar'
+import { isAdjusted, resolveResultDisplay } from './resultDisplay'
 import { ResultTable } from './ResultTable'
+
+/** 表示調整の欄の ID。開閉のボタンの `aria-controls` から指す。 */
+const DISPLAY_BAR_ID = 'result-display-bar'
+
+/**
+ * 結果の表を描いている状態かを判定する。
+ *
+ * 表示調整のボタンは表があるときだけ出す。表の無いところで押せても、変えた結果を
+ * 確かめる先が無い。判定の順は `PaneBody` の出し分けと揃える。
+ *
+ * @param currentTab 選ばれている結果ペインのタブ
+ * @param execution そのタブの実行状態
+ */
+export function showsResultTable(currentTab: string, execution: TabExecution): boolean {
+  return currentTab === 'result' && execution.status === 'succeeded' && execution.columns.length > 0
+}
 
 /** タブの表示名。 */
 const TAB_LABELS = {
@@ -64,28 +87,98 @@ export function ResultPane({
   const currentTab = tabs.includes(activeTab) ? activeTab : 'result'
   const summary = formatResultSummary(execution)
 
+  const displayDefaults = useUiStore((state) => state.resultDisplayDefaults)
+  const displayOverride = useUiStore((state) =>
+    tabId === null ? undefined : state.resultDisplayOverrides[tabId],
+  )
+  const setDisplayOverride = useUiStore((state) => state.setResultDisplayOverride)
+  const resetDisplay = useUiStore((state) => state.resetResultDisplay)
+  const display = resolveResultDisplay(displayDefaults, displayOverride)
+  const [displayOpen, setDisplayOpen] = useState(false)
+  const displayToggleRef = useRef<HTMLButtonElement>(null)
+  /**
+   * ボタンで開いた直後か。欄が描かれたときに 1 度だけ消費される。
+   *
+   * `displayOpen` は再実行やタブの行き来をまたいで残り、欄はそのたびに描き直される。
+   * 焦点を移してよいのは利用者が開いたその時だけである。
+   */
+  const displayFocusRequestRef = useRef(false)
+  const takeDisplayFocusRequest = () => {
+    const requested = displayFocusRequestRef.current
+    displayFocusRequestRef.current = false
+    return requested
+  }
+
+  /**
+   * 表示調整の欄を閉じる。焦点が欄の中にあったときだけ開閉のボタンへ戻す。
+   *
+   * 欄ごと消えると焦点は `<body>` へ抜け、キーボードで開いた人が元の場所へ戻れない。
+   * 表やエディタに焦点を置いたまま `esc` で閉じたときは、そこから奪わない。
+   */
+  const closeDisplay = () => {
+    const active = document.activeElement
+    const inside = active instanceof HTMLElement && active.closest(`#${DISPLAY_BAR_ID}`) !== null
+    setDisplayOpen(false)
+    if (inside) {
+      displayToggleRef.current?.focus()
+    }
+  }
+  const displayAvailable = tabId !== null && showsResultTable(currentTab, execution)
+
   return (
     <section className="flex-1 min-h-0 bg-panel rounded-10px border border-line overflow-hidden flex flex-col">
-      <div className="h-32px flex items-center gap-3px px-8px bg-panel border-b border-line2 text-12px shrink-0">
-        {tabs.length > 1
-          ? tabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => selectTab(tab)}
-                className={`flex items-center gap-7px px-10px py-4px rounded-6px border-none cursor-pointer font-inherit text-12px ${
-                  tab === currentTab ? 'bg-bg text-fg font-500' : 'bg-transparent text-fg3'
-                }`}
-              >
-                {TAB_LABELS[tab]}
-                {tab === 'messages' && execution.error ? (
-                  <span className="w-5px h-5px rounded-full bg-err" />
-                ) : null}
-              </button>
-            ))
-          : null}
-        <span className="flex-1" />
-        <span className="text-11px text-fg3">{summary}</span>
+      <div className="bg-panel border-b border-line2 shrink-0">
+        <div className="h-32px flex items-center gap-3px px-8px text-12px">
+          {tabs.length > 1
+            ? tabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => selectTab(tab)}
+                  className={`flex items-center gap-7px px-10px py-4px rounded-6px border-none cursor-pointer font-inherit text-12px ${
+                    tab === currentTab ? 'bg-bg text-fg font-500' : 'bg-transparent text-fg3'
+                  }`}
+                >
+                  {TAB_LABELS[tab]}
+                  {tab === 'messages' && execution.error ? (
+                    <span className="w-5px h-5px rounded-full bg-err" />
+                  ) : null}
+                </button>
+              ))
+            : null}
+          <span className="flex-1" />
+          <span className="text-11px text-fg3">{summary}</span>
+          {displayAvailable ? (
+            <button
+              ref={displayToggleRef}
+              type="button"
+              onClick={() => {
+                displayFocusRequestRef.current = !displayOpen
+                setDisplayOpen(!displayOpen)
+              }}
+              aria-label="表示を調整"
+              aria-expanded={displayOpen}
+              aria-controls={displayOpen ? DISPLAY_BAR_ID : undefined}
+              title="表示を調整"
+              className={`ml-6px flex items-center p-4px rounded-6px border-none cursor-pointer font-inherit ${
+                displayOpen ? 'bg-fill' : 'bg-transparent'
+              } ${isAdjusted(display) ? 'text-ac' : 'text-fg4'}`}
+            >
+              <SlidersHorizontal size={14} />
+            </button>
+          ) : null}
+        </div>
+        {displayAvailable && displayOpen && tabId !== null ? (
+          <ResultDisplayBar
+            id={DISPLAY_BAR_ID}
+            display={display}
+            overridden={displayOverride !== undefined}
+            onChange={(patch) => setDisplayOverride(tabId, patch)}
+            onReset={() => resetDisplay(tabId)}
+            onClose={closeDisplay}
+            takeFocusRequest={takeDisplayFocusRequest}
+          />
+        ) : null}
       </div>
 
       <PaneBody
@@ -145,7 +238,13 @@ function PaneBody({
   }
 
   if (execution.status === 'failed') {
-    return <FailureNotice error={execution.error} progress={execution.progress} />
+    return (
+      <FailureNotice
+        error={execution.error}
+        progress={execution.progress}
+        preformatted={execution.compilationFailed}
+      />
+    )
   }
 
   if (execution.status === 'idle') {
@@ -273,9 +372,12 @@ function DiscardedNotice() {
 function FailureNotice({
   error,
   progress,
+  preformatted,
 }: {
   error: string | null
   progress: ScriptProgress | null
+  /** 改行と字下げを活かして左に揃えるか。コンパイルエラーの報告だけが真（ADR 0045）。 */
+  preformatted: boolean
 }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-9px px-24px">
@@ -284,7 +386,13 @@ function FailureNotice({
           {progress.total} 文中 {progress.index} 文目で失敗しました。以降の文は実行していません。
         </p>
       ) : null}
-      <p className="text-12px text-err text-center m-0 max-w-560px break-words">{error}</p>
+      <p
+        className={`text-12px text-err m-0 max-w-560px break-words ${
+          preformatted ? 'text-left whitespace-pre-wrap' : 'text-center'
+        }`}
+      >
+        {error}
+      </p>
       {error ? <ErrorCopyButton text={error} /> : null}
       <p className="text-11.5px text-fg4 m-0">詳細はメッセージタブに残ります</p>
     </div>

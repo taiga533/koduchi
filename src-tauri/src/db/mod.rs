@@ -5,6 +5,7 @@
 //! 別実装として追加する。
 
 pub mod actor;
+pub mod compilation;
 pub mod definition;
 pub mod driver;
 pub mod error;
@@ -13,6 +14,7 @@ pub mod pool;
 pub mod schema;
 pub mod sessions;
 pub mod source;
+pub mod stats;
 pub mod value;
 
 use crate::db::driver::ConnectionParams;

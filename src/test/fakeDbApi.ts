@@ -13,6 +13,7 @@ import type {
   Chunk,
   ClientStatus,
   Column,
+  CompilationReport,
   ConnectionHealth,
   ConnectionParams,
   CsvOptions,
@@ -22,8 +23,10 @@ import type {
   NewHistoryEntry,
   NewSavedQuery,
   ObjectDdl,
+  ObjectComment,
   ObjectDefinition,
   ObjectKind,
+  ObjectStats,
   SavedConnection,
   SavedQuery,
   SavedQueryQuery,
@@ -63,9 +66,10 @@ export interface FakeCalls {
   deleteSavedQuery: number[]
   saveSession: { windowLabel: string; state: SessionState }[]
   schemaOverview: { id: string; filter: SchemaFilter }[]
-  schemaColumns: { id: string; owner: string }[]
+  schemaColumns: { id: string; owner: string; withComments: boolean }[]
   objectDefinition: { id: string; owner: string; name: string; kind: ObjectKind }[]
   objectDdl: { id: string; owner: string; name: string; kind: ObjectKind }[]
+  objectStats: { id: string; owner: string; name: string; kind: ObjectKind }[]
   listSessions: string[]
   killSession: { id: string; sid: number; serial: number }[]
   searchSource: { id: string; request: SourceSearchRequest }[]
@@ -122,6 +126,8 @@ export interface FakeDbApiOptions {
   onSchemaOverview?: () => SchemaNode[] | Promise<SchemaNode[]>
   /** スキーマごとの列情報。 */
   columns?: Record<string, TableColumn[]>
+  /** スキーマ名ごとのオブジェクトのコメント（段階 2 の `objectComments`）。 */
+  objectComments?: Record<string, ObjectComment[]>
   /** テーブル定義ビューの応答（ADR 0019）。 */
   definition?: ObjectDefinition
   /** 定義の取得で投げるエラー。権限不足の表示を確かめるのに使う。 */
@@ -130,6 +136,10 @@ export interface FakeDbApiOptions {
   ddl?: ObjectDdl
   /** DDL の取得で投げるエラー。 */
   ddlError?: unknown
+  /** 表の統計とセグメントの大きさの応答（ADR 0044）。既定は `null`（持たない種別）。 */
+  stats?: ObjectStats | null
+  /** 統計の取得で投げるエラー。 */
+  statsError?: unknown
   /** 復元するセッション。 */
   session?: SessionState
   /** 実行計画のテキスト。 */
@@ -163,6 +173,7 @@ export const emptyResponse: ExecuteResponse = {
   elapsedMs: 0,
   notices: [],
   inTransaction: false,
+  compilation: null,
   discardedTab: null,
 }
 
@@ -294,18 +305,25 @@ export function queryResponse(
  *
  * @param affectedRows 影響した行数。行数の概念が無い文（DDL・PL/SQL ブロック
  *   など）では `null`
- * @param options 巻き添えで閉じられたタブ、未コミットかどうか
+ * @param options 巻き添えで閉じられたタブ、未コミットかどうか、コンパイルの
+ *   報告（ADR 0045）
  */
 export function statementResponse(
   affectedRows: number | null,
-  options: { discardedTab?: string | null; inTransaction?: boolean } = {},
+  options: {
+    discardedTab?: string | null
+    inTransaction?: boolean
+    compilation?: CompilationReport | null
+    notices?: string[]
+  } = {},
 ): ExecuteResponse {
   return {
     kind: 'statement',
     affectedRows,
     elapsedMs: 12,
-    notices: [],
+    notices: options.notices ?? [],
     inTransaction: options.inTransaction ?? false,
+    compilation: options.compilation ?? null,
     discardedTab: options.discardedTab ?? null,
   }
 }
@@ -345,6 +363,7 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
     schemaColumns: [],
     objectDefinition: [],
     objectDdl: [],
+    objectStats: [],
     listSessions: [],
     killSession: [],
     searchSource: [],
@@ -462,7 +481,8 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return entries.filter(
         (entry) =>
           (query.connectionName === null || entry.connectionName === query.connectionName) &&
-          (query.search === null || entry.sql.includes(query.search)),
+          (query.search === null || entry.sql.includes(query.search)) &&
+          (query.succeeded === null || entry.succeeded === query.succeeded),
       )
     },
 
@@ -522,9 +542,12 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return options.onSchemaOverview ? options.onSchemaOverview() : (options.schemas ?? [])
     },
 
-    schemaColumns: async (id, owner) => {
-      calls.schemaColumns.push({ id, owner })
-      return options.columns?.[owner] ?? []
+    schemaColumns: async (id, owner, withComments) => {
+      calls.schemaColumns.push({ id, owner, withComments })
+      return {
+        columns: options.columns?.[owner] ?? [],
+        objectComments: options.objectComments?.[owner] ?? [],
+      }
     },
 
     objectDefinition: async (id, owner, name, kind) => {
@@ -548,6 +571,14 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
           parts: [{ label: '定義', sql: `create table ${owner}.${name} (id number);` }],
         }
       )
+    },
+
+    objectStats: async (id, owner, name, kind) => {
+      calls.objectStats.push({ id, owner, name, kind })
+      if (options.statsError !== undefined) {
+        throw options.statsError
+      }
+      return options.stats ?? null
     },
 
     listSessions: async (id) => {

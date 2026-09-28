@@ -53,6 +53,8 @@ import { findEditorAction } from './editorKeys'
 import { formatEdit } from './formatting'
 import { withLeadingSpace } from './insertion'
 import { sqlCompletionSource } from './sqlCompletion'
+import type { RunTarget } from '../../sql/runTarget'
+import { flashRunTarget, statementRange } from './statementRange'
 import { koduchiEditorTheme } from './theme'
 import { koduchiSearch, koduchiSearchKeymap } from './search'
 
@@ -94,6 +96,14 @@ export interface SqlEditorHandle {
    * エディタそのものを描かないため、この口は繋がらず何も起きない（ADR 0022）。
    */
   formatDocument: () => void
+  /**
+   * 流した文を一瞬光らせる（ADR 0047）。
+   *
+   * 範囲は仲介者が実際に流すと決めた文を受け取る。キー・ボタン・パレット・
+   * メニューのどこから流しても光らせるため、keymap の中ではなくこの口に置く。
+   * **焦点は移さない。**
+   */
+  flashRunTarget: (target: RunTarget) => void
 }
 
 /**
@@ -276,6 +286,11 @@ export function SqlEditor({
     ref,
     () => ({
       formatDocument: () => runFormat.current(),
+      flashRunTarget: (target: RunTarget) => {
+        if (view.current) {
+          flashRunTarget(view.current, target)
+        }
+      },
       insertAtCursor: (text: string) => {
         const editor = view.current
         if (!editor) {
@@ -309,6 +324,8 @@ export function SqlEditor({
       doc: value,
       extensions: [
         lineNumbers(),
+        // 行番号の直後に置く。縦線の溝は行番号と本文の間に並ぶ（ADR 0047）。
+        statementRange,
         highlightActiveLineGutter(),
         history(),
         indentOnInput(),

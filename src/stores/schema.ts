@@ -14,7 +14,7 @@
 
 import { create } from 'zustand'
 import { getDbApi } from '../api/db'
-import type { ObjectKind, SchemaFilter, SchemaNode, TableColumn } from '../types/db'
+import type { ObjectComment, ObjectKind, SchemaFilter, SchemaNode, TableColumn } from '../types/db'
 import { defaultSchemaFilter, toErrorMessage } from '../types/db'
 
 /** 段階 1 の状態。 */
@@ -23,10 +23,19 @@ export type SchemaStatus = 'idle' | 'loading' | 'ready' | 'failed'
 /** 段階 2（列情報）の状態。 */
 export type ColumnStatus = 'idle' | 'loading' | 'ready'
 
+/** スキーマ名 → オブジェクト名 → コメント（ADR 0043）。 */
+export type ObjectCommentIndex = Record<string, Record<string, string>>
+
 interface SchemaState {
   schemas: SchemaNode[]
   /** スキーマ名ごとの列情報。読み込み済みのものだけが入る。 */
   columns: Record<string, TableColumn[]>
+  /**
+   * スキーマ名 → オブジェクト名 → コメント（ADR 0043）。
+   *
+   * 段階 2 で列と一緒に届く。コメントを出さない設定で読んだスキーマは空である。
+   */
+  objectComments: ObjectCommentIndex
   status: SchemaStatus
   columnStatus: ColumnStatus
   /** 列情報を読み終えたスキーマの数。進捗表示に使う。 */
@@ -42,7 +51,10 @@ interface SchemaState {
   load: (connectionId: string) => Promise<void>
   /** キャッシュを捨てて取得し直す。 */
   reload: (connectionId: string) => Promise<void>
-  /** フィルタを変えて取得し直す。 */
+  /**
+   * フィルタを変える。取得の結果が変わる変更のときだけ取得し直す
+   * （`needsRefetch`）。
+   */
   setFilter: (connectionId: string, filter: SchemaFilter) => Promise<void>
   setSearch: (search: string) => void
   /**
@@ -82,6 +94,36 @@ export function kindGroupKey(schema: string, kind: ObjectKind): string {
   return `${schema}.#${kind}`
 }
 
+/**
+ * フィルタの変更で取得し直す必要があるか（ADR 0043）。
+ *
+ * 型名の表示は見た目だけであり、切り替えるたびに全スキーマを取り直すのは
+ * 割に合わない。コメントは**出す側へ切り替えたときだけ**取り直す。隠す側へは
+ * 手元の値を描かないだけで足り、次の取得からは読みにいかない。
+ *
+ * @param previous 今のフィルタ
+ * @param next 新しいフィルタ
+ */
+export function needsRefetch(previous: SchemaFilter, next: SchemaFilter): boolean {
+  if (previous.excludeSystem !== next.excludeSystem || previous.hideEmpty !== next.hideEmpty) {
+    return true
+  }
+  const kinds = Object.keys(next.kinds) as ObjectKind[]
+  if (kinds.some((kind) => previous.kinds[kind] !== next.kinds[kind])) {
+    return true
+  }
+  return !previous.showComments && next.showComments
+}
+
+/**
+ * 段階 2 のオブジェクトのコメントを、名前で引ける形に直す。
+ *
+ * @param comments スキーマ 1 つぶんのコメント
+ */
+function indexComments(comments: ObjectComment[]): Record<string, string> {
+  return Object.fromEntries(comments.map((comment) => [comment.objectName, comment.comment]))
+}
+
 export const useSchemaStore = create<SchemaState>((set, get) => {
   /**
    * 段階 2 を回す。スキーマ 1 つずつ列情報を取り、そのつど状態へ流し込む。
@@ -96,6 +138,7 @@ export const useSchemaStore = create<SchemaState>((set, get) => {
     current: number,
   ): Promise<void> {
     set({ columnStatus: 'loading', loadedSchemas: 0 })
+    const withComments = get().filter.showComments
 
     for (const schema of schemas) {
       if (current !== generation) {
@@ -103,12 +146,16 @@ export const useSchemaStore = create<SchemaState>((set, get) => {
       }
 
       try {
-        const columns = await getDbApi().schemaColumns(connectionId, schema.name)
+        const result = await getDbApi().schemaColumns(connectionId, schema.name, withComments)
         if (current !== generation) {
           return
         }
         set((state) => ({
-          columns: { ...state.columns, [schema.name]: columns },
+          columns: { ...state.columns, [schema.name]: result.columns },
+          objectComments: {
+            ...state.objectComments,
+            [schema.name]: indexComments(result.objectComments),
+          },
           loadedSchemas: state.loadedSchemas + 1,
         }))
       } catch {
@@ -135,7 +182,14 @@ export const useSchemaStore = create<SchemaState>((set, get) => {
     generation += 1
     const current = generation
 
-    set({ status: 'loading', error: null, schemas: [], columns: {}, loadedSchemas: 0 })
+    set({
+      status: 'loading',
+      error: null,
+      schemas: [],
+      columns: {},
+      objectComments: {},
+      loadedSchemas: 0,
+    })
 
     try {
       const schemas = await getDbApi().schemaOverview(connectionId, get().filter)
@@ -155,6 +209,7 @@ export const useSchemaStore = create<SchemaState>((set, get) => {
   return {
     schemas: [],
     columns: {},
+    objectComments: {},
     status: 'idle',
     columnStatus: 'idle',
     loadedSchemas: 0,
@@ -175,8 +230,11 @@ export const useSchemaStore = create<SchemaState>((set, get) => {
     },
 
     setFilter: async (connectionId, filter) => {
+      const refetch = needsRefetch(get().filter, filter)
       set({ filter })
-      await run(connectionId)
+      if (refetch) {
+        await run(connectionId)
+      }
     },
 
     setSearch: (search) => set({ search }),
@@ -192,6 +250,7 @@ export const useSchemaStore = create<SchemaState>((set, get) => {
       set({
         schemas: [],
         columns: {},
+        objectComments: {},
         status: 'idle',
         columnStatus: 'idle',
         loadedSchemas: 0,
@@ -224,17 +283,24 @@ export function formatColumnProgress(state: SchemaState): string {
  * スキーマ名・オブジェクト名に加え、読み込み済みの列名にも当てる。まだ
  * 読み込まれていないスキーマの列はヒットしない（ADR 0007）。
  *
+ * コメントを渡したときは、表・ビューのコメントと列のコメントにも当てる
+ * （ADR 0043）。利用者が知っているのは論理名のほうであることが多い
+ * （ADR 0033 と同じ動機）。**コメントを隠しているときは `null` を渡す。**
+ * 見えていない文字列に当たって行が残ると、なぜ残ったのかが画面から読めない。
+ *
  * 呼び出し側で `useMemo` に包むこと。毎回新しい配列を作るため、そのまま
  * セレクタとして使うと再描画が止まらなくなる。
  *
  * @param schemas 取得済みのスキーマ
  * @param columns スキーマ名ごとの列情報
  * @param search 絞り込み語
+ * @param objectComments オブジェクトのコメント。コメントを当てないときは `null`
  */
 export function filterSchemas(
   schemas: SchemaNode[],
   columns: Record<string, TableColumn[]>,
   search: string,
+  objectComments: ObjectCommentIndex | null = null,
 ): SchemaNode[] {
   const needle = search.trim().toLowerCase()
   if (needle === '') {
@@ -247,18 +313,38 @@ export function filterSchemas(
         return schema
       }
 
+      const withComments = objectComments !== null
+      const hits = (text: string | undefined) =>
+        text !== undefined && text.toLowerCase().includes(needle)
+
       const 列で当たったオブジェクト = new Set(
         (columns[schema.name] ?? [])
-          .filter((column) => column.name.toLowerCase().includes(needle))
+          .filter((column) => hits(column.name) || (withComments && hits(column.comment)))
           .map((column) => column.objectName),
       )
+      const コメント = objectComments?.[schema.name] ?? {}
 
       const objects = schema.objects.filter(
         (object) =>
-          object.name.toLowerCase().includes(needle) || 列で当たったオブジェクト.has(object.name),
+          hits(object.name) ||
+          列で当たったオブジェクト.has(object.name) ||
+          (withComments && hasComment(object.kind) && hits(コメント[object.name])),
       )
 
       return { ...schema, objects }
     })
     .filter((schema) => schema.objects.length > 0 || schema.name.toLowerCase().includes(needle))
+}
+
+/**
+ * コメントを持ちうる種別か（ADR 0033・0043）。
+ *
+ * `ALL_TAB_COMMENTS` に載るのは表・ビュー・マテビューだけである。コメントは
+ * 名前で引くため、表と同名の索引やトリガーにまで表のコメントを付けない
+ * ためにここで絞る。
+ *
+ * @param kind オブジェクトの種類
+ */
+export function hasComment(kind: ObjectKind): boolean {
+  return kind === 'table' || kind === 'view' || kind === 'materializedView'
 }

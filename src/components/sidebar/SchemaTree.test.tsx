@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import type { DefinitionTarget, IdentifierCase, SchemaNode, TableColumn } from '../../types/db'
@@ -10,6 +10,7 @@ import {
   canOpenSelect,
   definitionTargetOf,
   flattenSchemas,
+  insertsOnDoubleClick,
   rowIdentifierPath,
   SchemaTree,
 } from './SchemaTree'
@@ -626,8 +627,38 @@ describe('canOpenSelect', () => {
 })
 
 describe('ツリーからの挿入', () => {
-  it('テーブルをダブルクリックするとスキーマ修飾した名前が挿入される', async () => {
+  it('開けないオブジェクトをダブルクリックするとスキーマ修飾した名前が挿入される', async () => {
     // Arrange
+    接続を置く('lower')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: 'ORDER_TOTAL' }))
+
+    // Assert
+    expect(挿入).toHaveBeenCalledWith('koduchi.order_total')
+  })
+
+  it('綴りの設定が大文字なら大文字で挿入される', async () => {
+    // Arrange
+    接続を置く('upper')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+    await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: 'ORDER_TOTAL' }))
+
+    // Assert
+    expect(挿入).toHaveBeenCalledWith('KODUCHI.ORDER_TOTAL')
+  })
+
+  it('テーブルを素早く開け閉めしても名前は挿入されない', async () => {
+    // Arrange: issue #72。開閉の 2 回の押し下げはダブルクリックと区別できない
     接続を置く('lower')
     const 挿入 = vi.fn()
     renderTree({ onInsert: 挿入 })
@@ -638,22 +669,36 @@ describe('ツリーからの挿入', () => {
     await userEvent.dblClick(screen.getByRole('button', { name: 'USERS' }))
 
     // Assert
-    expect(挿入).toHaveBeenCalledWith('koduchi.users')
+    expect(挿入).not.toHaveBeenCalled()
   })
 
-  it('綴りの設定が大文字なら大文字で挿入される', async () => {
+  it('スキーマを素早く開け閉めしても名前は挿入されない', async () => {
+    // Arrange: issue #72
+    接続を置く('lower')
+    const 挿入 = vi.fn()
+    renderTree({ onInsert: 挿入 })
+
+    // Act
+    await userEvent.dblClick(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Assert
+    expect(挿入).not.toHaveBeenCalled()
+  })
+
+  it('開閉できる行の名前は右クリックのメニューから挿入できる', async () => {
     // Arrange
-    接続を置く('upper')
+    接続を置く('lower')
     const 挿入 = vi.fn()
     renderTree({ onInsert: 挿入 })
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
     await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
 
     // Act
-    await userEvent.dblClick(screen.getByRole('button', { name: 'USERS' }))
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'USERS' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /エディタへ挿入/ }))
 
     // Assert
-    expect(挿入).toHaveBeenCalledWith('KODUCHI.USERS')
+    expect(挿入).toHaveBeenCalledWith('koduchi.users')
   })
 
   it('列をダブルクリックすると列名だけが挿入される', async () => {
@@ -718,20 +763,138 @@ describe('ツリーからの挿入', () => {
     )
   })
 
-  it('オブジェクトの行のダブルクリックは名前を挿入する', async () => {
+  it('オブジェクトの行のダブルクリックは定義を開かない', async () => {
     // Arrange: 行の右に押しどころは無くなった（ADR 0022）
     接続を置く('lower')
-    const 挿入 = vi.fn()
-    renderTree({ onInsert: 挿入 })
+    renderTree()
     await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
-    await userEvent.click(screen.getByRole('button', { name: /テーブル/ }))
+    await userEvent.click(screen.getByRole('button', { name: /ファンクション/ }))
 
     // Act
-    await userEvent.dblClick(screen.getByRole('button', { name: 'USERS' }))
+    await userEvent.dblClick(screen.getByRole('button', { name: 'ORDER_TOTAL' }))
 
     // Assert
-    expect(挿入).toHaveBeenCalledWith('koduchi.users')
     expect(開いた定義).toEqual([])
+  })
+})
+
+describe('insertsOnDoubleClick', () => {
+  it('開閉できる行ではダブルクリックで挿入しない', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true }, true)
+    const スキーマ行 = rows.find((row) => row.kind === 'schema')!
+    const テーブル行 = rows.find((row) => row.kind === 'object' && row.name === 'USERS')!
+
+    // Act & Assert
+    expect(insertsOnDoubleClick(スキーマ行)).toBe(false)
+    expect(insertsOnDoubleClick(テーブル行)).toBe(false)
+  })
+
+  it('開けないオブジェクトと列ではダブルクリックで挿入する', () => {
+    // Arrange
+    const rows = flattenSchemas(
+      スキーマ一覧,
+      列一覧,
+      { KODUCHI: true, 'KODUCHI.USERS': true },
+      true,
+    )
+    const 関数行 = rows.find((row) => row.kind === 'object' && row.name === 'ORDER_TOTAL')!
+    const 列行 = rows.find((row) => row.kind === 'column')!
+
+    // Act & Assert
+    expect(insertsOnDoubleClick(関数行)).toBe(true)
+    expect(insertsOnDoubleClick(列行)).toBe(true)
+  })
+
+  it('種別の束は名前を持たないため挿入しない', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, 列一覧, { KODUCHI: true })
+    const 束 = rows.find((row) => row.kind === 'kindGroup')!
+
+    // Act & Assert
+    expect(insertsOnDoubleClick(束)).toBe(false)
+  })
+})
+
+describe('ツリーのコメントと型名の表示', () => {
+  const コメント付きの列: Record<string, TableColumn[]> = {
+    KODUCHI: [{ ...列一覧.KODUCHI[0], comment: '利用者番号' }, 列一覧.KODUCHI[1]],
+  }
+
+  /** スキーマ・テーブルの束・USERS を開いておく。 */
+  function 開いておく(): void {
+    useSchemaStore.setState({
+      columns: コメント付きの列,
+      objectComments: { KODUCHI: { USERS: '利用者。退会者も残る' } },
+      expanded: {
+        KODUCHI: true,
+        'KODUCHI.#table': true,
+        'KODUCHI.USERS': true,
+      },
+    })
+  }
+
+  it('表のコメントが名前の右に出て全文を title で読める', () => {
+    // Arrange
+    開いておく()
+
+    // Act
+    renderTree()
+
+    // Assert
+    const コメント = screen.getByText('利用者。退会者も残る')
+    expect(コメント).toHaveAttribute('title', '利用者。退会者も残る')
+  })
+
+  it('列のコメントが列名と型名の間に出る', () => {
+    // Arrange
+    開いておく()
+
+    // Act
+    renderTree()
+
+    // Assert
+    expect(screen.getByText('利用者番号')).toBeInTheDocument()
+    expect(screen.getByText('NUMBER(12)')).toBeInTheDocument()
+  })
+
+  it('コメントを隠す設定ではコメントを出さない', () => {
+    // Arrange
+    開いておく()
+    useSchemaStore.setState((state) => ({ filter: { ...state.filter, showComments: false } }))
+
+    // Act
+    renderTree()
+
+    // Assert
+    expect(screen.queryByText('利用者。退会者も残る')).not.toBeInTheDocument()
+    expect(screen.queryByText('利用者番号')).not.toBeInTheDocument()
+  })
+
+  it('型名を隠す設定では列の型名を出さない', () => {
+    // Arrange
+    開いておく()
+    useSchemaStore.setState((state) => ({ filter: { ...state.filter, showTypes: false } }))
+
+    // Act
+    renderTree()
+
+    // Assert
+    expect(screen.getByText('USER_ID')).toBeInTheDocument()
+    expect(screen.queryByText('NUMBER(12)')).not.toBeInTheDocument()
+  })
+
+  it('関数には同名の表のコメントを付けない', () => {
+    // Arrange
+    const rows = flattenSchemas(スキーマ一覧, {}, { KODUCHI: true }, true, {
+      KODUCHI: { ORDER_TOTAL: '表のコメント' },
+    })
+
+    // Act
+    const 関数行 = rows.find((row) => row.kind === 'object' && row.name === 'ORDER_TOTAL')
+
+    // Assert
+    expect(関数行).toMatchObject({ comment: undefined })
   })
 })
 
@@ -948,5 +1111,59 @@ describe('ツリーのキーボード操作', () => {
 
     // Assert
     expect(クリップボード.writeText).toHaveBeenCalledWith('koduchi')
+  })
+
+  it('無効なオブジェクトの行にだけ印が付く（ADR 0045）', async () => {
+    // Arrange
+    useSchemaStore.setState({
+      schemas: [
+        {
+          name: 'KODUCHI',
+          objectCount: 2,
+          objects: [
+            { name: 'BROKEN', kind: 'procedure', invalid: true },
+            { name: 'SAY_HELLO', kind: 'procedure', invalid: false },
+          ],
+        },
+      ],
+      columns: {},
+    })
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /プロシージャ/ }))
+
+    // Assert
+    const 壊れた行 = screen.getByRole('button', { name: /BROKEN/ })
+    const 正しい行 = screen.getByRole('button', { name: /SAY_HELLO/ })
+    expect(within(壊れた行).getByRole('img', { name: '無効（INVALID）' })).toBeInTheDocument()
+    expect(within(正しい行).queryByRole('img', { name: '無効（INVALID）' })).toBeNull()
+  })
+
+  it('コメントの付いた無効なビューでは印が名前の直後に来てコメントより前に出る（ADR 0045）', () => {
+    // Arrange: 印がコメントの省略（…）に押し出されないよう、並びは名前・印・コメント
+    useSchemaStore.setState({
+      schemas: [
+        {
+          name: 'KODUCHI',
+          objectCount: 1,
+          objects: [{ name: 'BROKEN_V', kind: 'view', invalid: true }],
+        },
+      ],
+      columns: {},
+      objectComments: { KODUCHI: { BROKEN_V: '売上の集計。夜間に更新' } },
+      expanded: { KODUCHI: true, 'KODUCHI.#view': true },
+    })
+
+    // Act
+    renderTree()
+
+    // Assert
+    const 行 = screen.getByRole('button', { name: /BROKEN_V/ })
+    const 並び = Array.from(行.children).map(
+      (child) => child.getAttribute('aria-label') ?? child.textContent,
+    )
+    expect(並び.slice(-3)).toEqual(['BROKEN_V', '無効（INVALID）', '売上の集計。夜間に更新'])
   })
 })

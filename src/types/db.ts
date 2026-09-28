@@ -91,7 +91,42 @@ export type ExecuteOutcome =
       notices: string[]
       /** 未コミットのトランザクションが残っているか（ADR 0012）。 */
       inTransaction: boolean
+      /**
+       * コンパイルの警告（`ORA-24344`）を受けたときの報告（ADR 0045）。
+       *
+       * Oracle は「警告付きの成功」として返すが、小槌は失敗として扱う。
+       * 無効なオブジェクトを「完了しました」と見せないためである。
+       */
+      compilation: CompilationReport | null
     }
+
+/** `ALL_ERRORS` の 1 行（ADR 0045）。 */
+export interface CompileDiagnostic {
+  owner: string
+  name: string
+  /** `ALL_ERRORS.TYPE`（`PROCEDURE` / `PACKAGE BODY` など）。 */
+  objectType: string
+  /** オブジェクトのソース（`ALL_SOURCE`）の上の行。エディタの行ではない。 */
+  line: number
+  position: number
+  severity: 'error' | 'warning'
+  /** Oracle の文言そのまま。 */
+  text: string
+}
+
+/** コンパイルの警告を受けた文の報告（ADR 0045）。 */
+export interface CompilationReport {
+  /** Oracle が返した警告の原文。 */
+  warning: string
+  /** 実行の間に定義が変わったオブジェクトの `ALL_ERRORS`。空でありうる。 */
+  diagnostics: CompileDiagnostic[]
+  /**
+   * `ALL_ERRORS` を読めなかったときの理由（`⌘.` の中止など）。読めたときは `null`。
+   *
+   * 読めなくても文そのものは走り切っているため、Rust 側はエラーにせずここに載せる。
+   */
+  lookupError: string | null
+}
 
 /** 実行結果と、その巻き添えで結果セットを閉じられたタブ。 */
 export type ExecuteResponse = ExecuteOutcome & {
@@ -235,6 +270,10 @@ export interface SchemaFilter {
   hideEmpty: boolean
   /** ツリーに載せるオブジェクトの種別。既定はすべて真（ADR 0014）。 */
   kinds: ObjectKindFilter
+  /** 列の行に型名を出す。見た目だけの設定で、取得し直さない。既定は真（ADR 0043）。 */
+  showTypes: boolean
+  /** 表・ビュー・列のコメントを出す。偽なら段階 2 で読みにいかない。既定は真（ADR 0043）。 */
+  showComments: boolean
 }
 
 /**
@@ -322,12 +361,22 @@ export const defaultSchemaFilter: SchemaFilter = {
   excludeSystem: true,
   hideEmpty: true,
   kinds: defaultObjectKindFilter,
+  showTypes: true,
+  showComments: true,
 }
 
 /** スキーマ内のオブジェクト 1 件。 */
 export interface SchemaObject {
   name: string
   kind: ObjectKind
+  /**
+   * `ALL_OBJECTS.STATUS` が `INVALID` か（ADR 0045）。パッケージと型は本体が
+   * 無効なときも立つ。
+   *
+   * Rust 側は常に送るが、省略可能にしてある。ツリーの見本を書くテストが多く、
+   * 欠けたときは「有効」と読めば足りるためである。
+   */
+  invalid?: boolean
 }
 
 /** スキーマ 1 つ。段階 1 で返る（ADR 0007）。 */
@@ -348,15 +397,27 @@ export interface TableColumn {
   nullable: boolean
   kind: CellKind
   /**
-   * 列に付いたコメント（`ALL_COL_COMMENTS`。ADR 0033）。
+   * 列に付いたコメント（`ALL_COL_COMMENTS`。ADR 0033・0043）。
    *
-   * **埋まるのは定義タブ（`objectDefinition`）から届いた列だけである。**
-   * 段階 2（ADR 0007）はスキーマ 1 つぶんの列をまとめて読むため、ここへ
-   * コメントを載せると数万行ぶんの `VARCHAR2(4000)` が IPC に乗る。ツリーも
-   * 補完もコメントを出さない以上、払う値打ちが無い。コメントが無いときと
-   * 段階 2 から来たときのどちらも `undefined` である。
+   * 定義タブ（`objectDefinition`）から届いた列では常に埋まる。段階 2
+   * （ADR 0007）から届いた列では、ツリーにコメントを出す設定
+   * （`SchemaFilter.showComments`）で読んだときだけ埋まる。コメントが無いときは
+   * `undefined` である。
    */
   comment?: string
+}
+
+/** 表・ビュー・マテリアライズドビューのコメント 1 件（ADR 0043）。 */
+export interface ObjectComment {
+  objectName: string
+  comment: string
+}
+
+/** 段階 2 でスキーマ 1 つぶんに返るもの（ADR 0007・0043）。 */
+export interface SchemaColumns {
+  columns: TableColumn[]
+  /** コメントの付いたオブジェクトだけ。コメントを出さない設定では空。 */
+  objectComments: ObjectComment[]
 }
 
 /**
@@ -463,6 +524,8 @@ export interface HistoryQuery {
   connectionName: string | null
   /** SQL の部分一致で絞る語。 */
   search: string | null
+  /** 成否で絞る（ADR 0046）。`null` なら成否を問わない。 */
+  succeeded: boolean | null
   limit: number
 }
 
@@ -720,6 +783,56 @@ export interface ObjectDdl {
 }
 
 /**
+ * セグメントの大きさ、または測れなかった理由（ADR 0044）。
+ *
+ * **権限が無くて測れないことを 0 バイトとして受け取らない。**「空の表」と
+ * 「見えない表」を取り違えさせないためである。
+ */
+export type SegmentSize =
+  | {
+      status: 'measured'
+      /** 表の本体。パーティションは足し上げ、索引構成表では主キーの索引を含む。 */
+      tableBytes: number
+      /** 表に付いた索引（LOB の索引を除く）。 */
+      indexBytes: number
+      /** LOB のセグメントと、その索引。 */
+      lobBytes: number
+      /**
+       * 数えたセグメントの数。0 なら、まだセグメントが作られていないか
+       * `TRUNCATE … DROP ALL STORAGE` で解放されている。
+       */
+      segmentCount: number
+    }
+  /** セグメントを読む権限が無い（他人の表で `DBA_SEGMENTS` が読めない）。 */
+  | { status: 'permissionDenied' }
+  /** 一時表であり、永続のセグメントを持たない。 */
+  | { status: 'temporary' }
+  /** 外部表であり、行はデータベースの外のファイルにある。 */
+  | { status: 'external' }
+  /** クラスタ化表。行はクラスタのセグメントに他の表と一緒に入り、表だけの大きさは測れない。 */
+  | { status: 'clustered'; clusterName: string }
+
+/**
+ * 表 1 つの統計とセグメントの大きさ（ADR 0044）。
+ *
+ * **`numRows` は統計を採った時点の行数であり、今の行数ではない。**
+ */
+export interface ObjectStats {
+  /** 統計を採った時点の行数。統計を採っていなければ `null`（0 行ではない）。 */
+  numRows: number | null
+  /** 統計を採った日時（`YYYY-MM-DD HH:MM`、データベースの時計）。 */
+  lastAnalyzed: string | null
+  /** 統計を採ってから経った日数。 */
+  daysSinceAnalyzed: number | null
+  /** データベースが統計を古いと見なしているか。分からなければ `null`。 */
+  stale: boolean | null
+  partitioned: boolean
+  indexOrganized: boolean
+  temporary: boolean
+  size: SegmentSize
+}
+
+/**
  * 定義ビューを開く対象（ADR 0019）。
  *
  * スキーマツリーの行がそのまま指す 3 つ組である。
@@ -746,9 +859,17 @@ export interface AppearanceSettings {
   editorFontSize: string
 }
 
+/** 結果テーブルの表示調整の既定（ADR 0048）。`resultDisplay.ts` の `ResultDisplay` と対応する。 */
+export interface ResultDisplaySettings {
+  thousandsSeparator: boolean
+  showWhitespace: boolean
+}
+
 /** アプリ全体の設定。 */
 export interface AppSettings {
   appearance: AppearanceSettings
+  /** 結果テーブルの表示調整の既定。この表を持たない古い設定もある。 */
+  resultDisplay?: ResultDisplaySettings
   csv: CsvOptions
   /**
    * 利用者が割り当て直したキー（ADR 0037）。コマンドの `id` から保存の書き方

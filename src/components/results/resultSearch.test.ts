@@ -73,9 +73,51 @@ describe('cellMatches', () => {
     // Act & Assert
     expect(cellMatches(NULLのセル, 'zzz', false)).toBe(false)
   })
+
+  it('3 桁区切りを入れた数値は描いた文字でも値でも当たる', () => {
+    // Arrange
+    const セル = 数値('1234567')
+    const 区切る = { thousandsSeparator: true, showWhitespace: false }
+
+    // Act
+    const 当たり = [
+      cellMatches(セル, '4,567', false, 区切る),
+      cellMatches(セル, '34567', false, 区切る),
+    ]
+
+    // Assert
+    expect(当たり).toEqual([true, true])
+  })
+
+  it('表示調整が無ければ区切りの付いた語では当たらない', () => {
+    // Arrange
+    const セル = 数値('1234567')
+
+    // Act
+    const 当たり = cellMatches(セル, '4,567', false)
+
+    // Assert
+    expect(当たり).toBe(false)
+  })
 })
 
 describe('searchRows', () => {
+  it('表示調整を変えると前の結果へ継ぎ足さず数え直す', () => {
+    // Arrange
+    const rows = [[数値('1234')]]
+    const 前 = searchRows(null, rows, '1,2', 既定)
+
+    // Act
+    const 後 = searchRows(前, rows, '1,2', {
+      caseSensitive: false,
+      display: { thousandsSeparator: true, showWhitespace: false },
+    })
+
+    // Assert
+    expect(前.matches).toEqual([])
+    expect(後.matches).toEqual([{ row: 0, column: 0 }])
+  })
+
   /** 3 行 2 列。2 行目と 3 行目に `あ` を含む。 */
   const 行: Cell[][] = [
     [数値('10'), 文字('ORDERS')],

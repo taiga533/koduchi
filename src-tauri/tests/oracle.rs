@@ -13,6 +13,7 @@
 //! `oracle::InitParams::init()` がプロセス 1 回きりであるため、テストは
 //! `serial_test` で直列に走らせる。
 
+use koduchi_lib::db::compilation::{CompilationReport, DiagnosticSeverity};
 use koduchi_lib::db::definition::ConstraintKind;
 use koduchi_lib::db::driver::{
     Bind, BindKind, Chunk, ConnectTarget, ConnectionParams, ExecuteOutcome,
@@ -25,6 +26,7 @@ use koduchi_lib::db::source::{
     SourceKind, SourceKindFilter, SourceObjectMatches, SourceSearchRequest, SourceSearchResult,
     SOURCE_SEARCH_DEFAULT_LIMIT,
 };
+use koduchi_lib::db::stats::{ObjectStats, SegmentSize};
 use koduchi_lib::db::value::{Cell, CellKind};
 use serial_test::serial;
 
@@ -913,7 +915,7 @@ fn スキーマの列情報を取り出せる() {
     };
 
     // Act
-    let columns = pool.schema_columns("KODUCHI").unwrap();
+    let columns = pool.schema_columns("KODUCHI", false).unwrap().columns;
 
     // Assert
     let user_id = columns
@@ -929,6 +931,81 @@ fn スキーマの列情報を取り出せる() {
         .expect("USERS.EMAIL があるはず");
     assert_eq!(email.type_name, "VARCHAR2(255)");
     assert!(!email.nullable);
+}
+
+#[test]
+#[serial]
+fn コメントを出す設定ではスキーマの列とオブジェクトのコメントも取り出せる() {
+    // Arrange: コメントは 008_comments.sql が付けてある
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.schema_columns("KODUCHI", true).unwrap();
+
+    // Assert
+    let carrier = result
+        .columns
+        .iter()
+        .find(|column| column.object_name == "SHIPMENTS" && column.name == "CARRIER")
+        .expect("SHIPMENTS.CARRIER があるはず");
+    assert_eq!(carrier.comment.as_deref(), Some("配送業者コード"));
+
+    // コメントの無い表の列も外部結合で残る。
+    let email = result
+        .columns
+        .iter()
+        .find(|column| column.object_name == "USERS" && column.name == "EMAIL")
+        .expect("USERS.EMAIL があるはず");
+    assert_eq!(email.comment, None);
+
+    // 3 つ揃いの鍵で結合していれば、列は重複しない。
+    let shipment_ids = result
+        .columns
+        .iter()
+        .filter(|column| column.object_name == "SHIPMENTS" && column.name == "SHIPMENT_ID")
+        .count();
+    assert_eq!(shipment_ids, 1);
+
+    let comment_of = |name: &str| {
+        result
+            .object_comments
+            .iter()
+            .find(|comment| comment.object_name == name)
+            .map(|comment| comment.comment.clone())
+    };
+    assert_eq!(
+        comment_of("SHIPMENTS").as_deref(),
+        Some("出荷。受注 1 件に対して 1 行が立つ")
+    );
+    assert_eq!(
+        comment_of("SESSION_ROLLUP").as_deref(),
+        Some("セッションの集計ビュー")
+    );
+    // コメントの無い表は運ばない。
+    assert_eq!(comment_of("USERS"), None);
+}
+
+#[test]
+#[serial]
+fn コメントを出さない設定ではスキーマのコメントを取り出さない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let result = pool.schema_columns("KODUCHI", false).unwrap();
+
+    // Assert
+    let carrier = result
+        .columns
+        .iter()
+        .find(|column| column.object_name == "SHIPMENTS" && column.name == "CARRIER")
+        .expect("SHIPMENTS.CARRIER があるはず");
+    assert_eq!(carrier.comment, None);
+    assert!(result.object_comments.is_empty());
 }
 
 #[test]
@@ -2217,4 +2294,502 @@ fn 当たった行の前後を読める() {
     assert!(lines.len() > 1, "前後の行が添えられるはず");
     assert!(lines.iter().any(|line| line.line == 当たり行));
     assert!(lines.windows(2).all(|pair| pair[0].line < pair[1].line));
+}
+
+/// 統計と大きさの見本（`009_table_stats.sql`）を統合テストで引く（ADR 0044）。
+///
+/// # 引数
+///
+/// * `pool` - 使う接続
+/// * `name` - `KODUCHI` スキーマの表の名前
+fn 統計を引く(pool: &ConnectionPool, name: &str) -> ObjectStats {
+    pool.object_stats("KODUCHI", name, ObjectKind::Table)
+        .unwrap()
+        .unwrap_or_else(|| panic!("{name} の統計が返るはず。009_table_stats.sql を流したか"))
+}
+
+/// 測れたセグメントの大きさを取り出す。測れなかったらテストを失敗させる。
+fn 測れた大きさ(stats: &ObjectStats) -> (u64, u64, u64, u64) {
+    match stats.size {
+        SegmentSize::Measured {
+            table_bytes,
+            index_bytes,
+            lob_bytes,
+            segment_count,
+        } => (table_bytes, index_bytes, lob_bytes, segment_count),
+        ref other => panic!("測れるはず: {other:?}"),
+    }
+}
+
+#[test]
+#[serial]
+fn 統計を採った表は行数と採った日時を返す() {
+    // Arrange: 統計はロックしてあり、自動統計収集で動かない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_SAMPLE");
+
+    // Assert
+    assert_eq!(stats.num_rows, Some(120));
+    assert!(stats.last_analyzed.is_some());
+    assert!(stats.days_since_analyzed.is_some_and(|days| days >= 0));
+    assert_eq!(stats.stale, Some(false));
+    assert!(!stats.partitioned);
+    assert!(!stats.index_organized);
+    assert!(!stats.temporary);
+}
+
+#[test]
+#[serial]
+fn 自分の表は表と索引とlobに分けて測る() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_SAMPLE");
+
+    // Assert: 表・主キーの索引・LOB セグメント・LOB の索引の 4 つ
+    let (table, index, lob, count) = 測れた大きさ(&stats);
+    assert!(table > 0);
+    assert!(index > 0);
+    assert!(lob > 0);
+    assert_eq!(count, 4);
+}
+
+#[test]
+#[serial]
+fn 統計を採っていない表の行数は0ではなく不明になる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_UNANALYZED");
+
+    // Assert: 行も無いためセグメントもまだ作られていない
+    assert_eq!(stats.num_rows, None);
+    assert_eq!(stats.last_analyzed, None);
+    assert_eq!(stats.days_since_analyzed, None);
+    assert_eq!(stats.stale, None);
+    assert_eq!(測れた大きさ(&stats), (0, 0, 0, 0));
+}
+
+#[test]
+#[serial]
+fn パーティション表はパーティションのセグメントを足し上げる() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_PARTITIONED");
+
+    // Assert
+    assert!(stats.partitioned);
+    assert_eq!(stats.num_rows, Some(200));
+    let (table, _, _, count) = 測れた大きさ(&stats);
+    assert_eq!(count, 2);
+    assert!(table > 0);
+}
+
+#[test]
+#[serial]
+fn 索引構成表は主キーの索引を表の本体として数える() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_IOT");
+
+    // Assert
+    assert!(stats.index_organized);
+    let (table, index, _, count) = 測れた大きさ(&stats);
+    assert!(table > 0);
+    assert_eq!(index, 0);
+    assert_eq!(count, 1);
+}
+
+#[test]
+#[serial]
+fn 一時表はセグメントを測らない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_TEMP");
+
+    // Assert
+    assert!(stats.temporary);
+    assert_eq!(stats.size, SegmentSize::Temporary);
+}
+
+#[test]
+#[serial]
+fn クラスタ化表は行があってもセグメントが無いとは言わない() {
+    // Arrange: 行はクラスタのセグメントに他の表と一緒に入る（009_table_stats.sql）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_CLUSTERED");
+
+    // Assert
+    assert_eq!(
+        stats.size,
+        SegmentSize::Clustered {
+            cluster_name: String::from("STATS_CLUSTER")
+        }
+    );
+}
+
+#[test]
+#[serial]
+fn 外部表はセグメントを測らない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_EXTERNAL");
+
+    // Assert
+    assert_eq!(stats.size, SegmentSize::External);
+}
+
+#[test]
+#[serial]
+fn 索引構成表のoverflowは表に数える() {
+    // Arrange: overflow は `SYS_IOT_OVER_*` という別の名前のセグメントに入る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_IOT_OVERFLOW");
+
+    // Assert: 主キーの索引と overflow の 2 つとも表
+    let (table, index, _, count) = 測れた大きさ(&stats);
+    assert_eq!(count, 2);
+    assert_eq!(index, 0);
+    assert!(table > 65_536);
+}
+
+#[test]
+#[serial]
+fn ネストした表の格納表は表に数える() {
+    // Arrange: 入れ子の行は `NESTED TABLE` 区分の別のセグメントに入る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_NESTED");
+
+    // Assert: 親と格納表のどちらも最初のエクステント（64 KB）を持つため、格納表を
+    // 取りこぼすと表は 64 KB になる。親に付く入れ子の識別子の索引は索引に数える
+    let (table, index, _, _) = 測れた大きさ(&stats);
+    assert!(table >= 2 * 65_536);
+    assert!(index > 0);
+}
+
+#[test]
+#[serial]
+fn 他人の表はdbaのビューで測る() {
+    // Arrange: 接続する KODUCHI は SELECT_CATALOG_ROLE を持つ（001_schemas.sql）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = pool
+        .object_stats("KODUCHI_ANALYTICS", "DAILY_GMV", ObjectKind::Table)
+        .unwrap()
+        .unwrap();
+
+    // Assert
+    let (table, _, _, count) = 測れた大きさ(&stats);
+    assert!(count > 0);
+    assert!(table > 0);
+}
+
+#[test]
+#[serial]
+fn セグメントを読む権限が無くても統計は返り大きさは権限不足になる() {
+    // Arrange: SELECT_CATALOG_ROLE を持たない利用者で繋ぐ（009_table_stats.sql）
+    let Some(mut params) = 接続に使う情報() else {
+        return;
+    };
+    params.username = String::from("koduchi_stats_viewer");
+    params.password = String::from("koduchi_dev");
+    let pool = ConnectionPool::open(&params, 1, DEFAULT_CHUNK_SIZE).unwrap();
+
+    // Act
+    let stats = pool
+        .object_stats("KODUCHI", "STATS_SAMPLE", ObjectKind::Table)
+        .unwrap()
+        .unwrap();
+
+    // Assert: 0 バイトと取り違えない
+    assert_eq!(stats.num_rows, Some(120));
+    assert_eq!(stats.size, SegmentSize::PermissionDenied);
+}
+
+#[test]
+#[serial]
+fn 統計を持たない種別では問い合わせずに何も返さない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let view = pool
+        .object_stats("KODUCHI", "SESSION_ROLLUP", ObjectKind::View)
+        .unwrap();
+
+    // Assert
+    assert_eq!(view, None);
+}
+
+#[test]
+#[serial]
+fn 統計を読んでも結果セットは壊れない() {
+    // Arrange: 開いたままのカーソルを持たせてから統計を読む（ADR 0003）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    pool.execute(TAB, "select event_id from koduchi.events", &[])
+        .unwrap();
+
+    // Act
+    pool.object_stats("KODUCHI", "STATS_SAMPLE", ObjectKind::Table)
+        .unwrap();
+
+    // Assert
+    let chunk = pool.fetch_more(TAB).unwrap();
+    assert_eq!(chunk.rows.len(), DEFAULT_CHUNK_SIZE);
+}
+
+/// 実行結果からコンパイルの報告を取り出す（ADR 0045）。
+fn コンパイルの報告(pool: &ConnectionPool, sql: &str) -> Option<CompilationReport> {
+    match pool.execute(TAB, sql, &[]).unwrap().outcome {
+        ExecuteOutcome::Statement { compilation, .. } => compilation,
+        ExecuteOutcome::Query { .. } => panic!("問い合わせ以外の結果になるはず"),
+    }
+}
+
+/// 報告のうち、指定したオブジェクトの行だけを `(行, 桁, 文言)` で取り出す。
+fn オブジェクトの診断(
+    report: &CompilationReport,
+    name: &str,
+    object_type: &str,
+) -> Vec<(u32, u32, String)> {
+    report
+        .diagnostics
+        .iter()
+        .filter(|d| d.name == name && d.object_type == object_type)
+        .map(|d| (d.line, d.position, d.text.clone()))
+        .collect()
+}
+
+#[test]
+#[serial]
+fn コンパイルエラーのある手続きを作ると行と桁と文言が届く() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    let sql = "create or replace procedure koduchi_adr45_broken is\nbegin\n  nul;\nend;";
+
+    // Act
+    let report = コンパイルの報告(&pool, sql);
+    pool.execute(TAB, "drop procedure koduchi_adr45_broken", &[])
+        .unwrap();
+
+    // Assert
+    let report = report.expect("ORA-24344 を受けて報告が付くはず");
+    assert!(report.warning.contains("ORA-24344"), "{}", report.warning);
+    let 診断 = オブジェクトの診断(&report, "KODUCHI_ADR45_BROKEN", "PROCEDURE");
+    assert_eq!(
+        診断.first(),
+        Some(&(
+            3,
+            3,
+            String::from("PLS-00201: identifier 'NUL' must be declared")
+        ))
+    );
+    assert!(report
+        .diagnostics
+        .iter()
+        .all(|d| d.severity == DiagnosticSeverity::Error));
+}
+
+#[test]
+#[serial]
+fn 正しく作れた手続きにはコンパイルの報告が付かない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let report = コンパイルの報告(
+        &pool,
+        "create or replace procedure koduchi_adr45_ok is\nbegin\n  null;\nend;",
+    );
+    pool.execute(TAB, "drop procedure koduchi_adr45_ok", &[])
+        .unwrap();
+
+    // Assert
+    assert_eq!(report, None);
+}
+
+#[test]
+#[serial]
+fn 警告だけで有効に作れた手続きにはコンパイルの報告が付かない() {
+    // Arrange: `PLW-` の警告だけでは Oracle は ORA-24344 を返さない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    pool.execute(TAB, "alter session set plsql_warnings = 'ENABLE:ALL'", &[])
+        .unwrap();
+
+    // Act
+    let report = コンパイルの報告(
+        &pool,
+        "create or replace procedure koduchi_adr45_warn is\n  x number;\nbegin\n  null;\nend;",
+    );
+    pool.execute(TAB, "alter session set plsql_warnings = 'DISABLE:ALL'", &[])
+        .unwrap();
+    pool.execute(TAB, "drop procedure koduchi_adr45_warn", &[])
+        .unwrap();
+
+    // Assert
+    assert_eq!(report, None);
+}
+
+#[test]
+#[serial]
+fn パッケージ本体のエラーは本体の種別で届く() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    コンパイルの報告(
+        &pool,
+        "create or replace package koduchi_adr45_pkg is\n  procedure run;\nend;",
+    );
+
+    // Act
+    let report = コンパイルの報告(
+        &pool,
+        "create or replace package body koduchi_adr45_pkg is\n  procedure run is\n  begin\n    nul;\n  end;\nend;",
+    );
+    pool.execute(TAB, "drop package koduchi_adr45_pkg", &[])
+        .unwrap();
+
+    // Assert
+    let report = report.expect("本体のエラーでも報告が付くはず");
+    let 診断 = オブジェクトの診断(&report, "KODUCHI_ADR45_PKG", "PACKAGE BODY");
+    assert_eq!(診断.first().map(|(line, _, _)| *line), Some(4));
+    assert!(オブジェクトの診断(&report, "KODUCHI_ADR45_PKG", "PACKAGE").is_empty());
+}
+
+#[test]
+#[serial]
+fn コンパイルし直しで出たエラーも届く() {
+    // Arrange: `ALTER ... COMPILE` は CREATE の構文を持たないが、同じ警告が返る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+    コンパイルの報告(
+        &pool,
+        "create or replace procedure koduchi_adr45_recompile is\nbegin\n  nul;\nend;",
+    );
+
+    // Act
+    let report = コンパイルの報告(&pool, "alter procedure koduchi_adr45_recompile compile");
+    pool.execute(TAB, "drop procedure koduchi_adr45_recompile", &[])
+        .unwrap();
+
+    // Assert
+    let report = report.expect("コンパイルし直しでも報告が付くはず");
+    let 診断 = オブジェクトの診断(&report, "KODUCHI_ADR45_RECOMPILE", "PROCEDURE");
+    assert_eq!(診断.first().map(|(line, _, _)| *line), Some(3));
+}
+
+/// 段階 1 の結果から、`KODUCHI` のオブジェクト 1 つの無効の印を読む（ADR 0045）。
+fn 無効の印(
+    schemas: &[koduchi_lib::db::schema::SchemaNode],
+    name: &str,
+    kind: ObjectKind,
+) -> Option<bool> {
+    schemas
+        .iter()
+        .find(|schema| schema.name == "KODUCHI")?
+        .objects
+        .iter()
+        .find(|object| object.name == name && object.kind == kind)
+        .map(|object| object.invalid)
+}
+
+#[test]
+#[serial]
+fn 無効な手続きにはツリーで印が立つ() {
+    // Arrange: dev/oracle/initdb/010_invalid_objects.sql がわざと無効にしてある
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert_eq!(
+        無効の印(
+            &schemas,
+            "KODUCHI_ADR45_INVALID_PROC",
+            ObjectKind::Procedure
+        ),
+        Some(true)
+    );
+    assert_eq!(
+        無効の印(&schemas, "SAY_HELLO", ObjectKind::Procedure),
+        Some(false)
+    );
+}
+
+#[test]
+#[serial]
+fn 本体だけが無効なパッケージにも印が立つ() {
+    // Arrange: 仕様は有効で、本体だけが無効
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert
+    assert_eq!(
+        無効の印(&schemas, "KODUCHI_ADR45_INVALID_PKG", ObjectKind::Package),
+        Some(true)
+    );
+    assert_eq!(
+        無効の印(&schemas, "ORDER_STATS", ObjectKind::Package),
+        Some(false)
+    );
 }
