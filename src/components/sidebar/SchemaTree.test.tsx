@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import type { DefinitionTarget, IdentifierCase, SchemaNode, TableColumn } from '../../types/db'
@@ -948,5 +948,33 @@ describe('ツリーのキーボード操作', () => {
 
     // Assert
     expect(クリップボード.writeText).toHaveBeenCalledWith('koduchi')
+  })
+
+  it('無効なオブジェクトの行にだけ印が付く（ADR 0045）', async () => {
+    // Arrange
+    useSchemaStore.setState({
+      schemas: [
+        {
+          name: 'KODUCHI',
+          objectCount: 2,
+          objects: [
+            { name: 'BROKEN', kind: 'procedure', invalid: true },
+            { name: 'SAY_HELLO', kind: 'procedure', invalid: false },
+          ],
+        },
+      ],
+      columns: {},
+    })
+    renderTree()
+    await userEvent.click(screen.getByRole('button', { name: /KODUCHI/ }))
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: /プロシージャ/ }))
+
+    // Assert
+    const 壊れた行 = screen.getByRole('button', { name: /BROKEN/ })
+    const 正しい行 = screen.getByRole('button', { name: /SAY_HELLO/ })
+    expect(within(壊れた行).getByRole('img', { name: '無効（INVALID）' })).toBeInTheDocument()
+    expect(within(正しい行).queryByRole('img', { name: '無効（INVALID）' })).toBeNull()
   })
 })

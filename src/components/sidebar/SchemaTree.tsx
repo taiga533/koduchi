@@ -43,6 +43,7 @@ import {
   Boxes,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   Eye,
   Hash,
   Layers,
@@ -101,6 +102,8 @@ export type TreeRow =
       objectKind: ObjectKind
       expandable: boolean
       open: boolean
+      /** `STATUS = 'INVALID'` か（ADR 0045）。 */
+      invalid: boolean
     }
   | { kind: 'column'; key: string; name: string; typeName: string }
   | { kind: 'columnsLoading'; key: string }
@@ -303,6 +306,7 @@ export function flattenSchemas(
           objectKind: object.kind,
           expandable,
           open: objectOpen,
+          invalid: object.invalid ?? false,
         })
 
         if (!objectOpen) {
@@ -663,6 +667,18 @@ function Row({ row, focused, onToggle, onFocus }: RowProps) {
         </span>
         <Icon size={13} className="text-fg5 shrink-0" />
         <span className="flex-1 truncate">{row.name}</span>
+        {row.invalid ? (
+          // ツリーは取り直すまで古いままである（ADR 0007）。印も同じく、
+          // 直した後は再読み込みで消える（ADR 0045）。
+          <span
+            role="img"
+            aria-label="無効（INVALID）"
+            title="無効（INVALID）。コンパイルエラーがあります"
+            className="shrink-0 flex items-center"
+          >
+            <CircleAlert size={12} className="text-err" />
+          </span>
+        ) : null}
       </button>
     )
   }

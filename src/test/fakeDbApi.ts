@@ -13,6 +13,7 @@ import type {
   Chunk,
   ClientStatus,
   Column,
+  CompilationReport,
   ConnectionHealth,
   ConnectionParams,
   CsvOptions,
@@ -163,6 +164,7 @@ export const emptyResponse: ExecuteResponse = {
   elapsedMs: 0,
   notices: [],
   inTransaction: false,
+  compilation: null,
   discardedTab: null,
 }
 
@@ -294,18 +296,25 @@ export function queryResponse(
  *
  * @param affectedRows 影響した行数。行数の概念が無い文（DDL・PL/SQL ブロック
  *   など）では `null`
- * @param options 巻き添えで閉じられたタブ、未コミットかどうか
+ * @param options 巻き添えで閉じられたタブ、未コミットかどうか、コンパイルの
+ *   報告（ADR 0045）
  */
 export function statementResponse(
   affectedRows: number | null,
-  options: { discardedTab?: string | null; inTransaction?: boolean } = {},
+  options: {
+    discardedTab?: string | null
+    inTransaction?: boolean
+    compilation?: CompilationReport | null
+    notices?: string[]
+  } = {},
 ): ExecuteResponse {
   return {
     kind: 'statement',
     affectedRows,
     elapsedMs: 12,
-    notices: [],
+    notices: options.notices ?? [],
     inTransaction: options.inTransaction ?? false,
+    compilation: options.compilation ?? null,
     discardedTab: options.discardedTab ?? null,
   }
 }

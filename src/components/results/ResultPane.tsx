@@ -284,7 +284,11 @@ function FailureNotice({
           {progress.total} 文中 {progress.index} 文目で失敗しました。以降の文は実行していません。
         </p>
       ) : null}
-      <p className="text-12px text-err text-center m-0 max-w-560px break-words">{error}</p>
+      {/* コンパイルエラー（ADR 0045）は字下げした行で診断を並べるため、改行を
+          活かして左に揃える。1 行の文言は幅が縮むので中央に置いたときと変わらない。 */}
+      <p className="text-12px text-err text-left m-0 max-w-560px break-words whitespace-pre-wrap">
+        {error}
+      </p>
       {error ? <ErrorCopyButton text={error} /> : null}
       <p className="text-11.5px text-fg4 m-0">詳細はメッセージタブに残ります</p>
     </div>
