@@ -22,6 +22,7 @@ use crate::db::error::{DbError, DbErrorKind, DbResult};
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
+use crate::db::stats::ObjectStats;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -829,6 +830,24 @@ impl ConnectionPool {
         self.見張る(|| self.background_handle()?.object_ddl(owner, name, kind))
     }
 
+    /// 表 1 つの統計とセグメントの大きさを取る（ADR 0044）。
+    ///
+    /// 定義の取得と同じく、結果セットを保持していない接続で読む。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    pub fn object_stats(
+        &self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<Option<ObjectStats>> {
+        self.見張る(|| self.background_handle()?.object_stats(owner, name, kind))
+    }
+
     /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
     ///
     /// 結果セットを保持していない接続で読むため、利用者が見ている結果は
@@ -998,6 +1017,15 @@ mod tests {
             Err(断のエラー())
         }
 
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
+            Err(断のエラー())
+        }
+
         fn list_sessions(&mut self) -> DbResult<SessionOverview> {
             Err(断のエラー())
         }
@@ -1164,6 +1192,15 @@ mod tests {
                 kind,
                 parts: Vec::new(),
             })
+        }
+
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
+            Ok(None)
         }
 
         fn list_sessions(&mut self) -> DbResult<SessionOverview> {
@@ -1618,6 +1655,15 @@ mod tests {
             unimplemented!("カーソルの順序のテストでは使わない")
         }
 
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
+            unimplemented!("カーソルの順序のテストでは使わない")
+        }
+
         fn list_sessions(&mut self) -> DbResult<SessionOverview> {
             unimplemented!("カーソルの順序のテストでは使わない")
         }
@@ -1985,6 +2031,15 @@ mod tests {
             _name: &str,
             _kind: ObjectKind,
         ) -> DbResult<ObjectDdl> {
+            unimplemented!("中止のテストでは使わない")
+        }
+
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: ObjectKind,
+        ) -> DbResult<Option<ObjectStats>> {
             unimplemented!("中止のテストでは使わない")
         }
 

@@ -14,6 +14,7 @@ use crate::db::error::{DbError, DbResult};
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
+use crate::db::stats::ObjectStats;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -72,6 +73,13 @@ enum Command {
         name: String,
         kind: ObjectKind,
         respond: Sender<DbResult<ObjectDdl>>,
+    },
+    /// 表 1 つの統計とセグメントの大きさを取る（ADR 0044）。
+    ObjectStats {
+        owner: String,
+        name: String,
+        kind: ObjectKind,
+        respond: Sender<DbResult<Option<ObjectStats>>>,
     },
     /// セッションの一覧を取る（ADR 0017）。
     ListSessions {
@@ -447,6 +455,33 @@ impl ConnectionHandle {
         response.recv().map_err(|_| DbError::closed())?
     }
 
+    /// 表 1 つの統計とセグメントの大きさを取る（ADR 0044）。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    pub fn object_stats(
+        &self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<Option<ObjectStats>> {
+        let (respond, response) = mpsc::channel();
+
+        self.commands
+            .send(Command::ObjectStats {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                kind,
+                respond,
+            })
+            .map_err(|_| DbError::closed())?;
+
+        response.recv().map_err(|_| DbError::closed())?
+    }
+
     /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
     ///
     /// 結果セットのカーソルは開かないため、この接続が保持している結果は
@@ -628,6 +663,14 @@ where
                 respond,
             } => {
                 let _ = respond.send(driver.object_ddl(&owner, &name, kind));
+            }
+            Command::ObjectStats {
+                owner,
+                name,
+                kind,
+                respond,
+            } => {
+                let _ = respond.send(driver.object_stats(&owner, &name, kind));
             }
             Command::ListSessions { respond } => {
                 let _ = respond.send(driver.list_sessions());
@@ -853,6 +896,15 @@ mod tests {
                     sql: format!("create table {owner}.{name} (id number)"),
                 }],
             })
+        }
+
+        fn object_stats(
+            &mut self,
+            _owner: &str,
+            _name: &str,
+            _kind: crate::db::schema::ObjectKind,
+        ) -> DbResult<Option<crate::db::stats::ObjectStats>> {
+            Ok(None)
         }
 
         fn list_sessions(&mut self) -> DbResult<crate::db::sessions::SessionOverview> {
