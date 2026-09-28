@@ -6,6 +6,7 @@ import { createFakeDbApi, type FakeCalls } from '../../test/fakeDbApi'
 import { defaultAppearance } from '../../theme/appearance'
 import { defaultCsvOptions } from '../../types/db'
 import { useUiStore } from '../../stores/ui'
+import { defaultResultDisplay } from '../results/resultDisplay'
 import { SettingsPanel } from './SettingsPanel'
 
 let calls: FakeCalls
@@ -14,7 +15,11 @@ beforeEach(() => {
   const fake = createFakeDbApi()
   calls = fake.calls
   setDbApi(fake.api)
-  useUiStore.setState({ appearance: defaultAppearance, csvOptions: defaultCsvOptions })
+  useUiStore.setState({
+    appearance: defaultAppearance,
+    csvOptions: defaultCsvOptions,
+    resultDisplayDefaults: defaultResultDisplay,
+  })
   document.documentElement.removeAttribute('data-theme')
   document.documentElement.removeAttribute('data-editor-font-size')
 })
@@ -159,5 +164,20 @@ describe('SettingsPanel', () => {
 
     // Assert
     expect(閉じた).toBe(true)
+  })
+
+  it('結果の表示の既定を切り替えると settings.toml へ保存される（ADR 0048）', () => {
+    // Arrange
+    render(<SettingsPanel commands={[]} clientUnavailable={false} onClose={() => {}} />)
+
+    // Act
+    fireEvent.click(screen.getByRole('checkbox', { name: '数値を 3 桁で区切る' }))
+
+    // Assert
+    expect(useUiStore.getState().resultDisplayDefaults.thousandsSeparator).toBe(true)
+    expect(calls.saveAppSettings.at(-1)?.resultDisplay).toEqual({
+      thousandsSeparator: true,
+      showWhitespace: false,
+    })
   })
 })

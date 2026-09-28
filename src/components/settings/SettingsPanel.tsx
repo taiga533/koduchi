@@ -3,7 +3,7 @@
  *
  * 項目は ADR の「設定画面」節どおり、テーマ 3 択 / エディタの文字の大きさ 4 択 /
  * Oracle Instant Client のパス（未検出時のみ）/ 履歴の一括削除 / 罫線の有無 /
- * 行の高さ / キー割り当て（ADR 0037）の 7 つに限る。
+ * 行の高さ / キー割り当て（ADR 0037）/ 結果の表示調整の既定（ADR 0048）の 8 つに限る。
  */
 
 import { useState } from 'react'
@@ -60,6 +60,8 @@ export function SettingsPanel({ clientUnavailable, onClose, commands }: Settings
   const setGridLines = useUiStore((state) => state.setGridLines)
   const setRowHeight = useUiStore((state) => state.setRowHeight)
   const setEditorFontSize = useUiStore((state) => state.setEditorFontSize)
+  const resultDisplay = useUiStore((state) => state.resultDisplayDefaults)
+  const setResultDisplay = useUiStore((state) => state.setResultDisplayDefaults)
   const clearHistory = useHistoryStore((state) => state.clearAll)
 
   const [libDir, setLibDir] = useState('')
@@ -123,6 +125,31 @@ export function SettingsPanel({ clientUnavailable, onClose, commands }: Settings
             />
             結果テーブルに罫線を引く
           </label>
+        </Row>
+
+        <Row label="結果の表示の既定">
+          <div className="flex flex-col gap-6px">
+            <label className="flex items-center gap-8px text-12px text-fg cursor-pointer">
+              <input
+                type="checkbox"
+                checked={resultDisplay.thousandsSeparator}
+                onChange={(event) => setResultDisplay({ thousandsSeparator: event.target.checked })}
+              />
+              数値を 3 桁で区切る
+            </label>
+            <label className="flex items-center gap-8px text-12px text-fg cursor-pointer">
+              <input
+                type="checkbox"
+                checked={resultDisplay.showWhitespace}
+                onChange={(event) => setResultDisplay({ showWhitespace: event.target.checked })}
+              />
+              前後の空白・タブ・改行を記号で見せる
+            </label>
+            <p className="m-0 text-11px text-fg4">
+              見た目だけが変わり、コピーと CSV
+              は元の値のままです。結果ごとにはヘッダー右端のボタンで切り替えられます。
+            </p>
+          </div>
         </Row>
 
         {clientUnavailable ? (

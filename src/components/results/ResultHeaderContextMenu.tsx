@@ -7,10 +7,15 @@
  * ダブルクリックと同じ動きである。
  *
  * **選択は動かさない。**見出しは選択の単位ではない（ADR README「結果テーブル」）。
+ *
+ * 列の固定（ADR 0048）の「この列まで固定」「列の固定を解除」もここに置く。固定は
+ * 列の単位の操作であり、入口を見出しに寄せる。どちらも押しても意味の無いときは
+ * 出さない（既にその列までを固定している／何も固定していない）。
  */
 
-import { Columns3, Copy, MoveHorizontal } from 'lucide-react'
-import { ContextMenu } from '../menu/ContextMenu'
+import { Columns3, Copy, MoveHorizontal, Pin, PinOff } from 'lucide-react'
+import type { ContextMenuEntry } from '../menu/ContextMenu'
+import { ContextMenu, SEPARATOR } from '../menu/ContextMenu'
 
 interface ResultHeaderContextMenuProps {
   x: number
@@ -20,6 +25,10 @@ interface ResultHeaderContextMenuProps {
   onCopyName: () => void
   onCopyColumn: () => void
   onFit: () => void
+  /** この列までを固定する。既にこの列までを固定していれば `undefined`。 */
+  onFreeze?: () => void
+  /** 列の固定を解除する。何も固定していなければ `undefined`。 */
+  onUnfreeze?: () => void
   /** メニューを閉じる。 */
   onClose: () => void
 }
@@ -31,8 +40,32 @@ export function ResultHeaderContextMenu({
   onCopyName,
   onCopyColumn,
   onFit,
+  onFreeze,
+  onUnfreeze,
   onClose,
 }: ResultHeaderContextMenuProps) {
+  const freezing: ContextMenuEntry[] = [
+    ...(onFreeze
+      ? [
+          {
+            kind: 'item' as const,
+            label: 'この列まで固定',
+            icon: <Pin size={13} />,
+            onSelect: onFreeze,
+          },
+        ]
+      : []),
+    ...(onUnfreeze
+      ? [
+          {
+            kind: 'item' as const,
+            label: '列の固定を解除',
+            icon: <PinOff size={13} />,
+            onSelect: onUnfreeze,
+          },
+        ]
+      : []),
+  ]
   return (
     <ContextMenu
       x={x}
@@ -54,6 +87,7 @@ export function ResultHeaderContextMenu({
           icon: <MoveHorizontal size={13} />,
           onSelect: onFit,
         },
+        ...(freezing.length > 0 ? [SEPARATOR, ...freezing] : []),
       ]}
       onClose={onClose}
     />

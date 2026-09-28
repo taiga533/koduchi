@@ -10,6 +10,10 @@
  * 拾える。目で見えているものと探した結果が食い違わないための唯一の規則であり、
  * 「表示の裏に別の値がある」という状態を作らない。
  *
+ * 表示調整（ADR 0048）で描く文字が値と違うときは、**描いた文字と値の両方に当てる**。
+ * `1,234` と描かれたセルは `1,234` でも `1234` でも当たる。描いた文字だけに当てると
+ * 貼り付けてきた値で探せず、値だけに当てると見えている文字で探せない。
+ *
  * **探せるのは取得済みの行だけである。**結果は 1,000 行ずつの分割取得であり
  * （ADR 0003）、下までスクロールしていなければ手元には一部しか無い。だから
  * `SearchOutcome` は当たりと一緒に**何行を走査したか**を持ち、`matchSummary` は
@@ -20,12 +24,16 @@
 import type { Cell } from '../../types/db'
 import { CLOB_LIMIT_BYTES } from '../../types/db'
 import { displayText } from './cellText'
+import type { ResultDisplay } from './resultDisplay'
+import { defaultResultDisplay, formattedText } from './resultDisplay'
 import type { CellPosition, CellSelection } from './selection'
 
 /** 検索の当て方。 */
 export interface SearchOptions {
   /** 大文字と小文字を区別するか。既定は区別しない。 */
   caseSensitive: boolean
+  /** 効いている表示調整（ADR 0048）。省けば調整なしとして当てる。 */
+  display?: ResultDisplay
 }
 
 /**
@@ -43,6 +51,8 @@ export interface SearchOutcome {
   needle: string
   /** この結果を作ったときの大小の扱い。 */
   caseSensitive: boolean
+  /** この結果を作ったときの表示調整。 */
+  display: ResultDisplay
   /** 当たったセルの位置。行優先（上から下、左から右）に並ぶ。 */
   matches: CellPosition[]
   /** 走査した行数。取得済みの行数と等しい。 */
@@ -69,6 +79,7 @@ export interface SearchOutcome {
 export const EMPTY_OUTCOME: SearchOutcome = {
   needle: '',
   caseSensitive: false,
+  display: defaultResultDisplay,
   matches: [],
   scannedRows: 0,
   scannedTail: null,
@@ -93,20 +104,33 @@ export function isSearchable(needle: string): boolean {
  * セル 1 つが語を含むかを判定する。
  *
  * 当て先は**画面に出ている文字列**である。NULL のセルは `NULL` として当たる。
+ * 表示調整で描く文字が値と違うときは、その両方に当てる（冒頭の説明）。
  *
  * @param cell 判定するセル
  * @param needle 探す語（`caseSensitive` が偽なら小文字へ畳んで渡すこと）
  * @param caseSensitive 大文字と小文字を区別するか
+ * @param display 効いている表示調整
  */
-export function cellMatches(cell: Cell, needle: string, caseSensitive: boolean): boolean {
-  const text = displayText(cell)
-  return caseSensitive ? text.includes(needle) : text.toLowerCase().includes(needle)
+export function cellMatches(
+  cell: Cell,
+  needle: string,
+  caseSensitive: boolean,
+  display: ResultDisplay = defaultResultDisplay,
+): boolean {
+  const contains = (text: string) =>
+    caseSensitive ? text.includes(needle) : text.toLowerCase().includes(needle)
+  const value = displayText(cell)
+  if (contains(value)) {
+    return true
+  }
+  const drawn = formattedText(cell, display)
+  return drawn !== value && contains(drawn)
 }
 
 /**
  * 取得済みの行から当たりを拾う。前の結果があれば続きだけを走査する。
  *
- * 続きとして継ぎ足せるのは、**語と大小の扱いが同じ**で、かつ `previous` が今の
+ * 続きとして継ぎ足せるのは、**語と大小の扱いと表示調整が同じ**で、かつ `previous` が今の
  * `rows` の**先頭部分をちょうど走査し終えている**ときだけである。それ以外（語を
  * 打ち替えた・実行し直して行が入れ替わった）は先頭から数え直す。
  *
@@ -131,6 +155,7 @@ export function searchRows(
 
   const base = 継ぎ足せる(previous, rows, needle, options) ? previous : null
   const 当て先 = options.caseSensitive ? needle : needle.toLowerCase()
+  const display = options.display ?? defaultResultDisplay
 
   const matches = base ? [...base.matches] : []
   let sawTruncated = base?.sawTruncated ?? false
@@ -142,7 +167,7 @@ export function searchRows(
       if (cell.truncated) {
         sawTruncated = true
       }
-      if (cellMatches(cell, 当て先, options.caseSensitive)) {
+      if (cellMatches(cell, 当て先, options.caseSensitive, display)) {
         matches.push({ row, column })
       }
     }
@@ -151,6 +176,7 @@ export function searchRows(
   return {
     needle,
     caseSensitive: options.caseSensitive,
+    display,
     matches,
     scannedRows: rows.length,
     scannedTail: rows.length === 0 ? null : rows[rows.length - 1],
@@ -176,6 +202,13 @@ function 継ぎ足せる(
     return false
   }
   if (previous.needle !== needle || previous.caseSensitive !== options.caseSensitive) {
+    return false
+  }
+  const display = options.display ?? defaultResultDisplay
+  if (
+    previous.display.thousandsSeparator !== display.thousandsSeparator ||
+    previous.display.showWhitespace !== display.showWhitespace
+  ) {
     return false
   }
   if (rows.length < previous.scannedRows) {

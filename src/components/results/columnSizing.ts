@@ -149,20 +149,27 @@ export function resolveColumnWidth(column: Column, widths: ColumnWidths): string
  * 結果テーブル全体の `grid-template-columns` を組み立てる。
  *
  * 見出しと本文は別々のスクロール領域にあるため、同じ文字列を両方へ渡して桁を
- * 揃える（`ResultTable.tsx` のコメント）。
+ * 揃える（`ResultTable.tsx` のコメント）。固定した列は伸縮させず、`frozenOffsets`
+ * が足し上げたのと同じ幅で決め打ちにする（ずれると固定した列どうしが重なる）。
  *
  * @param columns 結果セットの列
  * @param widths 列名をキーにした幅の対応表
  * @param rowNumberWidth 行番号の列の幅（ピクセル）
+ * @param frozenCount 左から固定する列の数（ADR 0048）
  */
 export function gridTemplate(
   columns: Column[],
   widths: ColumnWidths,
   rowNumberWidth: number,
+  frozenCount = 0,
 ): string {
   return [
     `${rowNumberWidth}px`,
-    ...columns.map((column) => resolveColumnWidth(column, widths)),
+    ...columns.map((column, index) =>
+      index < frozenCount
+        ? `${fixedWidthOf(column, widths)}px`
+        : resolveColumnWidth(column, widths),
+    ),
   ].join(' ')
 }
 
@@ -184,4 +191,117 @@ export function resolveTableMinWidth(
     (total, column) => total + (widths[column.name] ?? columnMinWidth(column.kind)),
     rowNumberWidth,
   )
+}
+
+/**
+ * 固定した列の境目（ADR 0048）。「この列まで固定」を押した列を指す。
+ *
+ * 列名だけでなく位置も持つ。`SELECT a.id, b.id` のように同じ名前の列が並ぶ結果で、
+ * 2 つめの `ID` まで固定したのに 1 つめまでに縮まないようにするためである。
+ */
+export interface FrozenColumn {
+  name: string
+  index: number
+}
+
+/**
+ * 左から何列を固定するかを決める。行番号の列は数えない。
+ *
+ * 列幅と同じく列名で覚えているため、同じクエリを実行し直しても固定は保たれる。
+ * 覚えた位置に同じ名前の列があればそこまで、無ければ同じ名前の最初の列まで、
+ * どこにも無ければ固定しない（別の結果に古い固定を当てはめない）。
+ *
+ * @param columns 結果セットの列
+ * @param frozen 覚えている境目。無ければ `undefined`
+ */
+export function resolveFrozenCount(columns: Column[], frozen: FrozenColumn | undefined): number {
+  if (frozen === undefined) {
+    return 0
+  }
+  if (columns[frozen.index]?.name === frozen.name) {
+    return frozen.index + 1
+  }
+  const index = columns.findIndex((column) => column.name === frozen.name)
+  return index + 1
+}
+
+/**
+ * 列の幅をピクセルで決める。固定した列の位置を足し上げるのに使う。
+ *
+ * 伸縮する文字列の列（`minmax(160px, 1fr)`）も下限の幅で決め打ちにする。固定した
+ * 列は `position: sticky` の `left` を足し上げて置くため、描かれてみないと分からない
+ * 幅では位置が決まらない。
+ *
+ * @param column 対象の列
+ * @param widths 列名をキーにした幅の対応表
+ */
+function fixedWidthOf(column: Column, widths: ColumnWidths): number {
+  return widths[column.name] ?? columnMinWidth(column.kind)
+}
+
+/**
+ * 固定した列それぞれの左端の位置（ピクセル）を返す。
+ *
+ * `position: sticky` の `left` に渡す。先頭は行番号の列の右隣になる。
+ *
+ * @param columns 結果セットの列
+ * @param widths 列名をキーにした幅の対応表
+ * @param rowNumberWidth 行番号の列の幅（ピクセル）
+ * @param frozenCount 固定する列の数
+ */
+export function frozenOffsets(
+  columns: Column[],
+  widths: ColumnWidths,
+  rowNumberWidth: number,
+  frozenCount: number,
+): number[] {
+  const offsets: number[] = []
+  let left = rowNumberWidth
+  for (const column of columns.slice(0, frozenCount)) {
+    offsets.push(left)
+    left += fixedWidthOf(column, widths)
+  }
+  return offsets
+}
+
+/**
+ * 固定した列の右に残しておく幅（ピクセル）。
+ *
+ * 固定した列が表示幅をすべて埋めると、残りの列は横にスクロールしても固定した列の
+ * 陰を流れるだけで、どこにも見えなくなる。最低でも数値の列が 1 つ読める幅は空けておく。
+ */
+export const MIN_SCROLL_ROOM = 120
+
+/**
+ * 表示幅に収まるぶんだけに固定する列の数を減らす。
+ *
+ * 利用者が決めた境目（`resolveFrozenCount`）は覚えたまま、描くときにだけ減らす。
+ * ウィンドウや列幅を広げれば元の境目まで固定が戻り、減らした分を覚え直させない。
+ * 行番号の列だけでも収まらない狭さでは 1 列も固定しない。
+ *
+ * @param columns 結果セットの列
+ * @param widths 列名をキーにした幅の対応表
+ * @param rowNumberWidth 行番号の列の幅（ピクセル）
+ * @param frozenCount 利用者が決めた固定する列の数
+ * @param viewportWidth 本文の表示幅。測れていなければ `null`（減らさない）
+ */
+export function fittingFrozenCount(
+  columns: Column[],
+  widths: ColumnWidths,
+  rowNumberWidth: number,
+  frozenCount: number,
+  viewportWidth: number | null,
+): number {
+  if (viewportWidth === null) {
+    return frozenCount
+  }
+  const limit = viewportWidth - MIN_SCROLL_ROOM
+  let right = rowNumberWidth
+  for (let count = 0; count < frozenCount; count += 1) {
+    right += fixedWidthOf(columns[count], widths)
+    if (right > limit) {
+      return count
+    }
+  }
+  return frozenCount
 }
