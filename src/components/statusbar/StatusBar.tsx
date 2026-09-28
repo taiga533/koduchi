@@ -22,6 +22,9 @@
  * 切れている間はコミット / ロールバックのボタンを出さない。押しても届かない
  * うえ、未コミットの状態はもう残っていない。
  *
+ * 結果テーブルでセルを 2 つ以上選んでいれば、件数と合計などを右側に出す（ADR 0049）。
+ * 集計は専用のストアから読み、選択そのものは結果テーブルの中に閉じたままである。
+ *
  * 接続に色が付いていれば「接続中」の手前に色の印を置く（ADR 0015）。ここは
  * 補助であり、色そのものを届ける主役はタイトルバー上端の帯である。読み取り専用は
  * 色ではなく鍵のアイコン（形）で示し続ける。色は「どの接続か」、形は「何ができるか」
@@ -48,6 +51,7 @@ import { useExecutionStore } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { connectionColorVar } from '../../theme/connectionColors'
 import { useShortcutLabel } from '../../keybindings/context'
+import { SelectionStatsView } from './SelectionStatsView'
 
 interface StatusBarProps {
   /** 接続を切って接続を選ぶ画面へ戻る。 */
@@ -125,6 +129,7 @@ export function StatusBar({
       <span>UTF-8</span>
       {connection ? <span>Oracle</span> : null}
       <span className="flex-1" />
+      <SelectionStatsView />
       {status === 'connected' && staleness ? (
         <span data-testid="connection-staleness" title={staleness.title} className="text-fg5">
           {staleness.label}
