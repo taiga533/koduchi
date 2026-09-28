@@ -14,14 +14,19 @@
 //!
 //! 段階 2 は `ALL_TAB_COLUMNS` をスキーマ 1 つずつ引く。`ALL_TAB_COLUMNS` は
 //! 中規模のデータベースでも 10 万行を超えるため、接続時に一括取得はできない。
+//! コメント（`ALL_TAB_COMMENTS` / `ALL_COL_COMMENTS`）も段階 2 で引く（ADR 0043）。
+//! 段階 1 は全スキーマぶんを 1 度に取るため、`SYS` の辞書ビューに付いた
+//! 数千件のコメントまで拾ってしまう。
 //!
 //! 所有者が `PUBLIC` のオブジェクトは列挙しない。`PUBLIC` は `ALL_USERS` に
 //! 載らない擬似的な所有者であり、そこに数万件の公開シノニムがぶら下がる。
 
+use crate::db::definition::normalize_comment;
 use crate::db::error::DbResult;
 use crate::db::oracle::errors;
 use crate::db::schema::{
-    ObjectKind, ObjectKindFilter, SchemaFilter, SchemaNode, SchemaObject, TableColumn,
+    ObjectComment, ObjectKind, ObjectKindFilter, SchemaColumns, SchemaFilter, SchemaNode,
+    SchemaObject, TableColumn,
 };
 use crate::db::value::CellKind;
 use oracle::Connection;
@@ -333,7 +338,55 @@ pub fn listed_object_types(kinds: &ObjectKindFilter) -> String {
         .join(",")
 }
 
-/// 段階 2。スキーマ 1 つぶんの列情報を取る。
+/// 段階 2 の列の問い合わせ（ADR 0007）。コメントを読まないとき。
+const COLUMNS_SQL: &str = "select table_name, column_name, data_type, char_length,
+       data_precision, data_scale, nullable, cast(null as varchar2(1)) comments
+  from all_tab_columns
+ where owner = :owner
+ order by table_name, column_id";
+
+/// 段階 2 の列の問い合わせ。列のコメントを混ぜるとき（ADR 0043）。
+///
+/// 定義タブ（ADR 0033）と同じく `LEFT JOIN` で混ぜ、往復を増やさない。鍵は
+/// `(OWNER, TABLE_NAME, COLUMN_NAME)` の 3 つ揃いである。片方を欠くと列が
+/// 重複し、内部結合にするとコメントの無い表で列が丸ごと消える。
+const COLUMNS_WITH_COMMENTS_SQL: &str = "select c.table_name, c.column_name, c.data_type,
+       c.char_length, c.data_precision, c.data_scale, c.nullable, cc.comments
+  from all_tab_columns c
+  left join all_col_comments cc
+    on cc.owner = c.owner
+   and cc.table_name = c.table_name
+   and cc.column_name = c.column_name
+ where c.owner = :owner
+ order by c.table_name, c.column_id";
+
+/// スキーマ 1 つぶんのオブジェクトのコメントを取る問い合わせ（ADR 0043）。
+///
+/// 列の問い合わせへ混ぜると同じ 4000 文字が列の数だけ返るため、別に引く
+/// （ADR 0033 と同じ理由）。コメントの無い表も `ALL_TAB_COMMENTS` には 1 行
+/// 載るため、`NULL` をここで落として運ぶ量を減らす。
+const OBJECT_COMMENTS_SQL: &str = "select table_name, comments
+  from all_tab_comments
+ where owner = :owner and comments is not null
+ order by table_name";
+
+/// 段階 2 の列の問い合わせを選ぶ。
+///
+/// コメントを出さない設定では `ALL_COL_COMMENTS` へ行かない（ADR 0043）。
+/// 結合は列の数だけ効くため、見ないもののために払わない。
+///
+/// # 引数
+///
+/// * `with_comments` - 列のコメントを混ぜるか
+pub fn columns_sql(with_comments: bool) -> &'static str {
+    if with_comments {
+        COLUMNS_WITH_COMMENTS_SQL
+    } else {
+        COLUMNS_SQL
+    }
+}
+
+/// 段階 2。スキーマ 1 つぶんの列情報と、要ればコメントを取る。
 ///
 /// スキーマごとに分けて呼ぶのは、進捗（`列情報を読み込み中 8/23 スキーマ`）を
 /// 出しながら少しずつ流し込むためである。
@@ -342,29 +395,31 @@ pub fn listed_object_types(kinds: &ObjectKindFilter) -> String {
 ///
 /// * `connection` - 使う接続
 /// * `owner` - 対象のスキーマ名
-pub fn load_columns(connection: &Connection, owner: &str) -> DbResult<Vec<TableColumn>> {
-    let sql = "select table_name, column_name, data_type, char_length,
-                      data_precision, data_scale, nullable
-               from all_tab_columns
-               where owner = :owner
-               order by table_name, column_id";
+/// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
+pub fn load_columns(
+    connection: &Connection,
+    owner: &str,
+    with_comments: bool,
+) -> DbResult<SchemaColumns> {
+    type Row = (
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        String,
+        Option<String>,
+    );
 
     let rows = connection
-        .query_as::<(
-            String,
-            String,
-            String,
-            i64,
-            Option<i64>,
-            Option<i64>,
-            String,
-        )>(sql, &[&owner])
+        .query_as::<Row>(columns_sql(with_comments), &[&owner])
         .map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
     let mut columns = Vec::new();
 
     for row in rows {
-        let (object_name, name, data_type, char_length, precision, scale, nullable) =
+        let (object_name, name, data_type, char_length, precision, scale, nullable, comments) =
             row.map_err(|error| errors::map_execute_error("列情報を取得できませんでした", &error))?;
 
         columns.push(TableColumn {
@@ -373,12 +428,51 @@ pub fn load_columns(connection: &Connection, owner: &str) -> DbResult<Vec<TableC
             type_name: format_column_type(&data_type, char_length, precision, scale),
             nullable: nullable == "Y",
             kind: kind_of_type_name(&data_type),
-            // 段階 2 はコメントを読まない（ADR 0033）。定義タブだけが埋める。
-            comment: None,
+            comment: normalize_comment(comments),
         });
     }
 
-    Ok(columns)
+    let object_comments = if with_comments {
+        load_object_comments(connection, owner)?
+    } else {
+        Vec::new()
+    };
+
+    Ok(SchemaColumns {
+        columns,
+        object_comments,
+    })
+}
+
+/// スキーマ 1 つぶんの表・ビュー・マテビューのコメントを取る（ADR 0043）。
+///
+/// # 引数
+///
+/// * `connection` - 使う接続
+/// * `owner` - 対象のスキーマ名
+fn load_object_comments(connection: &Connection, owner: &str) -> DbResult<Vec<ObjectComment>> {
+    let rows = connection
+        .query_as::<(String, Option<String>)>(OBJECT_COMMENTS_SQL, &[&owner])
+        .map_err(|error| {
+            errors::map_execute_error("オブジェクトのコメントを取得できませんでした", &error)
+        })?;
+
+    let mut comments = Vec::new();
+
+    for row in rows {
+        let (object_name, raw) = row.map_err(|error| {
+            errors::map_execute_error("オブジェクトのコメントを取得できませんでした", &error)
+        })?;
+        // 空白だけのコメントは `is not null` を抜けてくる。
+        if let Some(comment) = normalize_comment(raw) {
+            comments.push(ObjectComment {
+                object_name,
+                comment,
+            });
+        }
+    }
+
+    Ok(comments)
 }
 
 #[cfg(test)]
@@ -602,6 +696,46 @@ mod tests {
                 ("ORDERS", ObjectKind::Index),
             ]
         );
+    }
+
+    #[test]
+    fn コメントを出さない設定では列のコメントを引きにいかない() {
+        // Arrange & Act
+        let sql = columns_sql(false);
+
+        // Assert
+        assert!(!sql.contains("all_col_comments"));
+    }
+
+    #[test]
+    fn 列のコメントは3つ揃いの鍵で外部結合する() {
+        // Arrange & Act
+        let sql = columns_sql(true);
+
+        // Assert: 内部結合にするとコメントの無い表で列が消える
+        assert!(sql.contains("left join all_col_comments"));
+        assert!(sql.contains("cc.owner = c.owner"));
+        assert!(sql.contains("cc.table_name = c.table_name"));
+        assert!(sql.contains("cc.column_name = c.column_name"));
+    }
+
+    #[test]
+    fn 列の問い合わせはコメントの有無で列の並びが変わらない() {
+        // Arrange: 同じ型の行として読むため、選ぶ列の数を揃えておく
+        let count = |sql: &str| {
+            let select = &sql[..sql.find("from").unwrap()];
+            select.matches(',').count()
+        };
+
+        // Act & Assert
+        assert_eq!(count(columns_sql(false)), count(columns_sql(true)));
+    }
+
+    #[test]
+    fn オブジェクトのコメントはコメントの付いたものだけを引く() {
+        // Arrange & Act & Assert
+        assert!(OBJECT_COMMENTS_SQL.contains("all_tab_comments"));
+        assert!(OBJECT_COMMENTS_SQL.contains("comments is not null"));
     }
 
     #[test]
