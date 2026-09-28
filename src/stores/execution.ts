@@ -53,6 +53,13 @@ export interface TabExecution {
    */
   isStatement: boolean
   error: string | null
+  /**
+   * `error` がコンパイルエラーの報告か（ADR 0045）。
+   *
+   * 報告は字下げした複数行であり、結果ペインは改行を活かして左に揃えて描く。
+   * ほかのエラーの見た目（中央揃えで折り返す 1 行）は変えない。
+   */
+  compilationFailed: boolean
   /** 続きを取り出している最中か。二重に取りにいかないための見張り。 */
   loadingMore: boolean
   /**
@@ -97,6 +104,7 @@ export const emptyExecution: TabExecution = {
   affectedRows: null,
   isStatement: false,
   error: null,
+  compilationFailed: false,
   loadingMore: false,
   progress: null,
 }
@@ -416,6 +424,8 @@ type StatementOutcome =
        * 起きている。例外で返った失敗では分からず `null` になる。
        */
       discardedTab: string | null
+      /** コンパイルエラーの報告による失敗か（ADR 0045）。 */
+      compilation: boolean
     }
 
 /**
@@ -566,6 +576,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
           message: compileError,
           elapsedMs: response.elapsedMs,
           discardedTab: response.discardedTab,
+          compilation: true,
         }
       }
 
@@ -605,7 +616,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
         errorMessage: message,
       })
 
-      return { ok: false, message, elapsedMs, discardedTab: null }
+      return { ok: false, message, elapsedMs, discardedTab: null, compilation: false }
     } finally {
       // 成功でも失敗でも、応答が返れば文はもう走っていない。
       set((state) => ({
@@ -645,6 +656,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
               ...emptyExecution,
               status: 'failed',
               error: outcome.message,
+              compilationFailed: outcome.compilation,
             })
 
         // 接続を明け渡すために閉じられたタブには、再実行を促す状態を残す。
@@ -735,6 +747,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => {
               ...emptyExecution,
               status: 'failed',
               error: outcome.message,
+              compilationFailed: outcome.compilation,
               elapsedMs: elapsedMs + outcome.elapsedMs,
               progress,
             })

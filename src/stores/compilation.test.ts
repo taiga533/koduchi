@@ -24,6 +24,7 @@ describe('formatCompilationReport', () => {
     const report = {
       warning: WARNING,
       diagnostics: [診断(), 診断({ text: 'PL/SQL: Statement ignored' })],
+      lookupError: null,
     }
 
     // Act
@@ -50,6 +51,7 @@ describe('formatCompilationReport', () => {
         診断({ name: 'PKG', objectType: 'PACKAGE' }),
         診断({ name: 'PKG', objectType: 'PACKAGE BODY' }),
       ],
+      lookupError: null,
     }
 
     // Act
@@ -73,6 +75,7 @@ describe('formatCompilationReport', () => {
           text: 'ORA-00942: table or view does not exist',
         }),
       ],
+      lookupError: null,
     }
 
     // Act
@@ -88,6 +91,7 @@ describe('formatCompilationReport', () => {
     const report = {
       warning: WARNING,
       diagnostics: [診断({ severity: 'warning', text: 'PLW-05018: unit omitted AUTHID' })],
+      lookupError: null,
     }
 
     // Act
@@ -97,9 +101,9 @@ describe('formatCompilationReport', () => {
     expect(text).toContain('  3 行 7 桁: PLW-05018: unit omitted AUTHID（警告）')
   })
 
-  it('行が見つからなくても問題なしとは言わない', () => {
+  it('行が見つからなくても問題なしとは言わず原因も決めつけない', () => {
     // Arrange: 権限で見えないなど。Oracle はエラーがあったと言っている
-    const report = { warning: WARNING, diagnostics: [] }
+    const report = { warning: WARNING, diagnostics: [], lookupError: null }
 
     // Act
     const text = formatCompilationReport(report)
@@ -109,7 +113,28 @@ describe('formatCompilationReport', () => {
       [
         'コンパイルエラーのため、オブジェクトは無効（INVALID）です',
         WARNING,
-        'ALL_ERRORS に該当する行が見つかりませんでした。権限の無いスキーマのオブジェクトかもしれません',
+        'ALL_ERRORS から該当する行を見つけられませんでした（原因は特定できません）。オブジェクトの状態は ALL_OBJECTS と ALL_ERRORS で確かめてください',
+      ].join('\n'),
+    )
+  })
+
+  it('読めなかったときは見つからなかったとは言わず読めなかった理由を出す', () => {
+    // Arrange: 報告の取得に `⌘.` の中止が当たった
+    const report = {
+      warning: WARNING,
+      diagnostics: [],
+      lookupError: 'コンパイルエラーの内容を読めませんでした: ORA-01013: user requested cancel',
+    }
+
+    // Act
+    const text = formatCompilationReport(report)
+
+    // Assert
+    expect(text).toBe(
+      [
+        'コンパイルエラーのため、オブジェクトは無効（INVALID）です',
+        WARNING,
+        'コンパイルエラーの内容を読めませんでした: ORA-01013: user requested cancel',
       ].join('\n'),
     )
   })

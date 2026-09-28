@@ -19,9 +19,14 @@ const HEADLINE = 'コンパイルエラーのため、オブジェクトは無�
  */
 const LINE_NOTE = '行と桁はオブジェクトのソース（ALL_SOURCE）の上の位置です'
 
-/** 報告に行が 1 つも無かったときの文言。 */
+/**
+ * 報告に行が 1 つも無かったときの文言。
+ *
+ * 見えない権限・時計の食い違いなど原因は幾つか考えられるが、小槌にはどれか
+ * 分からない。1 つに決めつけると、外れたときに利用者を違う方向へ向かわせる。
+ */
 const EMPTY_NOTE =
-  'ALL_ERRORS に該当する行が見つかりませんでした。権限の無いスキーマのオブジェクトかもしれません'
+  'ALL_ERRORS から該当する行を見つけられませんでした（原因は特定できません）。オブジェクトの状態は ALL_OBJECTS と ALL_ERRORS で確かめてください'
 
 /**
  * 報告をメッセージタブへ出す文言にする。
@@ -34,6 +39,12 @@ const EMPTY_NOTE =
  */
 export function formatCompilationReport(report: CompilationReport): string {
   const lines = [HEADLINE, report.warning]
+
+  // 読めなかったのと、読んで何も無かったのとは別の事実である。
+  if (report.lookupError !== null) {
+    lines.push(report.lookupError)
+    return lines.join('\n')
+  }
 
   if (report.diagnostics.length === 0) {
     lines.push(EMPTY_NOTE)

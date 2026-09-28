@@ -120,6 +120,12 @@ export interface CompilationReport {
   warning: string
   /** 実行の間に定義が変わったオブジェクトの `ALL_ERRORS`。空でありうる。 */
   diagnostics: CompileDiagnostic[]
+  /**
+   * `ALL_ERRORS` を読めなかったときの理由（`⌘.` の中止など）。読めたときは `null`。
+   *
+   * 読めなくても文そのものは走り切っているため、Rust 側はエラーにせずここに載せる。
+   */
+  lookupError: string | null
 }
 
 /** 実行結果と、その巻き添えで結果セットを閉じられたタブ。 */

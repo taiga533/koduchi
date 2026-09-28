@@ -1824,6 +1824,7 @@ describe('コンパイルエラー（ADR 0045）', () => {
         text: "PLS-00201: identifier 'NUL' must be declared",
       },
     ],
+    lookupError: null,
   }
 
   it('報告の付いた文は完了ではなく失敗として行と桁つきで出る', async () => {
@@ -1842,6 +1843,7 @@ describe('コンパイルエラー（ADR 0045）', () => {
     const execution = selectExecution(useExecutionStore.getState(), TAB)
     expect(execution.status).toBe('failed')
     expect(execution.error).toContain('KODUCHI.BROKEN（PROCEDURE）\n  3 行 3 桁: PLS-00201')
+    expect(execution.compilationFailed).toBe(true)
     const [entry] = useExecutionStore.getState().log
     expect(entry.error).toBe(execution.error)
     expect(entry.rowCount).toBeNull()
@@ -1920,5 +1922,49 @@ describe('コンパイルエラー（ADR 0045）', () => {
     // Assert
     expect(selectExecution(useExecutionStore.getState(), 'tab-a').status).toBe('discarded')
     expect(selectExecution(useExecutionStore.getState(), 'tab-b').status).toBe('failed')
+  })
+
+  it('報告を読めなかった文も失敗として出し未コミットの表示と通知は応答の値を使う', async () => {
+    // Arrange: 文は走り切っており、報告の取得だけが中止された
+    useExecutionStore.setState({ inTransaction: true })
+    const { api } = createFakeDbApi({
+      onExecute: () =>
+        statementResponse(null, {
+          compilation: {
+            ...報告,
+            diagnostics: [],
+            lookupError: 'コンパイルエラーの内容を読めませんでした: ORA-01013',
+          },
+          inTransaction: false,
+          notices: ['小槌からの通知'],
+        }),
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'create ...', '開発', [])
+
+    // Assert
+    const execution = selectExecution(useExecutionStore.getState(), TAB)
+    expect(execution.status).toBe('failed')
+    expect(execution.error).toContain('コンパイルエラーの内容を読めませんでした: ORA-01013')
+    expect(useExecutionStore.getState().inTransaction).toBe(false)
+    expect(useExecutionStore.getState().log[0].notices).toEqual(['小槌からの通知'])
+  })
+
+  it('例外で返った失敗はコンパイルエラーとして扱わない', async () => {
+    // Arrange
+    const { api } = createFakeDbApi({
+      onExecute: () => {
+        throw { kind: 'execute', message: 'ORA-00942' }
+      },
+    })
+    setDbApi(api)
+
+    // Act
+    await useExecutionStore.getState().execute('c1', TAB, 'select * from nowhere', '開発', [])
+
+    // Assert
+    expect(selectExecution(useExecutionStore.getState(), TAB).compilationFailed).toBe(false)
   })
 })
