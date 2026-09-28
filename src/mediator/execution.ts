@@ -102,6 +102,36 @@ function bindOccurrencesOf(run: PendingRun): BindOccurrence[] {
     : collectBindOccurrences(run.sql)
 }
 
+/** 実行を受け付けられる接続とタブ。 */
+interface RunContext {
+  connection: NonNullable<ReturnType<typeof useConnectionStore.getState>['connection']>
+  tabId: string
+}
+
+/**
+ * 今この実行に入れるかを決める（ADR 0047）。入れなければ `null`。
+ *
+ * 光らせる前の判定と、値が揃って実際に流す直前の判定の両方がここを通る。
+ * 2 か所で別々に見ると、流れないのに光る（表示が嘘をつく）経路が生まれる。
+ *
+ * 実行中のタブを弾くのは `execution` ストアの `execute` / `executeScript` の
+ * 関所と同じ条件である。ストアは黙って戻るため、先にここで見ないと光った後に
+ * 何も起きない。実行計画はストアが実行中を弾かないので、ここでも弾かない。
+ *
+ * @param kind 行う実行の種類
+ */
+function runContextFor(kind: PendingRun['kind']): RunContext | null {
+  const connection = useConnectionStore.getState().connection
+  const tabId = useTabStore.getState().activeTabId
+  if (!connection || !tabId) {
+    return null
+  }
+  if (kind !== 'plan' && useExecutionStore.getState().byTab[tabId]?.status === 'running') {
+    return null
+  }
+  return { connection, tabId }
+}
+
 /**
  * 値が揃った実行を行う。
  *
@@ -112,11 +142,11 @@ function bindOccurrencesOf(run: PendingRun): BindOccurrence[] {
  * @param binds バインド変数の値
  */
 async function runPending(run: PendingRun, binds: Bind[]): Promise<void> {
-  const connection = useConnectionStore.getState().connection
-  const tabId = useTabStore.getState().activeTabId
-  if (!connection || !tabId) {
+  const context = runContextFor(run.kind)
+  if (!context) {
     return
   }
+  const { connection, tabId } = context
 
   const execution = useExecutionStore.getState()
   const selectResultTab = useUiStore.getState().selectResultTab
@@ -205,6 +235,25 @@ export function currentSql(cursor: EditorCursor, selectionOnly: boolean): string
 }
 
 /**
+ * 流す文を光らせてから実行に取りかかる。
+ *
+ * 実行に入れないとき（未接続・同じタブが実行中）は光らせもしない。バインド
+ * 変数のダイアログで取り消されたときは光った後に何も流れないが、何を流すかを
+ * 見せてから尋ねるための光なので、それは残す（ADR 0047）。
+ *
+ * @param run 行う実行
+ * @param target 光らせる文
+ * @param screen 押された時点の画面
+ */
+function beginRun(run: PendingRun, target: RunTarget, screen: RunScreen): void {
+  if (!runContextFor(run.kind)) {
+    return
+  }
+  screen.highlight?.(target)
+  void startRun(run, screen.ask)
+}
+
+/**
  * `⌘⏎`。カーソル位置の文を実行する。
  *
  * @param screen 押された時点のカーソルと尋ね方
@@ -212,8 +261,7 @@ export function currentSql(cursor: EditorCursor, selectionOnly: boolean): string
 export function runStatement(screen: RunScreen): void {
   const target = targetOf('statement', screen.cursor)
   if (target && target.statements.length > 0) {
-    screen.highlight?.(target)
-    void startRun({ kind: 'execute', sql: target.statements[0].text }, screen.ask)
+    beginRun({ kind: 'execute', sql: target.statements[0].text }, target, screen)
   }
 }
 
@@ -228,14 +276,16 @@ export function runStatement(screen: RunScreen): void {
 export function runSelection(screen: RunScreen): void {
   const target = targetOf('selection', screen.cursor)
   const statements = target?.statements.map((statement) => statement.text) ?? []
-  if (target && statements.length > 0) {
-    screen.highlight?.(target)
+  if (!target || statements.length === 0) {
+    return
   }
-  if (statements.length === 1) {
-    void startRun({ kind: 'execute', sql: statements[0] }, screen.ask)
-  } else if (statements.length > 1) {
-    void startRun({ kind: 'script', statements }, screen.ask)
-  }
+  beginRun(
+    statements.length === 1
+      ? { kind: 'execute', sql: statements[0] }
+      : { kind: 'script', statements },
+    target,
+    screen,
+  )
 }
 
 /**
@@ -250,9 +300,8 @@ export function runSelection(screen: RunScreen): void {
 export function runScript(screen: RunScreen): void {
   const target = targetOf('script', screen.cursor)
   if (target && target.statements.length > 0) {
-    screen.highlight?.(target)
     const statements = target.statements.map((statement) => statement.text)
-    void startRun({ kind: 'script', statements }, screen.ask)
+    beginRun({ kind: 'script', statements }, target, screen)
   }
 }
 
@@ -270,8 +319,7 @@ const ACTUAL_PLAN_QUESTION =
  * @param screen 押された時点のカーソルと尋ね方
  */
 export async function runPlan(actual: boolean, screen: RunScreen): Promise<void> {
-  const tabId = useTabStore.getState().activeTabId
-  if (!useConnectionStore.getState().connection || !tabId) {
+  if (!runContextFor('plan')) {
     return
   }
   const target = targetOf(

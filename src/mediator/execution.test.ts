@@ -3,7 +3,7 @@ import { resetDbApi, setDbApi } from '../api/db'
 import { resetDialogApi, setDialogApi } from '../api/dialog'
 import { createFakeDbApi, emptyResponse } from '../test/fakeDbApi'
 import { createFakeDialogApi } from '../test/fakeDialogApi'
-import { SQLタブを一枚にする, 接続済みにする } from '../test/activeConnection'
+import { SQLタブを一枚にする, 接続済みにする, 未接続にする } from '../test/activeConnection'
 import { emptyExecution, useExecutionStore } from '../stores/execution'
 import { emptyBindInput, useTabStore } from '../stores/tab'
 import { useUiStore } from '../stores/ui'
@@ -559,6 +559,77 @@ describe('流す文を光らせる（ADR 0047）', () => {
 
     // Assert
     expect(光らせた).toEqual([])
+  })
+
+  it('未接続のときはどの経路でも光らせない（流れないため）', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'select 1 from dual' })
+    未接続にする()
+    const { screen, 光らせた } = 光らせる画面({ offset: 0, selectedText: 'select 1 from dual' })
+
+    // Act
+    runStatement(screen)
+    runSelection(screen)
+    runScript(screen)
+    await runPlan(false, screen)
+
+    // Assert
+    expect(光らせた).toEqual([])
+    expect(calls.execute).toEqual([])
+  })
+
+  it('同じタブが実行中のときは実行の 3 経路で光らせない（ストアが受け付けないため）', () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi({ onExecute: () => emptyResponse })
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'select 1 from dual' })
+    const tabId = useTabStore.getState().activeTabId!
+    useExecutionStore.setState({ byTab: { [tabId]: { ...emptyExecution, status: 'running' } } })
+    const { screen, 光らせた } = 光らせる画面({ offset: 0, selectedText: 'select 1 from dual' })
+
+    // Act
+    runStatement(screen)
+    runSelection(screen)
+    runScript(screen)
+
+    // Assert
+    expect(光らせた).toEqual([])
+    expect(calls.execute).toEqual([])
+  })
+
+  it('同じタブが実行中でも実行計画は取れるので光らせる', async () => {
+    // Arrange
+    const { api } = createFakeDbApi()
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'select 1 from dual' })
+    const tabId = useTabStore.getState().activeTabId!
+    useExecutionStore.setState({ byTab: { [tabId]: { ...emptyExecution, status: 'running' } } })
+    const { screen, 光らせた } = 光らせる画面(先頭)
+
+    // Act
+    await runPlan(false, screen)
+
+    // Assert
+    expect(本文(光らせた)).toEqual([['select 1 from dual']])
+  })
+
+  it('バインド変数のダイアログで取り消しても押した時点で光らせる（何を流すかを見せてから尋ねる）', async () => {
+    // Arrange
+    const { api, calls } = createFakeDbApi()
+    setDbApi(api)
+    SQLタブを一枚にする({ content: 'select * from t where id = :id' })
+    const 光らせた: RunTarget[] = []
+    const { ask, 尋ねた } = 尋ね方(false)
+
+    // Act
+    runStatement({ cursor: 先頭, ask, highlight: (target) => 光らせた.push(target) })
+
+    // Assert
+    await expect.poll(() => 尋ねた).toHaveLength(1)
+    expect(本文(光らせた)).toEqual([['select * from t where id = :id']])
+    expect(calls.execute).toEqual([])
   })
 
   it('定義タブを選んでいるときは光らせない', () => {
