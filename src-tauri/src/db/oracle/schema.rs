@@ -20,6 +20,7 @@
 //!
 //! 所有者が `PUBLIC` のオブジェクトは列挙しない。`PUBLIC` は `ALL_USERS` に
 //! 載らない擬似的な所有者であり、そこに数万件の公開シノニムがぶら下がる。
+//! ネストした表の格納表も列挙しない（`NOT_NESTED_TABLE_STORAGE`）。
 
 use crate::db::definition::normalize_comment;
 use crate::db::error::DbResult;
@@ -49,6 +50,19 @@ const OBJECT_VIEW_KINDS: [ObjectKind; 10] = [
     ObjectKind::Procedure,
     ObjectKind::Package,
 ];
+
+/// 段階 1 の `ALL_OBJECTS` からネストした表の格納表を落とす条件。
+///
+/// 格納表は `ALL_OBJECTS` に `TABLE` として載るが、Oracle の上では単独の表として
+/// 扱えない。列は `ALL_TAB_COLUMNS` にも出ず、`SELECT` は `ORA-22812`、
+/// `GET_DDL` は `ORA-31603` になる。ツリーに並べると、開いても何も見られない
+/// 定義タブと、実行すれば必ず失敗する補完の候補を生む。中身は親の表の列として
+/// 見るものであり、大きさも親の定義タブで数えている（ADR 0044）。
+///
+/// 表と同じ名前空間に居ないトリガーなどを巻き込まないよう、`TABLE` に限る。
+const NOT_NESTED_TABLE_STORAGE: &str = "not (o.object_type = 'TABLE' and exists (
+                 select 1 from all_nested_tables n
+                  where n.owner = o.owner and n.table_name = o.object_name))";
 
 /// Oracle が内蔵するスキーマの名前。
 ///
@@ -218,9 +232,10 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
     if !types.is_empty() {
         let listed = object_type_condition(&types);
         let sql = format!(
-            "select owner, object_name, object_type, status from all_objects
-             where {listed} and owner <> 'PUBLIC'
-             order by owner, object_name"
+            "select o.owner, o.object_name, o.object_type, o.status from all_objects o
+             where {listed} and o.owner <> 'PUBLIC'
+               and {NOT_NESTED_TABLE_STORAGE}
+             order by o.owner, o.object_name"
         );
 
         let objects = connection
