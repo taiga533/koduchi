@@ -9,9 +9,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../test/fakeDbApi'
 import { selectDefinition, useDefinitionStore, type DefinitionEntry } from './definition'
-import type { DefinitionTarget } from '../types/db'
+import type { DefinitionTarget, ObjectStats } from '../types/db'
 
 const 対象: DefinitionTarget = { owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' }
+
+const 統計: ObjectStats = {
+  numRows: 500,
+  lastAnalyzed: '2026-09-08 22:00',
+  daysSinceAnalyzed: 20,
+  stale: false,
+  partitioned: false,
+  indexOrganized: false,
+  temporary: false,
+  size: { status: 'measured', tableBytes: 65536, indexBytes: 65536, lobBytes: 0, segmentCount: 2 },
+}
 
 let calls: FakeCalls
 
@@ -193,6 +204,50 @@ describe('useDefinitionStore', () => {
 
     // Assert
     expect(selectDefinition(useDefinitionStore.getState(), 'tab-1')).toBeNull()
+  })
+
+  it('開いた時点で統計も定義と並べて取る', async () => {
+    // Arrange: 見出しに出すものは開いた時点で要る（ADR 0044）
+    窓口を据える({ stats: 統計 })
+
+    // Act
+    await useDefinitionStore.getState().open('c1', 'tab-1', 対象)
+
+    // Assert
+    const entry = タブの状態('tab-1')
+    expect(calls.objectStats).toEqual([
+      { id: 'c1', owner: 'KODUCHI', name: 'SHIPMENTS', kind: 'table' },
+    ])
+    expect(entry.statsStatus).toBe('ready')
+    expect(entry.stats).toEqual(統計)
+  })
+
+  it('統計の取得に失敗しても定義は読める', async () => {
+    // Arrange: DBA_SEGMENTS の重さや失敗で列も制約も見られなくなってはいけない
+    窓口を据える({ statsError: { kind: 'execute', message: 'ORA-01013' } })
+
+    // Act
+    await useDefinitionStore.getState().open('c1', 'tab-1', 対象)
+
+    // Assert
+    const entry = タブの状態('tab-1')
+    expect(entry.status).toBe('ready')
+    expect(entry.definition?.name).toBe('SHIPMENTS')
+    expect(entry.statsStatus).toBe('failed')
+    expect(entry.statsError).toContain('ORA-01013')
+  })
+
+  it('定義の取得に失敗しても統計は読める', async () => {
+    // Arrange
+    窓口を据える({ stats: 統計, definitionError: { kind: 'execute', message: 'ORA-00904' } })
+
+    // Act
+    await useDefinitionStore.getState().open('c1', 'tab-1', 対象)
+
+    // Assert
+    const entry = タブの状態('tab-1')
+    expect(entry.status).toBe('failed')
+    expect(entry.stats).toEqual(統計)
   })
 
   it('切断したときにすべて捨てる', async () => {

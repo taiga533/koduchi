@@ -61,6 +61,11 @@ pub struct HistoryQuery {
     /// SQL の部分一致で絞る語。
     #[serde(default)]
     pub search: Option<String>,
+    /// 成否で絞る（ADR 0046）。`None` なら成否を問わない。
+    ///
+    /// 件数の上限より先に効かせるため、取り出した後ではなく問い合わせで絞る。
+    #[serde(default)]
+    pub succeeded: Option<bool>,
     /// 取り出す最大件数。
     pub limit: u32,
 }
@@ -305,7 +310,7 @@ impl HistoryStore {
     pub fn list(&self, query: &HistoryQuery) -> Result<Vec<HistoryEntry>, DbError> {
         let connection = self.locked();
 
-        // 条件は 2 つとも省略できるため、`is null or …` で分岐を SQL 側へ寄せる。
+        // 条件はどれも省略できるため、`is null or …` で分岐を SQL 側へ寄せる。
         let mut statement = connection
             .prepare(
                 "select id, sql, connection_name, started_at, elapsed_ms,
@@ -313,6 +318,7 @@ impl HistoryStore {
                  from query_history
                  where (?1 is null or connection_name = ?1)
                    and (?2 is null or sql like ?2 escape '\\')
+                   and (?4 is null or succeeded = ?4)
                  order by started_at desc, id desc
                  limit ?3",
             )
@@ -325,7 +331,7 @@ impl HistoryStore {
 
         let rows = statement
             .query_map(
-                params![query.connection_name, pattern, query.limit],
+                params![query.connection_name, pattern, query.limit, query.succeeded],
                 |row| {
                     Ok(HistoryEntry {
                         id: row.get(0)?,
@@ -676,6 +682,7 @@ mod tests {
         HistoryQuery {
             connection_name: None,
             search: None,
+            succeeded: None,
             limit: 100,
         }
     }
@@ -813,6 +820,93 @@ mod tests {
 
         // Assert
         assert_eq!(listed.len(), 1);
+    }
+
+    /// 成功と失敗を 1 件ずつ積んだ保管庫を作る。
+    fn 成功と失敗を積む() -> HistoryStore {
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .record(&履歴を作る("成功した SQL", "開発", 1))
+            .unwrap();
+        let mut failed = 履歴を作る("失敗した SQL", "開発", 2);
+        failed.succeeded = false;
+        store.record(&failed).unwrap();
+        store
+    }
+
+    #[test]
+    fn 失敗のみで絞ると失敗した履歴だけが返る() {
+        // Arrange
+        let store = 成功と失敗を積む();
+
+        // Act
+        let listed = store
+            .list(&HistoryQuery {
+                succeeded: Some(false),
+                ..全件()
+            })
+            .unwrap();
+
+        // Assert
+        let sqls: Vec<&str> = listed.iter().map(|entry| entry.sql.as_str()).collect();
+        assert_eq!(sqls, vec!["失敗した SQL"]);
+    }
+
+    #[test]
+    fn 成功のみで絞ると成功した履歴だけが返る() {
+        // Arrange
+        let store = 成功と失敗を積む();
+
+        // Act
+        let listed = store
+            .list(&HistoryQuery {
+                succeeded: Some(true),
+                ..全件()
+            })
+            .unwrap();
+
+        // Assert
+        let sqls: Vec<&str> = listed.iter().map(|entry| entry.sql.as_str()).collect();
+        assert_eq!(sqls, vec!["成功した SQL"]);
+    }
+
+    #[test]
+    fn 成否の絞り込みは件数の上限より先に効く() {
+        // Arrange
+        let store = HistoryStore::open_in_memory().unwrap();
+        let mut failed = 履歴を作る("古い失敗", "開発", 1);
+        failed.succeeded = false;
+        store.record(&failed).unwrap();
+        for index in 2..5 {
+            store
+                .record(&履歴を作る("新しい成功", "開発", index))
+                .unwrap();
+        }
+
+        // Act
+        let listed = store
+            .list(&HistoryQuery {
+                succeeded: Some(false),
+                limit: 2,
+                ..全件()
+            })
+            .unwrap();
+
+        // Assert
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].sql, "古い失敗");
+    }
+
+    #[test]
+    fn 成否を省いた古い呼び出しの形でも読み取れる() {
+        // Arrange
+        let json = r#"{"connectionName":null,"search":null,"limit":10}"#;
+
+        // Act
+        let query: HistoryQuery = serde_json::from_str(json).unwrap();
+
+        // Assert
+        assert_eq!(query.succeeded, None);
     }
 
     #[test]

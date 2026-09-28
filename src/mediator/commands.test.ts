@@ -249,6 +249,30 @@ describe('runCommand', () => {
     expect(screen.記録.整形).toBe(1)
   })
 
+  it.each(['run', 'run-selection', 'run-script'])(
+    'パレットやメニューからの %s でも流す文をエディタで光らせる（ADR 0047）',
+    (id) => {
+      // Arrange
+      const { api } = createFakeDbApi()
+      setDbApi(api)
+      useTabStore
+        .getState()
+        .updateContent(useTabStore.getState().activeTabId!, 'select 1 from dual')
+      const 光らせた: string[][] = []
+      const screen: CommandScreen = {
+        ...画面を作る(),
+        cursor: () => ({ offset: 0, selectedText: 'select 1 from dual' }),
+        highlightRun: (target) => 光らせた.push(target.statements.map((s) => s.text)),
+      }
+
+      // Act
+      runCommand(commandById(id), screen)
+
+      // Assert
+      expect(光らせた).toEqual([['select 1 from dual']])
+    },
+  )
+
   it('コミットは今の接続へ送る', async () => {
     // Arrange
     const { api, calls } = createFakeDbApi()
