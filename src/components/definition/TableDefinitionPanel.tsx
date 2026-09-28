@@ -14,6 +14,10 @@
  * 見出しの下に、列のコメントは列の内訳の 5 つめの欄に出す。内訳を 5 つめに
  * 増やしてはいない（ADR 0019 の「内訳は 4 つで並びは固定」はそのままである）。
  *
+ * **表の統計とセグメントの大きさも見出しに出す**（ADR 0044）。表を開く前に
+ * 「全件 SELECT してよい大きさか」「統計が古くないか」に答えるためである。
+ * 取得は定義と別のコマンドで、失敗しても内訳は見られる。
+ *
  * DDL は DDL の内訳を開いたときに初めて取る（ADR 0019）。
  * `DBMS_METADATA.GET_DDL` の権限が無いというだけで、列も制約も索引も
  * 見られなくなってはいけない。
@@ -35,7 +39,13 @@ import {
   useDefinitionStore,
   type DefinitionTab,
 } from '../../stores/definition'
-import type { ObjectDefinition, TableColumn, TableConstraint, TableIndex } from '../../types/db'
+import type {
+  ObjectDefinition,
+  ObjectStats,
+  TableColumn,
+  TableConstraint,
+  TableIndex,
+} from '../../types/db'
 import { CONSTRAINT_KIND_LABELS, OBJECT_KIND_LABELS } from '../../types/db'
 import {
   filterColumns,
@@ -57,6 +67,7 @@ import {
   describeDefinitionCopy,
   type DefinitionCopy,
 } from './definitionCopy'
+import { buildStatsItems, type StatsItem } from './definitionStats'
 
 interface TableDefinitionPanelProps {
   /** 接続の識別子。DDL の内訳を開いたときの取得に使う。 */
@@ -74,7 +85,19 @@ export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPan
     return null
   }
 
-  const { target, definition, ddl, status, error, permissionDenied, search, tab } = entry
+  const {
+    target,
+    definition,
+    ddl,
+    status,
+    error,
+    permissionDenied,
+    stats,
+    statsStatus,
+    statsError,
+    search,
+    tab,
+  } = entry
 
   // 写すのは今開いている内訳の、今画面に出ているものである（`definitionCopy.ts`）。
   const コピー = buildDefinitionCopy(tab, definition, ddl, search)
@@ -95,6 +118,7 @@ export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPan
         {definition?.comment ? (
           <p className="m-0 text-11.5px text-fg3 leading-[1.6] break-all">{definition.comment}</p>
         ) : null}
+        <StatsLine status={statsStatus} stats={stats} error={statsError} />
       </div>
 
       <div className="flex items-center gap-10px">
@@ -149,6 +173,58 @@ export function TableDefinitionPanel({ connectionId, tabId }: TableDefinitionPan
         search={search}
       />
     </section>
+  )
+}
+
+/** 項目の色の調子から文字の色を引く（ADR 0008。色の値はトークン側が持つ）。 */
+const TONE_CLASS: Record<StatsItem['tone'], string> = {
+  normal: 'text-fg3',
+  warn: 'text-warn',
+  muted: 'text-fg5',
+}
+
+interface StatsLineProps {
+  status: string
+  stats: ObjectStats | null
+  error: string | null
+}
+
+/**
+ * 見出しの下に並べる、表の統計とセグメントの大きさ（ADR 0044）。
+ *
+ * **失敗しても内訳は見られる。**ここに出るのは失敗の一言だけで、列も制約も
+ * そのまま出る。統計を持たない種別（ビューなど）では何も出さない。
+ *
+ * 補足（「統計時点の行数であり今の行数ではない」など）は `title` に回す。
+ * 見出しを 1 行に収め、名前とコメントより目立たせないためである。値の側に
+ * 「約」と「統計時点」を書いてあるため、補足を読まなくても取り違えない。
+ */
+function StatsLine({ status, stats, error }: StatsLineProps) {
+  if (status === 'loading') {
+    return <p className="m-0 text-10.5px text-fg5">統計を読み込んでいます…</p>
+  }
+
+  if (status === 'failed') {
+    return <p className="m-0 text-10.5px text-err break-all">統計を取得できませんでした: {error}</p>
+  }
+
+  if (stats === null) {
+    return null
+  }
+
+  return (
+    <dl aria-label="表の統計" className="m-0 flex flex-wrap items-baseline gap-x-14px gap-y-2px">
+      {buildStatsItems(stats).map((item) => (
+        <div
+          key={item.label}
+          className="flex items-baseline gap-5px text-10.5px"
+          title={item.note ?? undefined}
+        >
+          <dt className="text-fg5">{item.label}</dt>
+          <dd className={`m-0 tabular-nums ${TONE_CLASS[item.tone]}`}>{item.value}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }
 
@@ -359,6 +435,11 @@ function PanelBody({
  * コメントは**折り返して全文を出す。**制約の「参照先 / 条件」が同じく
  * `VARCHAR2(4000)` を折り返しているのと揃えてある。`…` で省くと、読みにくる
  * ために開いた欄が読めなくなる（ADR 0021 の「黙って切り詰めない」）。
+ *
+ * **列名は折り返さない**（ADR 0044）。表の幅は各欄の中身の長さに応じて
+ * 配られるため、`break-all` のままでは長いコメントが列名の欄を押し潰し、
+ * `SHIPMENT_ID` が途中で折れうる。折り返すのはコメントの欄だけにし、狭い窓では表ごと横へ
+ * スクロールさせる。
  */
 function ColumnTable({ columns, search }: { columns: TableColumn[]; search: string }) {
   const 絞り込み済み = useMemo(() => filterColumns(columns, search), [columns, search])
@@ -391,13 +472,15 @@ function ColumnTable({ columns, search }: { columns: TableColumn[]; search: stri
               )}
             >
               <td className="py-6px pr-8px text-fg5 tabular-nums">{columns.indexOf(column) + 1}</td>
-              <td className="py-6px pr-8px break-all">{column.name}</td>
+              <td className="py-6px pr-8px whitespace-nowrap">{column.name}</td>
               <td className="py-6px pr-8px whitespace-nowrap text-fg3">{column.typeName}</td>
               <td className="py-6px pr-8px whitespace-nowrap text-fg4">
                 {column.nullable ? '可' : 'NOT NULL'}
               </td>
               {コメントを出す ? (
-                <td className="py-6px break-all text-fg3 leading-[1.6]">{column.comment ?? '—'}</td>
+                <td className="py-6px min-w-200px break-all text-fg3 leading-[1.6]">
+                  {column.comment ?? '—'}
+                </td>
               ) : null}
             </tr>
           ))}

@@ -30,6 +30,7 @@ import type {
   ObjectDdl,
   ObjectDefinition,
   ObjectKind,
+  ObjectStats,
   SavedConnection,
   SavedQuery,
   SavedQueryQuery,
@@ -142,6 +143,19 @@ export interface DbApi {
    * 区分でエラーになる。空の定義ではない。
    */
   objectDdl(id: string, owner: string, name: string, kind: ObjectKind): Promise<ObjectDdl>
+  /**
+   * 表 1 つの統計とセグメントの大きさを取る（ADR 0044）。
+   *
+   * 統計もセグメントも持たない種別（ビューやシーケンスなど）では `null` が
+   * 返る。セグメントを読む権限が無いときは失敗せず、`size.status` が
+   * `permissionDenied` になる。
+   */
+  objectStats(
+    id: string,
+    owner: string,
+    name: string,
+    kind: ObjectKind,
+  ): Promise<ObjectStats | null>
 
   /**
    * セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
@@ -239,6 +253,7 @@ const tauriDbApi: DbApi = {
   objectDefinition: (id, owner, name, kind) =>
     invoke('object_definition', { id, owner, name, kind }),
   objectDdl: (id, owner, name, kind) => invoke('object_ddl', { id, owner, name, kind }),
+  objectStats: (id, owner, name, kind) => invoke('object_stats', { id, owner, name, kind }),
 
   listSessions: (id) => invoke('list_sessions', { id }),
   killSession: (id, sid, serial) => invoke('kill_session', { id, sid, serial }),
