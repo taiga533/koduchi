@@ -52,19 +52,56 @@ pub struct ObjectStats {
 pub enum SegmentSize {
     /// 測れた。
     Measured {
-        /// 表の本体。パーティションは足し上げ、索引構成表では主キーの索引を含む。
+        /// 表の本体。パーティションは足し上げ、索引構成表では主キーの索引と
+        /// overflow を、ネストした表では入れ子の行の格納表を含む。
         table_bytes: u64,
         /// 表に付いた索引（LOB の索引を除く）。
         index_bytes: u64,
         /// LOB のセグメントと、その索引。
         lob_bytes: u64,
-        /// 数えたセグメントの数。0 なら、まだセグメントが作られていない。
+        /// 数えたセグメントの数。0 なら、まだセグメントが作られていないか、
+        /// `TRUNCATE … DROP ALL STORAGE` で解放されている。
         segment_count: u64,
     },
     /// `DBA_SEGMENTS` を読む権限が無い。
     PermissionDenied,
     /// 一時表であり、永続のセグメントを持たない。
-    NotStored,
+    Temporary,
+    /// 外部表であり、行はデータベースの外のファイルにある。
+    External,
+    /// クラスタ化表であり、行はクラスタのセグメントに他の表と一緒に入っている。
+    /// 表 1 つぶんの大きさは測れない。
+    Clustered {
+        /// 行が入っているクラスタの名前。
+        cluster_name: String,
+    },
+}
+
+/// 表の作りから、セグメントを測っても表の大きさにならない理由を返す（ADR 0044）。
+///
+/// **これらの表はセグメントを 1 つも持たないか、他の表と共有している。**
+/// そのまま測ると「0 個」になり、行が入っているのに「セグメントが無い」と
+/// 言うことになる。測る前に見分け、問い合わせにも行かない。
+///
+/// # 引数
+///
+/// * `temporary` - 一時表か（`ALL_TABLES.TEMPORARY`）
+/// * `external` - 外部表か（`ALL_TABLES.EXTERNAL`）
+/// * `cluster_name` - 行が入っているクラスタ（`ALL_TABLES.CLUSTER_NAME`）
+pub fn unmeasurable_size(
+    temporary: bool,
+    external: bool,
+    cluster_name: Option<&str>,
+) -> Option<SegmentSize> {
+    if temporary {
+        return Some(SegmentSize::Temporary);
+    }
+    if external {
+        return Some(SegmentSize::External);
+    }
+    cluster_name.map(|name| SegmentSize::Clustered {
+        cluster_name: name.to_string(),
+    })
 }
 
 /// セグメント 1 つが何の一部か（ADR 0044）。
@@ -229,6 +266,48 @@ mod tests {
                 lob_bytes: 0,
                 segment_count: 0,
             }
+        );
+    }
+
+    #[test]
+    fn 普通の表はセグメントを測る() {
+        // Arrange & Act & Assert
+        assert_eq!(unmeasurable_size(false, false, None), None);
+    }
+
+    #[test]
+    fn 一時表と外部表とクラスタ化表は測らずに理由を返す() {
+        // Arrange & Act & Assert: どれもセグメントを 0 個と数えてしまう
+        assert_eq!(
+            unmeasurable_size(true, false, None),
+            Some(SegmentSize::Temporary)
+        );
+        assert_eq!(
+            unmeasurable_size(false, true, None),
+            Some(SegmentSize::External)
+        );
+        assert_eq!(
+            unmeasurable_size(false, false, Some("C_ORDERS")),
+            Some(SegmentSize::Clustered {
+                cluster_name: String::from("C_ORDERS")
+            })
+        );
+    }
+
+    #[test]
+    fn クラスタの名前はキャメルケースで送る() {
+        // Arrange
+        let size = SegmentSize::Clustered {
+            cluster_name: String::from("C_ORDERS"),
+        };
+
+        // Act
+        let json = serde_json::to_value(&size).unwrap();
+
+        // Assert
+        assert_eq!(
+            json,
+            serde_json::json!({ "status": "clustered", "clusterName": "C_ORDERS" })
         );
     }
 

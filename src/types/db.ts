@@ -734,13 +734,20 @@ export type SegmentSize =
       indexBytes: number
       /** LOB のセグメントと、その索引。 */
       lobBytes: number
-      /** 数えたセグメントの数。0 なら、まだセグメントが作られていない。 */
+      /**
+       * 数えたセグメントの数。0 なら、まだセグメントが作られていないか
+       * `TRUNCATE … DROP ALL STORAGE` で解放されている。
+       */
       segmentCount: number
     }
   /** セグメントを読む権限が無い（他人の表で `DBA_SEGMENTS` が読めない）。 */
   | { status: 'permissionDenied' }
   /** 一時表であり、永続のセグメントを持たない。 */
-  | { status: 'notStored' }
+  | { status: 'temporary' }
+  /** 外部表であり、行はデータベースの外のファイルにある。 */
+  | { status: 'external' }
+  /** クラスタ化表。行はクラスタのセグメントに他の表と一緒に入り、表だけの大きさは測れない。 */
+  | { status: 'clustered'; clusterName: string }
 
 /**
  * 表 1 つの統計とセグメントの大きさ（ADR 0044）。

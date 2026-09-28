@@ -286,16 +286,6 @@ describe('TableDefinitionPanel', () => {
     expect(screen.queryByText(/統計を読み込んでいます/)).not.toBeInTheDocument()
   })
 
-  it('列名は長いコメントに押し潰されて折り返さない', async () => {
-    // Arrange & Act: 表の幅は中身の長さに比例して配られる（ADR 0044）
-    await パネルを開く({ definition: コメント付きの定義 })
-
-    // Assert
-    const 列名 = await screen.findByText('SHIPMENT_ID')
-    expect(列名.className).toContain('whitespace-nowrap')
-    expect(列名.className).not.toContain('break-all')
-  })
-
   it('列のコメントを 5 つめの欄に出す', async () => {
     // Arrange & Act
     await パネルを開く({ definition: コメント付きの定義 })

@@ -2355,7 +2355,78 @@ fn 一時表はセグメントを測らない() {
 
     // Assert
     assert!(stats.temporary);
-    assert_eq!(stats.size, SegmentSize::NotStored);
+    assert_eq!(stats.size, SegmentSize::Temporary);
+}
+
+#[test]
+#[serial]
+fn クラスタ化表は行があってもセグメントが無いとは言わない() {
+    // Arrange: 行はクラスタのセグメントに他の表と一緒に入る（009_table_stats.sql）
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_CLUSTERED");
+
+    // Assert
+    assert_eq!(
+        stats.size,
+        SegmentSize::Clustered {
+            cluster_name: String::from("STATS_CLUSTER")
+        }
+    );
+}
+
+#[test]
+#[serial]
+fn 外部表はセグメントを測らない() {
+    // Arrange
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_EXTERNAL");
+
+    // Assert
+    assert_eq!(stats.size, SegmentSize::External);
+}
+
+#[test]
+#[serial]
+fn 索引構成表のoverflowは表に数える() {
+    // Arrange: overflow は `SYS_IOT_OVER_*` という別の名前のセグメントに入る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_IOT_OVERFLOW");
+
+    // Assert: 主キーの索引と overflow の 2 つとも表
+    let (table, index, _, count) = 測れた大きさ(&stats);
+    assert_eq!(count, 2);
+    assert_eq!(index, 0);
+    assert!(table > 65_536);
+}
+
+#[test]
+#[serial]
+fn ネストした表の格納表は表に数える() {
+    // Arrange: 入れ子の行は `NESTED TABLE` 区分の別のセグメントに入る
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let stats = 統計を引く(&pool, "STATS_NESTED");
+
+    // Assert: 親と格納表のどちらも最初のエクステント（64 KB）を持つため、格納表を
+    // 取りこぼすと表は 64 KB になる。親に付く入れ子の識別子の索引は索引に数える
+    let (table, index, _, _) = 測れた大きさ(&stats);
+    assert!(table >= 2 * 65_536);
+    assert!(index > 0);
 }
 
 #[test]

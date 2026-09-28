@@ -37,6 +37,7 @@ import {
   DEFINITION_TAB_LABELS,
   selectDefinition,
   useDefinitionStore,
+  type DefinitionStatus,
   type DefinitionTab,
 } from '../../stores/definition'
 import type {
@@ -184,7 +185,7 @@ const TONE_CLASS: Record<StatsItem['tone'], string> = {
 }
 
 interface StatsLineProps {
-  status: string
+  status: DefinitionStatus
   stats: ObjectStats | null
   error: string | null
 }
@@ -478,8 +479,9 @@ function ColumnTable({ columns, search }: { columns: TableColumn[]; search: stri
                 {column.nullable ? '可' : 'NOT NULL'}
               </td>
               {コメントを出す ? (
-                <td className="py-6px min-w-200px break-all text-fg3 leading-[1.6]">
-                  {column.comment ?? '—'}
+                <td className="py-6px break-all text-fg3 leading-[1.6]">
+                  {/* `<td>` の `min-width` は CSS 2.1 で未定義のため、中身の箱に持たせる。 */}
+                  <div className="min-w-200px">{column.comment ?? '—'}</div>
                 </td>
               ) : null}
             </tr>

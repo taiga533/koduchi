@@ -149,18 +149,33 @@ export function describeSegmentSize(size: SegmentSize): Pick<StatsItem, 'value' 
         tone: 'muted',
         note: '他のスキーマの表の大きさは DBA_SEGMENTS でしか測れず、SELECT_CATALOG_ROLE などが要ります',
       }
-    case 'notStored':
+    case 'temporary':
       return {
         value: '一時表のため持ちません',
         tone: 'muted',
         note: '一時表の行はセッションごとの一時セグメントに入り、永続のセグメントを持ちません',
       }
+    case 'external':
+      return {
+        value: '外部表のため持ちません',
+        tone: 'muted',
+        note: '外部表の行はデータベースの外のファイルにあり、セグメントを持ちません',
+      }
+    case 'clustered':
+      return {
+        value: `クラスタ ${size.clusterName} に含まれ、測れません`,
+        tone: 'muted',
+        note: 'クラスタ化表の行はクラスタのセグメントに他の表と一緒に入っており、この表だけの大きさは分かりません',
+      }
     case 'measured': {
+      // クラスタ化表と外部表は Rust 側で先に見分けてあるため、ここで 0 個になるのは
+      // セグメントがまだ作られていないか、解放された表だけである。行の有無は
+      // 言わない（`TRUNCATE … DROP ALL STORAGE` の後も 0 個になる）。
       if (size.segmentCount === 0) {
         return {
           value: '未割り当て',
           tone: 'muted',
-          note: 'まだ行が入ったことがなく、セグメントが作られていません',
+          note: 'セグメントがまだ作られていないか、TRUNCATE で解放されています',
         }
       }
       const 内訳 = [`表 ${formatBytes(size.tableBytes)}`]

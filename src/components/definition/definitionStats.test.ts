@@ -196,15 +196,33 @@ describe('describeSegmentSize', () => {
       segmentCount: 0,
     })
 
-    // Assert
+    // Assert: 行の有無は言わない（TRUNCATE で解放された表も 0 個になる）
     expect(size.value).toBe('未割り当て')
+    expect(size.note).not.toContain('行が入ったことがなく')
   })
 
   it('一時表は持たないと出す', () => {
     // Arrange & Act
-    const size = describeSegmentSize({ status: 'notStored' })
+    const size = describeSegmentSize({ status: 'temporary' })
 
     // Assert
     expect(size.value).toBe('一時表のため持ちません')
+  })
+
+  it('外部表は持たないと出す', () => {
+    // Arrange & Act
+    const size = describeSegmentSize({ status: 'external' })
+
+    // Assert
+    expect(size.value).toBe('外部表のため持ちません')
+  })
+
+  it('クラスタ化表は行があっても未割り当てとは言わず測れないと出す', () => {
+    // Arrange & Act: セグメントはクラスタの側にあり、他の表と共有している
+    const size = describeSegmentSize({ status: 'clustered', clusterName: 'C_ORDERS' })
+
+    // Assert
+    expect(size.value).toBe('クラスタ C_ORDERS に含まれ、測れません')
+    expect(size.value).not.toContain('未割り当て')
   })
 })

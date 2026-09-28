@@ -19,8 +19,8 @@ use crate::db::error::{DbErrorKind, DbResult};
 use crate::db::oracle::errors::{self, map_permission_error};
 use crate::db::schema::ObjectKind;
 use crate::db::stats::{
-    parse_stale, segment_view, summarize_segments, ObjectStats, SegmentPart, SegmentSize,
-    SegmentView,
+    parse_stale, segment_view, summarize_segments, unmeasurable_size, ObjectStats, SegmentPart,
+    SegmentSize, SegmentView,
 };
 use oracle::Connection;
 
@@ -34,7 +34,13 @@ use oracle::Connection;
 /// そのまま日数に混ざる。
 ///
 /// `ALL_TAB_STATISTICS` はパーティションの行も持つため、`OBJECT_TYPE` を
-/// `TABLE` に絞って表全体の 1 行だけを当てる。
+/// `TABLE` に絞って表全体の 1 行だけを当てる。さらに**`SCOPE` を `SHARED` に
+/// 絞る。**一時表でセッション統計を採ると `SESSION` の行も並び、どちらを
+/// 拾うかが約束されなくなる。`NUM_ROWS` を読む `ALL_TABLES` が持つのは共有の
+/// 統計であり、古さもそれに揃える。
+///
+/// `CLUSTER_NAME` と `EXTERNAL` は、セグメントを測っても表の大きさにならない
+/// 表を見分けるために取る（`unmeasurable_size`）。
 const STATS_SQL: &str = "select t.num_rows,
        to_char(t.last_analyzed, 'YYYY-MM-DD HH24:MI'),
        floor(sysdate - t.last_analyzed),
@@ -42,20 +48,30 @@ const STATS_SQL: &str = "select t.num_rows,
        t.partitioned,
        t.iot_type,
        t.temporary,
+       t.external,
+       t.cluster_name,
        user
   from all_tables t
   left join all_tab_statistics s
     on s.owner = t.owner
    and s.table_name = t.table_name
    and s.object_type = 'TABLE'
+   and s.scope = 'SHARED'
  where t.owner = :owner and t.table_name = :name";
 
 /// 他人の表のセグメントを測る問い合わせ（ADR 0044）。
 ///
 /// 3 つを `union all` で繋ぎ、区分を付けて返す。
 ///
-/// - **表** … 表と同じ名前のセグメント。表と索引は名前空間が別であり、表と
-///   同じ名前の索引がありうるため、`SEGMENT_TYPE` でも絞る。
+/// - **表** … 表と同じ名前のセグメントに加え、表と別の名前で行を持つ
+///   セグメントも引く。索引構成表の overflow（`SYS_IOT_OVER_*`。`ALL_TABLES` の
+///   `IOT_NAME`）と、ネストした表の格納表（`ALL_NESTED_TABLES`。区分は
+///   `NESTED TABLE`）である。表と索引は名前空間が別であり、表と同じ名前の
+///   索引がありうるため、`SEGMENT_TYPE` でも絞る。**格納表や overflow に
+///   付いた索引と LOB は数えない**（入れ子の入れ子まで辿ることになる）。
+///   表そのものの名前は `select :name from dual` として副問い合わせへ混ぜず、
+///   `or` で並べる。混ぜると `union all` の型がバインドの文字セットに引かれ、
+///   辞書の列と食い違って `ORA-12704` になる。
 /// - **索引** … `ALL_INDEXES` から引いた名前のセグメント。索引構成表の主キーの
 ///   索引（`IOT - TOP`）は**行の本体そのもの**であるため表に数える。
 /// - **LOB** … `ALL_LOBS` の LOB セグメントと、その索引。LOB の索引は
@@ -63,8 +79,14 @@ const STATS_SQL: &str = "select t.num_rows,
 const DBA_SEGMENTS_SQL: &str = "select 'TABLE', s.bytes
   from dba_segments s
  where s.owner = :owner
-   and s.segment_name = :name
-   and s.segment_type in ('TABLE', 'TABLE PARTITION', 'TABLE SUBPARTITION')
+   and s.segment_type in ('TABLE', 'TABLE PARTITION', 'TABLE SUBPARTITION', 'NESTED TABLE')
+   and (s.segment_name = :name
+        or s.segment_name in (
+         select o.table_name from all_tables o
+          where o.owner = :owner and o.iot_name = :name and o.iot_type = 'IOT_OVERFLOW'
+         union all
+         select n.table_name from all_nested_tables n
+          where n.owner = :owner and n.parent_table_name = :name))
 union all
 select case when i.index_type = 'IOT - TOP' then 'TABLE' else 'INDEX' end, s.bytes
   from all_indexes i
@@ -92,8 +114,14 @@ select 'LOB', s.bytes
 /// である。自分の表に他人が索引を張ることは稀である）。
 const USER_SEGMENTS_SQL: &str = "select 'TABLE', s.bytes
   from user_segments s
- where s.segment_name = :name
-   and s.segment_type in ('TABLE', 'TABLE PARTITION', 'TABLE SUBPARTITION')
+ where s.segment_type in ('TABLE', 'TABLE PARTITION', 'TABLE SUBPARTITION', 'NESTED TABLE')
+   and (s.segment_name = :name
+        or s.segment_name in (
+         select o.table_name from all_tables o
+          where o.owner = :owner and o.iot_name = :name and o.iot_type = 'IOT_OVERFLOW'
+         union all
+         select n.table_name from all_nested_tables n
+          where n.owner = :owner and n.parent_table_name = :name))
 union all
 select case when i.index_type = 'IOT - TOP' then 'TABLE' else 'INDEX' end, s.bytes
   from all_indexes i
@@ -151,6 +179,8 @@ pub fn load_stats(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
+        Option<String>,
         String,
     );
 
@@ -164,14 +194,24 @@ pub fn load_stats(
     let Some(row) = rows.next() else {
         return Ok(None);
     };
-    let (num_rows, last_analyzed, days, stale, partitioned, iot_type, temporary, session_user) =
-        row.map_err(読めない)?;
+    let (
+        num_rows,
+        last_analyzed,
+        days,
+        stale,
+        partitioned,
+        iot_type,
+        temporary,
+        external,
+        cluster_name,
+        session_user,
+    ) = row.map_err(読めない)?;
 
     let temporary = temporary.as_deref() == Some("Y");
-    let size = if temporary {
-        SegmentSize::NotStored
-    } else {
-        load_segment_size(connection, owner, name, segment_view(owner, &session_user))?
+    let external = external.as_deref() == Some("YES");
+    let size = match unmeasurable_size(temporary, external, cluster_name.as_deref()) {
+        Some(reason) => reason,
+        None => load_segment_size(connection, owner, name, segment_view(owner, &session_user))?,
     };
 
     Ok(Some(ObjectStats {
@@ -243,53 +283,4 @@ fn load_segment_size(
     }
 
     Ok(summarize_segments(&segments))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn 統計は同じ往復で接続している利用者も返す() {
-        // Arrange & Act & Assert: どちらのビューで測るかを決めるための往復を足さない
-        assert!(STATS_SQL.contains("\n       user\n"));
-    }
-
-    #[test]
-    fn 統計の古さは表全体の行だけに当てる() {
-        // Arrange & Act & Assert: パーティションの行が混ざると表が重複する
-        assert!(STATS_SQL.contains("s.object_type = 'TABLE'"));
-        assert!(STATS_SQL.contains("left join all_tab_statistics"));
-    }
-
-    #[test]
-    fn 自分の表は権限の要らないビューだけを引く() {
-        // Arrange & Act & Assert
-        assert!(!USER_SEGMENTS_SQL.contains("dba_segments"));
-        assert_eq!(USER_SEGMENTS_SQL.matches("user_segments").count(), 3);
-    }
-
-    #[test]
-    fn 他人の表はdbaのビューだけを引く() {
-        // Arrange & Act & Assert
-        assert!(!DBA_SEGMENTS_SQL.contains("user_segments"));
-        assert_eq!(DBA_SEGMENTS_SQL.matches("dba_segments").count(), 3);
-    }
-
-    #[test]
-    fn 索引構成表の主キーの索引は表に数える() {
-        // Arrange & Act & Assert: 行の本体が索引にある
-        for sql in [USER_SEGMENTS_SQL, DBA_SEGMENTS_SQL] {
-            assert!(sql.contains("when i.index_type = 'IOT - TOP' then 'TABLE'"));
-        }
-    }
-
-    #[test]
-    fn lobの索引は索引ではなくlobに数える() {
-        // Arrange & Act & Assert: 二重に数えない
-        for sql in [USER_SEGMENTS_SQL, DBA_SEGMENTS_SQL] {
-            assert!(sql.contains("i.index_type <> 'LOB'"));
-            assert!(sql.contains("in (l.segment_name, l.index_name)"));
-        }
-    }
 }
