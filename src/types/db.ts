@@ -746,9 +746,17 @@ export interface AppearanceSettings {
   editorFontSize: string
 }
 
+/** 結果テーブルの表示調整の既定（ADR 0048）。`resultDisplay.ts` の `ResultDisplay` と対応する。 */
+export interface ResultDisplaySettings {
+  thousandsSeparator: boolean
+  showWhitespace: boolean
+}
+
 /** アプリ全体の設定。 */
 export interface AppSettings {
   appearance: AppearanceSettings
+  /** 結果テーブルの表示調整の既定。この表を持たない古い設定もある。 */
+  resultDisplay?: ResultDisplaySettings
   csv: CsvOptions
   /**
    * 利用者が割り当て直したキー（ADR 0037）。コマンドの `id` から保存の書き方

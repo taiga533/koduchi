@@ -1,10 +1,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { ResultTable } from './ResultTable'
 import { emptyExecution, type TabExecution } from '../../stores/execution'
 import { useUiStore } from '../../stores/ui'
 import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import { createFakeClipboard, type FakeClipboard } from '../../test/fakeClipboardApi'
+import { defaultResultDisplay } from './resultDisplay'
 
 /**
  * jsdom は要素の寸法を持たない。仮想スクロールは `offsetHeight` で表示領域を
@@ -21,7 +22,12 @@ beforeAll(() => {
 
 // 列幅は zustand のストアに残るため、テストごとに白紙へ戻す。
 beforeEach(() => {
-  useUiStore.setState({ resultColumnWidths: {} })
+  useUiStore.setState({
+    resultColumnWidths: {},
+    resultDisplayDefaults: defaultResultDisplay,
+    resultDisplayOverrides: {},
+    resultFrozenColumns: {},
+  })
 })
 
 /** NULL と空文字列を 1 行ずつ含む結果。 */
@@ -1180,5 +1186,177 @@ describe('ResultTable の見出しと行番号の右クリック（ADR 0038）',
 
     // Assert
     expect(クリップボード.last()).toBe('10\t')
+  })
+})
+
+describe('ResultTable の列の固定（ADR 0048）', () => {
+  it('見出しの「この列まで固定」でその列までと行番号が横スクロールから外れる', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    右クリック(screen.getByText('ID'))
+
+    // Act
+    fireEvent.click(screen.getByRole('menuitem', { name: 'この列まで固定' }))
+
+    // Assert
+    expect(useUiStore.getState().resultFrozenColumns['tab-1']).toEqual({ name: 'ID', index: 0 })
+    expect(screen.getByTestId('result-cell-0-0')).toHaveStyle({ position: 'sticky', left: '44px' })
+    expect(screen.getByTestId('result-row-number-0')).toHaveStyle({
+      position: 'sticky',
+      left: '0px',
+    })
+    expect(screen.getByTestId('result-cell-0-1')).not.toHaveAttribute('data-frozen')
+    expect(screen.getByText('ID').closest('[data-frozen]')).not.toBeNull()
+  })
+
+  it('固定していなければ行番号も貼り付かない', () => {
+    // Arrange
+    // 固定なし
+
+    // Act
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+
+    // Assert
+    expect(screen.getByTestId('result-row-number-0')).not.toHaveStyle({ position: 'sticky' })
+    expect(screen.queryAllByTestId(/result-cell-/).some((cell) => cell.dataset.frozen)).toBe(false)
+  })
+
+  it('固定した境目の列では「この列まで固定」を出さず「列の固定を解除」で外せる', () => {
+    // Arrange
+    useUiStore.setState({ resultFrozenColumns: { 'tab-1': { name: 'LABEL', index: 1 } } })
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    右クリック(screen.getByText('LABEL'))
+
+    // Act
+    const 固定の項目 = screen.queryByRole('menuitem', { name: 'この列まで固定' })
+    fireEvent.click(screen.getByRole('menuitem', { name: '列の固定を解除' }))
+
+    // Assert
+    expect(固定の項目).not.toBeInTheDocument()
+    expect(useUiStore.getState().resultFrozenColumns).toEqual({})
+    expect(screen.getByTestId('result-cell-0-1')).not.toHaveAttribute('data-frozen')
+  })
+
+  it('何も固定していなければ「列の固定を解除」は出ない', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+
+    // Act
+    右クリック(screen.getByText('ID'))
+
+    // Assert
+    expect(screen.queryByRole('menuitem', { name: '列の固定を解除' })).not.toBeInTheDocument()
+  })
+
+  it('固定した列のセルも選択とコピーは同じ位置のまま効く', async () => {
+    // Arrange
+    const クリップボード = createFakeClipboard()
+    setClipboardApi(クリップボード)
+    useUiStore.setState({ resultFrozenColumns: { 'tab-1': { name: 'ID', index: 0 } } })
+    render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-1-0'))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'c', metaKey: true })
+
+    // Assert
+    expect(クリップボード.last()).toBe('20')
+    resetClipboardApi()
+  })
+})
+
+describe('ResultTable の表示調整（ADR 0048）', () => {
+  /** 桁の多い数値と前後に空白のある文字列。 */
+  const 調整用の結果: TabExecution = {
+    ...結果,
+    rows: [
+      [
+        { text: '1234567', kind: 'number' },
+        { text: ' A\tB ', kind: 'text' },
+      ],
+    ],
+  }
+  let クリップボード: FakeClipboard
+
+  beforeEach(() => {
+    クリップボード = createFakeClipboard()
+    setClipboardApi(クリップボード)
+  })
+
+  afterEach(() => {
+    resetClipboardApi()
+  })
+
+  it('3 桁区切りは描く文字だけを変えコピーは元の値を写す', () => {
+    // Arrange
+    useUiStore.setState({ resultDisplayOverrides: { 'tab-1': { thousandsSeparator: true } } })
+    render(<ResultTable tabId="tab-1" execution={調整用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-0'))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'c', metaKey: true })
+
+    // Assert
+    expect(screen.getByTestId('result-cell-0-0')).toHaveTextContent('1,234,567')
+    expect(クリップボード.last()).toBe('1234567')
+  })
+
+  it('空白の記号は描く文字だけを変えコピーは元の値を写す', () => {
+    // Arrange
+    useUiStore.setState({
+      resultDisplayDefaults: { thousandsSeparator: false, showWhitespace: true },
+    })
+    render(<ResultTable tabId="tab-1" execution={調整用の結果} onRequestMore={() => {}} />)
+    fireEvent.mouseDown(screen.getByTestId('result-cell-0-1'))
+
+    // Act
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'c', metaKey: true })
+
+    // Assert
+    expect(screen.getByTestId('result-cell-0-1')).toHaveTextContent('·A→B·')
+    expect(クリップボード.last()).toBe(' A\tB ')
+  })
+
+  it('別のタブの表示調整はこのタブに効かない', () => {
+    // Arrange
+    useUiStore.setState({ resultDisplayOverrides: { 'tab-2': { thousandsSeparator: true } } })
+
+    // Act
+    render(<ResultTable tabId="tab-1" execution={調整用の結果} onRequestMore={() => {}} />)
+
+    // Assert
+    expect(screen.getByTestId('result-cell-0-0')).toHaveTextContent('1234567')
+  })
+
+  it('区切りを入れた表では区切りの付いた語で探して当たる', () => {
+    // Arrange
+    useUiStore.setState({ resultDisplayOverrides: { 'tab-1': { thousandsSeparator: true } } })
+    render(<ResultTable tabId="tab-1" execution={調整用の結果} onRequestMore={() => {}} />)
+    fireEvent.keyDown(screen.getByTestId('result-table-body'), { key: 'f', metaKey: true })
+
+    // Act
+    fireEvent.change(screen.getByLabelText('表示中の結果を検索'), { target: { value: '4,567' } })
+
+    // Assert
+    expect(screen.getByTestId('result-cell-0-0')).toHaveAttribute('data-match', 'true')
+  })
+
+  it('内容に合わせた列幅は区切りを入れた文字で測る', () => {
+    // Arrange
+    render(<ResultTable tabId="tab-1" execution={調整用の結果} onRequestMore={() => {}} />)
+    fireEvent.doubleClick(screen.getByText('ID'))
+    const 値の幅 = useUiStore.getState().resultColumnWidths['tab-1']?.ID ?? 0
+    act(() => {
+      useUiStore.setState({
+        resultColumnWidths: {},
+        resultDisplayOverrides: { 'tab-1': { thousandsSeparator: true } },
+      })
+    })
+
+    // Act
+    fireEvent.doubleClick(screen.getByText('ID'))
+
+    // Assert
+    expect(useUiStore.getState().resultColumnWidths['tab-1']?.ID).toBeGreaterThan(値の幅)
   })
 })

@@ -11,6 +11,7 @@ import {
   SIDEBAR_WIDTH_MAX,
   SIDEBAR_WIDTH_MIN,
 } from '../components/layout/paneSizes'
+import { defaultResultDisplay } from '../components/results/resultDisplay'
 import { useUiStore } from './ui'
 
 let calls: FakeCalls
@@ -27,6 +28,9 @@ beforeEach(() => {
     sidebarSegment: 'schema',
     resultTab: 'result',
     resultColumnWidths: {},
+    resultDisplayDefaults: defaultResultDisplay,
+    resultDisplayOverrides: {},
+    resultFrozenColumns: {},
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
     editorHeight: EDITOR_HEIGHT_DEFAULT,
   })
@@ -282,7 +286,7 @@ describe('useUiStore', () => {
     useUiStore.getState().setResultColumnWidth('tab-2', 'ID', 90)
 
     // Act
-    useUiStore.getState().clearResultColumnWidths('tab-1')
+    useUiStore.getState().forgetResultView('tab-1')
 
     // Assert
     expect(useUiStore.getState().resultColumnWidths).toEqual({ 'tab-2': { ID: 90 } })
@@ -294,10 +298,116 @@ describe('useUiStore', () => {
     const 前 = useUiStore.getState().resultColumnWidths
 
     // Act
-    useUiStore.getState().clearResultColumnWidths('tab-9')
+    useUiStore.getState().forgetResultView('tab-9')
 
     // Assert
     expect(useUiStore.getState().resultColumnWidths).toBe(前)
+  })
+})
+
+describe('結果の表示調整と列の固定', () => {
+  it('表示調整の既定を変えると他の設定と一緒に保存される', () => {
+    // Arrange
+    useUiStore.getState().setTheme('dark')
+
+    // Act
+    useUiStore.getState().setResultDisplayDefaults({ thousandsSeparator: true })
+
+    // Assert
+    expect(useUiStore.getState().resultDisplayDefaults.thousandsSeparator).toBe(true)
+    expect(calls.saveAppSettings[1].resultDisplay).toEqual({
+      thousandsSeparator: true,
+      showWhitespace: false,
+    })
+    expect(calls.saveAppSettings[1].appearance.theme).toBe('dark')
+  })
+
+  it('保存済みの表示調整を読み込むと既定に反映される', async () => {
+    // Arrange
+    setDbApi(
+      createFakeDbApi({
+        appSettings: {
+          appearance: defaultAppearance,
+          resultDisplay: { thousandsSeparator: true, showWhitespace: true },
+          csv: defaultCsvOptions,
+        },
+      }).api,
+    )
+
+    // Act
+    await useUiStore.getState().loadSettings()
+
+    // Assert
+    expect(useUiStore.getState().resultDisplayDefaults).toEqual({
+      thousandsSeparator: true,
+      showWhitespace: true,
+    })
+  })
+
+  it('タブの表示調整は保存せずそのタブにだけ残る', () => {
+    // Arrange
+    // beforeEach で上書きなしにしてある
+
+    // Act
+    useUiStore.getState().setResultDisplayOverride('tab-1', { thousandsSeparator: true })
+
+    // Assert
+    expect(useUiStore.getState().resultDisplayOverrides).toEqual({
+      'tab-1': { thousandsSeparator: true },
+    })
+    expect(calls.saveAppSettings).toEqual([])
+  })
+
+  it('既定をタブの上書きと同じ値へ変えるとその上書きは消える', () => {
+    // Arrange
+    useUiStore.getState().setResultDisplayOverride('tab-1', { thousandsSeparator: true })
+
+    // Act
+    useUiStore.getState().setResultDisplayDefaults({ thousandsSeparator: true })
+
+    // Assert
+    expect(useUiStore.getState().resultDisplayOverrides).toEqual({})
+  })
+
+  it('タブの表示調整を既定へ戻せる', () => {
+    // Arrange
+    useUiStore.getState().setResultDisplayOverride('tab-1', { showWhitespace: true })
+
+    // Act
+    useUiStore.getState().resetResultDisplay('tab-1')
+
+    // Assert
+    expect(useUiStore.getState().resultDisplayOverrides).toEqual({})
+  })
+
+  it('列の固定を決めて解除できる', () => {
+    // Arrange
+    useUiStore.getState().setResultFrozenColumn('tab-1', { name: 'ID', index: 0 })
+
+    // Act
+    const 固定中 = useUiStore.getState().resultFrozenColumns
+    useUiStore.getState().setResultFrozenColumn('tab-1', null)
+
+    // Assert
+    expect(固定中).toEqual({ 'tab-1': { name: 'ID', index: 0 } })
+    expect(useUiStore.getState().resultFrozenColumns).toEqual({})
+  })
+
+  it('タブを忘れると列幅と表示調整と固定がまとめて消える', () => {
+    // Arrange
+    useUiStore.getState().setResultColumnWidth('tab-1', 'ID', 220)
+    useUiStore.getState().setResultDisplayOverride('tab-1', { showWhitespace: true })
+    useUiStore.getState().setResultFrozenColumn('tab-1', { name: 'ID', index: 0 })
+    useUiStore.getState().setResultFrozenColumn('tab-2', { name: 'ID', index: 0 })
+
+    // Act
+    useUiStore.getState().forgetResultView('tab-1')
+
+    // Assert
+    const state = useUiStore.getState()
+    expect(state.resultColumnWidths).toEqual({})
+    expect(state.resultDisplayOverrides).toEqual({})
+    expect(state.resultFrozenColumns).toEqual({ 'tab-2': { name: 'ID', index: 0 } })
   })
 })
 

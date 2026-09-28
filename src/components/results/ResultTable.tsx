@@ -25,6 +25,15 @@
  * | 見出しをダブルクリック | 列幅を内容に合わせる             |
  * | 見出しを右クリック     | 列名と列のメニュー（ADR 0038）   |
  *
+ * 列の固定（ADR 0048）の入口は見出しの右クリックのメニューの「この列まで固定」と
+ * 「列の固定を解除」だけであり、マウス操作の割り振りは足していない。固定した列は
+ * `position: sticky` で横スクロールから外す。仮想スクロールは縦だけなので、行の
+ * 描き方には手を入れずに済む。
+ *
+ * 表示調整（ADR 0048。`resultDisplay.ts`）は描く文字だけを変える。コピーと詳細
+ * パネルは値（`displayText`）のまま、列幅の内容合わせは描く文字で測り、検索は
+ * その両方に当てる。
+ *
  * 右クリック（と `⌃` + クリック）の押し下げでは選択を始め直さない（`startsSelection`）。
  * 始め直すと、選んだ範囲がメニューの開く前に押したセル 1 つへ潰れる（issue #53）。
  *
@@ -51,9 +60,12 @@ import {
   autoFitWidth,
   clampColumnWidth,
   columnMinWidthOf,
+  frozenOffsets,
   gridTemplate,
+  resolveFrozenCount,
   resolveTableMinWidth,
 } from './columnSizing'
+import { cellSegments, formattedText, resolveResultDisplay } from './resultDisplay'
 import { CellDetailPanel } from './CellDetailPanel'
 import { ResultContextMenu } from './ResultContextMenu'
 import { ResultHeaderContextMenu } from './ResultHeaderContextMenu'
@@ -145,6 +157,18 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
     (state) => (tabId === null ? undefined : state.resultColumnWidths[tabId]) ?? NO_WIDTHS,
   )
   const setColumnWidth = useUiStore((state) => state.setResultColumnWidth)
+  const displayDefaults = useUiStore((state) => state.resultDisplayDefaults)
+  const displayOverride = useUiStore((state) =>
+    tabId === null ? undefined : state.resultDisplayOverrides[tabId],
+  )
+  const display = useMemo(
+    () => resolveResultDisplay(displayDefaults, displayOverride),
+    [displayDefaults, displayOverride],
+  )
+  const frozen = useUiStore((state) =>
+    tabId === null ? undefined : state.resultFrozenColumns[tabId],
+  )
+  const setFrozenColumn = useUiStore((state) => state.setResultFrozenColumn)
 
   const [selection, setSelection] = useState<CellSelection | null>(null)
   const [menu, setMenu] = useState<ContextMenuState | null>(null)
@@ -223,10 +247,10 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
   // 見えてしまう。
   const outcome = useMemo(() => {
     const 探す語 = searching ? needle : ''
-    const next = searchRows(outcomeRef.current, rows, 探す語, { caseSensitive })
+    const next = searchRows(outcomeRef.current, rows, 探す語, { caseSensitive, display })
     outcomeRef.current = next
     return next
-  }, [rows, searching, needle, caseSensitive])
+  }, [rows, searching, needle, caseSensitive, display])
 
   const matches = outcome.matches
   const matchIndex = currentMatch === null ? -1 : indexOfMatch(matches, currentMatch)
@@ -472,7 +496,9 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
     [columnCount, copyRange, openSearch, rowCount, selection, stepMatch],
   )
 
-  const template = gridTemplate(columns, widths, ROW_NUMBER_WIDTH)
+  const frozenCount = resolveFrozenCount(columns, frozen)
+  const offsets = frozenOffsets(columns, widths, ROW_NUMBER_WIDTH, frozenCount)
+  const template = gridTemplate(columns, widths, ROW_NUMBER_WIDTH, frozenCount)
 
   // 見出しと本文は別々のスクロール領域にあるため、同じ最小幅を与えて桁を揃える。
   const minWidth = resolveTableMinWidth(columns, widths, ROW_NUMBER_WIDTH)
@@ -508,12 +534,13 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
    * 取得済みの行に合わせて列幅を詰める（見出しのダブルクリック）。
    *
    * 走査するのはストアに溜まっている行だけである。まだ取り出していない行の値は
-   * 分からないため、続きを読み込んでからもう一度合わせ直すことになる。
+   * 分からないため、続きを読み込んでからもう一度合わせ直すことになる。測るのは
+   * 描く文字である（3 桁区切りを入れた列を値で測ると、区切りのぶん末尾が欠ける）。
    */
   const fitColumn = (column: Column, columnIndex: number) => {
     const values = rows.map((row) => {
       const cell = row[columnIndex]
-      return cell === undefined ? '' : displayText(cell)
+      return cell === undefined ? '' : formattedText(cell, display)
     })
     rememberWidth(column.name, autoFitWidth(column.name, values))
   }
@@ -573,12 +600,17 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
             className="grid text-10.5px tracking-0.03em text-fg3"
             style={{ gridTemplateColumns: template, minWidth }}
           >
-            <div className="px-9px py-5px text-right border-r border-line2" />
+            <div
+              className="px-9px py-5px text-right border-r border-line2 bg-panel2"
+              style={frozenCount > 0 ? stickyStyle(0) : undefined}
+            />
             {columns.map((column, columnIndex) => (
               <ColumnHeader
                 key={column.name}
                 column={column}
                 width={widths[column.name]}
+                stickyLeft={offsets[columnIndex]}
+                lastFrozen={columnIndex === frozenCount - 1}
                 onResize={(width) => rememberWidth(column.name, width)}
                 onFit={() => fitColumn(column, columnIndex)}
                 onContextMenu={(event) => openHeaderMenu(event, columnIndex)}
@@ -620,7 +652,10 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                       }}
                       onContextMenu={(event) => openRowMenu(event, virtualRow.index)}
                       className="text-right text-fg6 border-r border-gl bg-panel2 cursor-pointer"
-                      style={{ padding: 'var(--rp)' }}
+                      style={{
+                        padding: 'var(--rp)',
+                        ...(frozenCount > 0 ? stickyStyle(0) : undefined),
+                      }}
                     >
                       {virtualRow.index + 1}
                     </div>
@@ -635,6 +670,16 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                       // 件数の数字だけでは分からない（ADR 0027）。今いる当たりは
                       // 選択されているので、選択の面と外枠が重ねて描かれる。
                       const hit = matchKeys.has(matchKey(virtualRow.index, cellIndex))
+                      const stickyLeft = offsets[cellIndex]
+                      // 固定した列は下を流れる列が透けないよう地を塗る。選択や当たりの
+                      // 色はどちらも不透明なので、そのまま上書きしてよい。
+                      const background = hit
+                        ? 'bg-hit'
+                        : selected
+                          ? 'bg-fill'
+                          : stickyLeft === undefined
+                            ? ''
+                            : 'bg-panel'
                       return (
                         <div
                           key={columns[cellIndex]?.name ?? cellIndex}
@@ -651,15 +696,28 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
                             setDetail({ row: virtualRow.index, column: cellIndex })
                           }
                           onContextMenu={(event) => openMenu(event, virtualRow.index, cellIndex)}
-                          className={`border-r border-gl truncate ${
-                            isRightAligned(cell.kind) ? 'text-right' : ''
-                          } ${cell.kind === 'null' ? 'text-fg5 italic' : ''} ${
-                            hit ? 'bg-hit' : selected ? 'bg-fill' : ''
-                          }`}
-                          style={{ padding: 'var(--rp)', boxShadow: selectionShadow(edges) }}
+                          data-frozen={stickyLeft === undefined ? undefined : 'true'}
+                          className={`border-r truncate ${
+                            cellIndex === frozenCount - 1 ? 'border-line' : 'border-gl'
+                          } ${isRightAligned(cell.kind) ? 'text-right' : ''} ${
+                            cell.kind === 'null' ? 'text-fg5 italic' : ''
+                          } ${background}`}
+                          style={{
+                            padding: 'var(--rp)',
+                            boxShadow: selectionShadow(edges),
+                            ...(stickyLeft === undefined ? undefined : stickyStyle(stickyLeft)),
+                          }}
                           title={displayText(cell)}
                         >
-                          {displayText(cell)}
+                          {cellSegments(cell, display).map((segment, index) =>
+                            segment.marker ? (
+                              <span key={index} className="text-fg5">
+                                {segment.text}
+                              </span>
+                            ) : (
+                              segment.text
+                            ),
+                          )}
                         </div>
                       )
                     })}
@@ -690,6 +748,15 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
             copyRange(selectionRange(columnSelection(menu.column, rowCount)), false)
           }
           onFit={() => fitColumn(columns[menu.column], menu.column)}
+          onFreeze={
+            tabId !== null && menu.column !== frozenCount - 1
+              ? () =>
+                  setFrozenColumn(tabId, { name: columns[menu.column].name, index: menu.column })
+              : undefined
+          }
+          onUnfreeze={
+            tabId !== null && frozenCount > 0 ? () => setFrozenColumn(tabId, null) : undefined
+          }
           onClose={() => setMenu(null)}
         />
       ) : null}
@@ -723,6 +790,10 @@ interface ColumnHeaderProps {
   column: Column
   /** 覚えている幅。無ければ型ごとの既定で描かれている。 */
   width: number | undefined
+  /** 固定した列なら `position: sticky` の左端（ADR 0048）。固定していなければ `undefined`。 */
+  stickyLeft: number | undefined
+  /** 固定した列のうち最も右か。境目の罫線を濃くする。 */
+  lastFrozen: boolean
   /** ドラッグ中の幅を伝える。 */
   onResize: (width: number) => void
   /** 内容に合わせる（ダブルクリック）。 */
@@ -738,7 +809,15 @@ interface ColumnHeaderProps {
  * ポインタが見出しの外へ出ても幅が追従する。押し下げを拾う場所が本文のセルとは
  * 分かれているため、セル選択のドラッグとは食い合わない。
  */
-function ColumnHeader({ column, width, onResize, onFit, onContextMenu }: ColumnHeaderProps) {
+function ColumnHeader({
+  column,
+  width,
+  stickyLeft,
+  lastFrozen,
+  onResize,
+  onFit,
+  onContextMenu,
+}: ColumnHeaderProps) {
   const cellRef = useRef<HTMLDivElement>(null)
 
   const beginResize = (event: ReactMouseEvent<HTMLElement>) => {
@@ -766,9 +845,13 @@ function ColumnHeader({ column, width, onResize, onFit, onContextMenu }: ColumnH
       title={`${column.name} ${column.typeName}`}
       onDoubleClick={onFit}
       onContextMenu={onContextMenu}
-      className={`relative px-9px py-5px border-r border-line2 truncate ${
-        isRightAligned(column.kind) ? 'text-right' : ''
+      data-frozen={stickyLeft === undefined ? undefined : 'true'}
+      className={`relative px-9px py-5px border-r truncate ${
+        lastFrozen ? 'border-line' : 'border-line2'
+      } ${isRightAligned(column.kind) ? 'text-right' : ''} ${
+        stickyLeft === undefined ? '' : 'bg-panel2'
       }`}
+      style={stickyLeft === undefined ? undefined : stickyStyle(stickyLeft)}
     >
       {column.name}
       <span
@@ -780,6 +863,19 @@ function ColumnHeader({ column, width, onResize, onFit, onContextMenu }: ColumnH
       />
     </div>
   )
+}
+
+/**
+ * 固定した列（と行番号の列）を横スクロールから外す指定。
+ *
+ * 見出しと本文は別々のスクロール領域にあり、それぞれの中で同じ `left` に貼り付く
+ * ので桁は揃ったままになる。`z-index` は流れてくる列より手前に出すためだけのもので、
+ * 右クリックのメニューや詳細パネルより奥に留まる値にしてある。
+ *
+ * @param left 貼り付ける左端（ピクセル）
+ */
+function stickyStyle(left: number): React.CSSProperties {
+  return { position: 'sticky', left, zIndex: 1 }
 }
 
 /**

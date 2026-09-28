@@ -51,7 +51,7 @@ export async function closeTabAndRelease(tabId: string): Promise<boolean> {
     // 割り当てが外れた後の中止は届かない（ADR 0003 への 2026-09-27 の追記）。
     void useExecutionStore.getState().releaseTab(connection.id, tabId)
   }
-  useUiStore.getState().clearResultColumnWidths(tabId)
+  useUiStore.getState().forgetResultView(tabId)
   // 定義タブなら、そのタブが抱えていた定義と DDL も捨てる（ADR 0022）。
   useDefinitionStore.getState().drop(tabId)
   useTabStore.getState().closeTab(tabId)
