@@ -33,3 +33,6 @@ ds-bundle/
 .design-sync/learnings/
 .design-sync/node_modules
 .design-sync/pkg/dist/
+
+# Claude Code がエージェント用に作るワークツリー
+.claude/worktrees/
