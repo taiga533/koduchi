@@ -18,9 +18,41 @@ export const HISTORY_LIMIT = 200
 /** 履歴の表示範囲。デザインのサイドバーにあるスコープ切替に対応する。 */
 export type HistoryScope = 'connection' | 'all'
 
+/**
+ * 成否での絞り込み（ADR 0046）。
+ *
+ * 保存しない。スコープと同じく開いたときは既定（`all`）へ戻す。絞ったまま
+ * 次に開くと、履歴が消えたように見えるためである。
+ */
+export type HistoryOutcome = 'all' | 'succeeded' | 'failed'
+
+/**
+ * 成否の絞り込みを問い合わせの条件へ写す。
+ *
+ * 取得済みの一覧を手元で絞らず問い合わせに載せるのは、件数の上限
+ * （`HISTORY_LIMIT`）より先に効かせるためである。手元で絞ると、新しい成功が
+ * 上限を埋めたとき古い失敗が 1 件も出なくなる。
+ *
+ * @param outcome 成否での絞り込み
+ *
+ * @returns 問い合わせの `succeeded`。`null` なら成否を問わない
+ */
+export function outcomeToSucceeded(outcome: HistoryOutcome): boolean | null {
+  switch (outcome) {
+    case 'all':
+      return null
+    case 'succeeded':
+      return true
+    case 'failed':
+      return false
+  }
+}
+
 interface HistoryState {
   entries: HistoryEntry[]
   scope: HistoryScope
+  /** 成否での絞り込み（ADR 0046）。 */
+  outcome: HistoryOutcome
   /** SQL の部分一致で絞る語。サイドバーの検索入力に対応する。 */
   search: string
   /**
@@ -37,6 +69,8 @@ interface HistoryState {
   setConnectionName: (connectionName: string | null) => void
   /** 表示範囲を切り替え、読み直す。 */
   setScope: (scope: HistoryScope) => void
+  /** 成否での絞り込みを切り替え、読み直す。 */
+  setOutcome: (outcome: HistoryOutcome) => void
   /** 検索語を変え、読み直す。 */
   setSearch: (search: string) => void
   /** 現在の条件で履歴を読み直す。 */
@@ -50,6 +84,7 @@ interface HistoryState {
 export const useHistoryStore = create<HistoryState>((set, get) => ({
   entries: [],
   scope: 'connection',
+  outcome: 'all',
   search: '',
   connectionName: null,
   loading: false,
@@ -62,13 +97,18 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     void get().reload()
   },
 
+  setOutcome: (outcome) => {
+    set({ outcome })
+    void get().reload()
+  },
+
   setSearch: (search) => {
     set({ search })
     void get().reload()
   },
 
   reload: async () => {
-    const { scope, search, connectionName } = get()
+    const { scope, outcome, search, connectionName } = get()
     set({ loading: true, error: null })
 
     try {
@@ -76,6 +116,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
         // 全接続を選んでいるとき、または接続名が分からないときは絞らない。
         connectionName: scope === 'connection' ? connectionName : null,
         search: search.trim() === '' ? null : search.trim(),
+        succeeded: outcomeToSucceeded(outcome),
         limit: HISTORY_LIMIT,
       })
       set({ entries, loading: false })

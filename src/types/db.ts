@@ -463,6 +463,8 @@ export interface HistoryQuery {
   connectionName: string | null
   /** SQL の部分一致で絞る語。 */
   search: string | null
+  /** 成否で絞る（ADR 0046）。`null` なら成否を問わない。 */
+  succeeded: boolean | null
   limit: number
 }
 

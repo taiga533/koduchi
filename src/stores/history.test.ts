@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi, type FakeCalls } from '../test/fakeDbApi'
 import type { HistoryEntry } from '../types/db'
-import { HISTORY_LIMIT, useHistoryStore } from './history'
+import { HISTORY_LIMIT, outcomeToSucceeded, useHistoryStore } from './history'
 
 /** 履歴 1 件を組み立てる。 */
 function 履歴(id: number, sql: string, connectionName: string): HistoryEntry {
@@ -32,6 +32,7 @@ beforeEach(() => {
   useHistoryStore.setState({
     entries: [],
     scope: 'connection',
+    outcome: 'all',
     search: '',
     connectionName: null,
     error: null,
@@ -42,7 +43,55 @@ afterEach(() => {
   resetDbApi()
 })
 
+describe('outcomeToSucceeded', () => {
+  it('すべては成否を問わない', () => {
+    // Arrange
+    const outcome = 'all' as const
+
+    // Act
+    const succeeded = outcomeToSucceeded(outcome)
+
+    // Assert
+    expect(succeeded).toBeNull()
+  })
+
+  it('成功のみは真で失敗のみは偽になる', () => {
+    // Arrange
+    const outcomes = ['succeeded', 'failed'] as const
+
+    // Act
+    const succeeded = outcomes.map(outcomeToSucceeded)
+
+    // Assert
+    expect(succeeded).toEqual([true, false])
+  })
+})
+
 describe('useHistoryStore', () => {
+  it('失敗のみへ切り替えると失敗した履歴を問い合わせ直す', async () => {
+    // Arrange
+    useHistoryStore.setState({ scope: 'all' })
+
+    // Act
+    useHistoryStore.getState().setOutcome('failed')
+    await Promise.resolve()
+
+    // Assert
+    expect(useHistoryStore.getState().outcome).toBe('failed')
+    expect(calls.listHistory.at(-1)?.succeeded).toBe(false)
+  })
+
+  it('成否を問わないときは絞り込みを渡さない', async () => {
+    // Arrange
+    useHistoryStore.setState({ outcome: 'all' })
+
+    // Act
+    await useHistoryStore.getState().reload()
+
+    // Assert
+    expect(calls.listHistory[0].succeeded).toBeNull()
+  })
+
   it('この接続のみを選ぶと接続名で絞り込む', async () => {
     // Arrange
     useHistoryStore.setState({ scope: 'connection', connectionName: '本番' })
