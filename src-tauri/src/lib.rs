@@ -81,6 +81,7 @@ pub fn run() {
             commands::schema::schema_columns,
             commands::definition::object_definition,
             commands::definition::object_ddl,
+            commands::definition::object_stats,
             commands::sessions::list_sessions,
             commands::sessions::kill_session,
             commands::source::search_source,

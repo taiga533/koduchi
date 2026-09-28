@@ -11,6 +11,7 @@ use crate::commands::{run_blocking, AppState, ConnectionId};
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::error::DbResult;
 use crate::db::schema::ObjectKind;
+use crate::db::stats::ObjectStats;
 use tauri::State;
 
 /// テーブル定義ビュー 1 枚ぶんの内容を取る。
@@ -60,4 +61,31 @@ pub async fn object_ddl(
     let pool = state.require(&id)?;
 
     run_blocking(move || pool.object_ddl(&owner, &name, kind)).await
+}
+
+/// 表 1 つの統計とセグメントの大きさを取る（ADR 0044）。
+///
+/// `object_definition` に相乗りさせず別のコマンドにしてある。セグメントの
+/// 大きさは他人の表では `DBA_SEGMENTS` を要し、その重さと失敗で列も制約も
+/// 見られなくなってはいけないためである（`object_ddl` と同じ理由）。
+///
+/// 統計もセグメントも持たない種別では `null` が返る。
+///
+/// # 引数
+///
+/// * `id` - 接続の識別子
+/// * `owner` - 所有者のスキーマ名
+/// * `name` - オブジェクト名
+/// * `kind` - オブジェクトの種類
+#[tauri::command]
+pub async fn object_stats(
+    state: State<'_, AppState>,
+    id: ConnectionId,
+    owner: String,
+    name: String,
+    kind: ObjectKind,
+) -> DbResult<Option<ObjectStats>> {
+    let pool = state.require(&id)?;
+
+    run_blocking(move || pool.object_stats(&owner, &name, kind)).await
 }

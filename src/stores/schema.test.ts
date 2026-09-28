@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetDbApi, setDbApi } from '../api/db'
 import { createFakeDbApi, type FakeCalls } from '../test/fakeDbApi'
-import type { SchemaNode, TableColumn } from '../types/db'
+import type { SchemaColumns, SchemaNode, TableColumn } from '../types/db'
 import { defaultSchemaFilter } from '../types/db'
 import {
   filterSchemas,
   formatColumnProgress,
+  hasComment,
   kindGroupKey,
+  needsRefetch,
   nodeKey,
   useSchemaStore,
 } from './schema'
@@ -152,8 +154,8 @@ describe('useSchemaStore', () => {
 
   it('段階 2 の途中で再読み込みしても古い列は流れ込まない', async () => {
     // Arrange: 先に始めた取得の列が、後から新しいスキーマへ書き込まれてはならない
-    let 古い列を返す!: (columns: TableColumn[]) => void
-    const 古い列 = new Promise<TableColumn[]>((resolve) => {
+    let 古い列を返す!: (columns: SchemaColumns) => void
+    const 古い列 = new Promise<SchemaColumns>((resolve) => {
       古い列を返す = resolve
     })
     let 古い取得が始まった!: () => void
@@ -170,7 +172,7 @@ describe('useSchemaStore', () => {
           古い取得が始まった()
           return 古い列
         }
-        return [列('USERS', '新しい列')]
+        return { columns: [列('USERS', '新しい列')], objectComments: [] }
       },
     })
     const 途中の取得 = useSchemaStore.getState().load('c1')
@@ -178,7 +180,7 @@ describe('useSchemaStore', () => {
 
     // Act
     await useSchemaStore.getState().reload('c1')
-    古い列を返す([列('USERS', '古い列')])
+    古い列を返す({ columns: [列('USERS', '古い列')], objectComments: [] })
     await 途中の取得
 
     // Assert
@@ -196,7 +198,7 @@ describe('useSchemaStore', () => {
         if (owner === 'KODUCHI') {
           throw new Error('権限がありません')
         }
-        return 列一覧[owner] ?? []
+        return { columns: 列一覧[owner] ?? [], objectComments: [] }
       },
     })
 
@@ -208,6 +210,48 @@ describe('useSchemaStore', () => {
     expect(state.columns.KODUCHI).toBeUndefined()
     expect(state.columns.ANALYTICS).toHaveLength(1)
     expect(state.columnStatus).toBe('ready')
+  })
+
+  it('コメントを出す設定では段階 2 でコメントも読みオブジェクト名で引ける', async () => {
+    // Arrange
+    const fake = createFakeDbApi({
+      schemas: スキーマ一覧,
+      columns: 列一覧,
+      objectComments: { KODUCHI: [{ objectName: 'USERS', comment: '利用者' }] },
+    })
+    setDbApi(fake.api)
+
+    // Act
+    await useSchemaStore.getState().load('c1')
+
+    // Assert
+    expect(fake.calls.schemaColumns.every((call) => call.withComments)).toBe(true)
+    expect(useSchemaStore.getState().objectComments.KODUCHI).toEqual({ USERS: '利用者' })
+  })
+
+  it('コメントを隠す設定では段階 2 でコメントを読まない', async () => {
+    // Arrange
+    await useSchemaStore.getState().load('c1')
+
+    // Act
+    await useSchemaStore
+      .getState()
+      .setFilter('c1', { ...defaultSchemaFilter, showComments: false, excludeSystem: false })
+
+    // Assert
+    expect(calls.schemaColumns.at(-1)?.withComments).toBe(false)
+  })
+
+  it('型名の表示を切り替えても取得し直さない', async () => {
+    // Arrange
+    await useSchemaStore.getState().load('c1')
+
+    // Act
+    await useSchemaStore.getState().setFilter('c1', { ...defaultSchemaFilter, showTypes: false })
+
+    // Assert
+    expect(calls.schemaOverview).toHaveLength(1)
+    expect(useSchemaStore.getState().filter.showTypes).toBe(false)
   })
 
   it('段階 1 に失敗すると失敗の状態になる', async () => {
@@ -345,5 +389,106 @@ describe('filterSchemas', () => {
 
     // Assert
     expect(filtered).toEqual([])
+  })
+})
+
+describe('needsRefetch', () => {
+  it('スキーマの条件か種別が変われば取得し直す', () => {
+    // Arrange
+    const base = defaultSchemaFilter
+
+    // Act & Assert
+    expect(needsRefetch(base, { ...base, hideEmpty: false })).toBe(true)
+    expect(needsRefetch(base, { ...base, kinds: { ...base.kinds, index: false } })).toBe(true)
+  })
+
+  it('型名の表示だけの変更では取得し直さない', () => {
+    // Arrange
+    const base = defaultSchemaFilter
+
+    // Act
+    const refetch = needsRefetch(base, { ...base, showTypes: false })
+
+    // Assert
+    expect(refetch).toBe(false)
+  })
+
+  it('コメントは出す側へ切り替えたときだけ取得し直す', () => {
+    // Arrange
+    const shown = defaultSchemaFilter
+    const hidden = { ...defaultSchemaFilter, showComments: false }
+
+    // Act & Assert
+    expect(needsRefetch(shown, hidden)).toBe(false)
+    expect(needsRefetch(hidden, shown)).toBe(true)
+  })
+})
+
+describe('filterSchemas のコメント', () => {
+  const コメント付きの列: Record<string, TableColumn[]> = {
+    KODUCHI: [{ ...列('USERS', 'EMAIL'), comment: 'メールアドレス' }, 列('ORDERS', 'ORDER_ID')],
+  }
+  const オブジェクトのコメント = { KODUCHI: { ORDERS: '受注ヘッダ' } }
+
+  it('コメントを渡すと表のコメントにも当たる', () => {
+    // Arrange
+    const search = '受注'
+
+    // Act
+    const filtered = filterSchemas(スキーマ一覧, コメント付きの列, search, オブジェクトのコメント)
+
+    // Assert
+    expect(filtered.map((schema) => schema.name)).toEqual(['KODUCHI'])
+    expect(filtered[0].objects.map((object) => object.name)).toEqual(['ORDERS'])
+  })
+
+  it('コメントを渡すと列のコメントで表が当たる', () => {
+    // Arrange
+    const search = 'メール'
+
+    // Act
+    const filtered = filterSchemas(スキーマ一覧, コメント付きの列, search, オブジェクトのコメント)
+
+    // Assert
+    expect(filtered[0].objects.map((object) => object.name)).toEqual(['USERS'])
+  })
+
+  it('コメントを隠しているときはコメントに当たらない', () => {
+    // Arrange
+    const search = '受注'
+
+    // Act
+    const filtered = filterSchemas(スキーマ一覧, コメント付きの列, search, null)
+
+    // Assert
+    expect(filtered).toEqual([])
+  })
+
+  it('表と同名の索引には表のコメントで当たらない', () => {
+    // Arrange
+    const schemas: SchemaNode[] = [
+      {
+        name: 'KODUCHI',
+        objectCount: 1,
+        objects: [{ name: 'ORDERS', kind: 'index' }],
+      },
+    ]
+
+    // Act
+    const filtered = filterSchemas(schemas, {}, '受注', オブジェクトのコメント)
+
+    // Assert
+    expect(filtered).toEqual([])
+  })
+})
+
+describe('hasComment', () => {
+  it('コメントを持つのは表とビューとマテビューだけである', () => {
+    // Arrange & Act & Assert
+    expect(hasComment('table')).toBe(true)
+    expect(hasComment('view')).toBe(true)
+    expect(hasComment('materializedView')).toBe(true)
+    expect(hasComment('index')).toBe(false)
+    expect(hasComment('package')).toBe(false)
   })
 })

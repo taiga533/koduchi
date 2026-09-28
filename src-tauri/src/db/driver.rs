@@ -10,9 +10,10 @@
 
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::error::DbResult;
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaColumns, SchemaFilter, SchemaNode};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
+use crate::db::stats::ObjectStats;
 use crate::db::value::{Cell, CellKind};
 use serde::{Deserialize, Serialize};
 
@@ -322,7 +323,8 @@ pub trait Driver: 'static {
     /// # 引数
     ///
     /// * `owner` - 対象のスキーマ名
-    fn schema_columns(&mut self, owner: &str) -> DbResult<Vec<TableColumn>>;
+    /// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
+    fn schema_columns(&mut self, owner: &str, with_comments: bool) -> DbResult<SchemaColumns>;
 
     /// 見積りだけの実行計画をテキストで返す（`⌘E`）。
     ///
@@ -388,6 +390,24 @@ pub trait Driver: 'static {
     /// * `name` - オブジェクト名
     /// * `kind` - オブジェクトの種類
     fn object_ddl(&mut self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl>;
+
+    /// 表 1 つの統計とセグメントの大きさを取る（ADR 0044）。
+    ///
+    /// 統計もセグメントも持たない種別では `None` を返す。セグメントを読む
+    /// 権限が無いときはエラーにせず、`SegmentSize::PermissionDenied` を入れて
+    /// 統計だけは返す。
+    ///
+    /// # 引数
+    ///
+    /// * `owner` - 所有者のスキーマ名
+    /// * `name` - オブジェクト名
+    /// * `kind` - オブジェクトの種類
+    fn object_stats(
+        &mut self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<Option<ObjectStats>>;
 
     /// セッションの一覧とブロッキングの連鎖を取る（ADR 0017）。
     ///

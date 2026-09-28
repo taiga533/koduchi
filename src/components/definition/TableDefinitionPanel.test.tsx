@@ -13,7 +13,7 @@ import { resetClipboardApi, setClipboardApi } from '../../api/clipboard'
 import { resetDbApi, setDbApi } from '../../api/db'
 import { createFakeDbApi, type FakeCalls, type FakeDbApiOptions } from '../../test/fakeDbApi'
 import { useDefinitionStore } from '../../stores/definition'
-import type { ObjectDefinition } from '../../types/db'
+import type { ObjectDefinition, ObjectStats } from '../../types/db'
 import { TableDefinitionPanel } from './TableDefinitionPanel'
 
 /** 描いている定義タブの ID。 */
@@ -128,6 +128,18 @@ let calls: FakeCalls
 /** クリップボードへ書かれた文字列。新しいものが末尾に来る。 */
 let 書いた文字列: string[]
 
+/** 統計を採った表の統計とセグメントの大きさ（ADR 0044）。 */
+const 統計: ObjectStats = {
+  numRows: 500,
+  lastAnalyzed: '2026-09-08 22:00',
+  daysSinceAnalyzed: 20,
+  stale: false,
+  partitioned: false,
+  indexOrganized: false,
+  temporary: false,
+  size: { status: 'measured', tableBytes: 65536, indexBytes: 131072, lobBytes: 0, segmentCount: 3 },
+}
+
 /**
  * 定義ビューを開いた状態で描く。
  *
@@ -230,6 +242,48 @@ describe('TableDefinitionPanel', () => {
     // Assert
     expect(await screen.findByText('KODUCHI.SHIPMENTS')).toBeInTheDocument()
     expect(screen.queryByText('出荷。受注 1 件に対して 1 行が立つ')).not.toBeInTheDocument()
+  })
+
+  it('見出しの下に統計時点の行数と採った日時とサイズを出す', async () => {
+    // Arrange & Act（ADR 0044）
+    await パネルを開く({ definition: 定義, stats: 統計 })
+
+    // Assert
+    expect(await screen.findByText('約 500 行')).toBeInTheDocument()
+    expect(screen.getByText('行数（統計時点）')).toBeInTheDocument()
+    expect(screen.getByText('2026-09-08 22:00（20 日前）')).toBeInTheDocument()
+    expect(screen.getByText('表 64 KB · 索引 128 KB')).toBeInTheDocument()
+  })
+
+  it('セグメントを読む権限が無ければ 0 ではなくそう出す', async () => {
+    // Arrange & Act
+    await パネルを開く({
+      definition: 定義,
+      stats: { ...統計, size: { status: 'permissionDenied' } },
+    })
+
+    // Assert: 統計は並べて出る
+    expect(await screen.findByText('権限が無く測れません')).toBeInTheDocument()
+    expect(screen.getByText('約 500 行')).toBeInTheDocument()
+  })
+
+  it('統計の取得に失敗しても列は出る', async () => {
+    // Arrange & Act
+    await パネルを開く({ definition: 定義, statsError: { kind: 'execute', message: 'ORA-01013' } })
+
+    // Assert
+    expect(await screen.findByText(/統計を取得できませんでした/)).toBeInTheDocument()
+    expect(screen.getByText('TRACKING_NO')).toBeInTheDocument()
+  })
+
+  it('統計を持たない種別では見出しに統計を出さない', async () => {
+    // Arrange & Act: ビューやシーケンスでは null が返る
+    await パネルを開く({ definition: 定義, stats: null })
+
+    // Assert
+    expect(await screen.findByText('TRACKING_NO')).toBeInTheDocument()
+    expect(screen.queryByLabelText('表の統計')).not.toBeInTheDocument()
+    expect(screen.queryByText(/統計を読み込んでいます/)).not.toBeInTheDocument()
   })
 
   it('列のコメントを 5 つめの欄に出す', async () => {

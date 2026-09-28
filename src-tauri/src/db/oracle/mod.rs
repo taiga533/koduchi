@@ -12,15 +12,17 @@ pub mod plan;
 pub mod schema;
 pub mod sessions;
 pub mod source;
+pub mod stats;
 
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{
     Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome, Liveness, Prober,
 };
 use crate::db::error::{DbError, DbResult};
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaColumns, SchemaFilter, SchemaNode};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
+use crate::db::stats::ObjectStats;
 use oracle::sql_type::OracleType;
 use oracle::{ConnStatus, Connection, ResultSet, Row, StatementType};
 use std::sync::Arc;
@@ -452,8 +454,8 @@ impl Driver for OracleDriver {
         schema::load_overview(&self.connection, filter)
     }
 
-    fn schema_columns(&mut self, owner: &str) -> DbResult<Vec<TableColumn>> {
-        schema::load_columns(&self.connection, owner)
+    fn schema_columns(&mut self, owner: &str, with_comments: bool) -> DbResult<SchemaColumns> {
+        schema::load_columns(&self.connection, owner, with_comments)
     }
 
     fn commit(&mut self) -> DbResult<()> {
@@ -512,6 +514,15 @@ impl Driver for OracleDriver {
 
     fn object_ddl(&mut self, owner: &str, name: &str, kind: ObjectKind) -> DbResult<ObjectDdl> {
         definition::load_ddl(&self.connection, owner, name, kind)
+    }
+
+    fn object_stats(
+        &mut self,
+        owner: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> DbResult<Option<ObjectStats>> {
+        stats::load_stats(&self.connection, owner, name, kind)
     }
 
     fn list_sessions(&mut self) -> DbResult<SessionOverview> {
