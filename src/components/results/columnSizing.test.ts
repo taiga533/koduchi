@@ -6,7 +6,9 @@ import {
   clampColumnWidth,
   columnMinWidthOf,
   displayWidth,
+  fittingFrozenCount,
   frozenOffsets,
+  MIN_SCROLL_ROOM,
   gridTemplate,
   MAX_AUTO_WIDTH,
   MIN_COLUMN_WIDTH,
@@ -362,5 +364,51 @@ describe('columnMinWidthOf', () => {
 
     // Assert
     expect(width).toBe(110)
+  })
+})
+
+describe('fittingFrozenCount', () => {
+  it('表示幅が測れていなければ減らさない', () => {
+    // Arrange
+    const viewport = null
+
+    // Act
+    const count = fittingFrozenCount(列, {}, 44, 2, viewport)
+
+    // Assert
+    expect(count).toBe(2)
+  })
+
+  it('固定した列が右の余白を残して収まればそのまま固定する', () => {
+    // Arrange: 44 + 110 + 160 = 314
+    const viewport = 314 + MIN_SCROLL_ROOM
+
+    // Act
+    const count = fittingFrozenCount(列, {}, 44, 2, viewport)
+
+    // Assert
+    expect(count).toBe(2)
+  })
+
+  it('右の余白を食い込むと収まる列までに減らす', () => {
+    // Arrange: 2 列目まで固定すると 314 で、余白が 1px 足りない
+    const viewport = 314 + MIN_SCROLL_ROOM - 1
+
+    // Act
+    const count = fittingFrozenCount(列, {}, 44, 2, viewport)
+
+    // Assert
+    expect(count).toBe(1)
+  })
+
+  it('1 列も収まらない狭さでは固定しない', () => {
+    // Arrange
+    const widths = { ID: 400 }
+
+    // Act
+    const count = fittingFrozenCount(列, widths, 44, 1, 300)
+
+    // Assert
+    expect(count).toBe(0)
   })
 })

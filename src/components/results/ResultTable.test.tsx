@@ -1237,6 +1237,50 @@ describe('ResultTable の列の固定（ADR 0048）', () => {
     expect(screen.getByTestId('result-cell-0-1')).not.toHaveAttribute('data-frozen')
   })
 
+  it('固定した列が表示幅を埋めるときは収まる列までを描き、覚えた境目と解除の入口は保つ', () => {
+    // Arrange: jsdom には寸法も ResizeObserver も無いため、表示幅 300px だけを補う。
+    // 44 + 110 + 160 = 314 は右の余白（120px）を残せず、ID までなら収まる
+    const 観測: { callback: ResizeObserverCallback; target: Element }[] = []
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          観測.push({ callback: this.callback, target })
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(300)
+    useUiStore.setState({ resultFrozenColumns: { 'tab-1': { name: 'LABEL', index: 1 } } })
+
+    try {
+      // Act
+      render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)
+      act(() => {
+        for (const { callback, target } of 観測) {
+          const entry = {
+            target,
+            borderBoxSize: [{ inlineSize: 300, blockSize: 600 }],
+            contentRect: { width: 300, height: 600 },
+          } as unknown as ResizeObserverEntry
+          callback([entry], {} as ResizeObserver)
+        }
+      })
+      右クリック(screen.getByText('LABEL'))
+
+      // Assert
+      expect(screen.getByTestId('result-cell-0-0')).toHaveAttribute('data-frozen', 'true')
+      expect(screen.getByTestId('result-cell-0-1')).not.toHaveAttribute('data-frozen')
+      expect(screen.queryByRole('menuitem', { name: 'この列まで固定' })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: '列の固定を解除' })).toBeInTheDocument()
+    } finally {
+      clientWidth.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('何も固定していなければ「列の固定を解除」は出ない', () => {
     // Arrange
     render(<ResultTable tabId="tab-1" execution={結果} onRequestMore={() => {}} />)

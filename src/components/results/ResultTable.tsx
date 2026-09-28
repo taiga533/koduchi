@@ -60,6 +60,7 @@ import {
   autoFitWidth,
   clampColumnWidth,
   columnMinWidthOf,
+  fittingFrozenCount,
   frozenOffsets,
   gridTemplate,
   resolveFrozenCount,
@@ -294,6 +295,22 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
     }
   }, [loadingRest, execution.exhausted, execution.loadingMore, rowCount, onRequestMore])
 
+  /**
+   * 本文の表示幅。固定した列が表示幅を埋め尽くさないよう、固定する列の数を収める
+   * のに使う（ADR 0048）。`ResizeObserver` の無い環境（jsdom）では測らない。
+   */
+  const [viewportWidth, setViewportWidth] = useState<number | null>(null)
+  const hasBody = rowCount > 0
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!hasBody || element === null || typeof ResizeObserver === 'undefined') {
+      return
+    }
+    const observer = new ResizeObserver(() => setViewportWidth(element.clientWidth))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [hasBody])
+
   // ドラッグはテーブルの外で離されることもあるため、窓全体で終わりを拾う。
   useEffect(() => {
     const stop = () => {
@@ -496,7 +513,15 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
     [columnCount, copyRange, openSearch, rowCount, selection, stepMatch],
   )
 
-  const frozenCount = resolveFrozenCount(columns, frozen)
+  // 覚えた境目（メニューの出し分けに使う）と、表示幅に収めて実際に描く境目は分ける。
+  const chosenFrozenCount = resolveFrozenCount(columns, frozen)
+  const frozenCount = fittingFrozenCount(
+    columns,
+    widths,
+    ROW_NUMBER_WIDTH,
+    chosenFrozenCount,
+    viewportWidth,
+  )
   const offsets = frozenOffsets(columns, widths, ROW_NUMBER_WIDTH, frozenCount)
   const template = gridTemplate(columns, widths, ROW_NUMBER_WIDTH, frozenCount)
 
@@ -749,13 +774,13 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
           }
           onFit={() => fitColumn(columns[menu.column], menu.column)}
           onFreeze={
-            tabId !== null && menu.column !== frozenCount - 1
+            tabId !== null && menu.column !== chosenFrozenCount - 1
               ? () =>
                   setFrozenColumn(tabId, { name: columns[menu.column].name, index: menu.column })
               : undefined
           }
           onUnfreeze={
-            tabId !== null && frozenCount > 0 ? () => setFrozenColumn(tabId, null) : undefined
+            tabId !== null && chosenFrozenCount > 0 ? () => setFrozenColumn(tabId, null) : undefined
           }
           onClose={() => setMenu(null)}
         />

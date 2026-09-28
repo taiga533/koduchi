@@ -263,3 +263,45 @@ export function frozenOffsets(
   }
   return offsets
 }
+
+/**
+ * 固定した列の右に残しておく幅（ピクセル）。
+ *
+ * 固定した列が表示幅をすべて埋めると、残りの列は横にスクロールしても固定した列の
+ * 陰を流れるだけで、どこにも見えなくなる。最低でも数値の列が 1 つ読める幅は空けておく。
+ */
+export const MIN_SCROLL_ROOM = 120
+
+/**
+ * 表示幅に収まるぶんだけに固定する列の数を減らす。
+ *
+ * 利用者が決めた境目（`resolveFrozenCount`）は覚えたまま、描くときにだけ減らす。
+ * ウィンドウや列幅を広げれば元の境目まで固定が戻り、減らした分を覚え直させない。
+ * 行番号の列だけでも収まらない狭さでは 1 列も固定しない。
+ *
+ * @param columns 結果セットの列
+ * @param widths 列名をキーにした幅の対応表
+ * @param rowNumberWidth 行番号の列の幅（ピクセル）
+ * @param frozenCount 利用者が決めた固定する列の数
+ * @param viewportWidth 本文の表示幅。測れていなければ `null`（減らさない）
+ */
+export function fittingFrozenCount(
+  columns: Column[],
+  widths: ColumnWidths,
+  rowNumberWidth: number,
+  frozenCount: number,
+  viewportWidth: number | null,
+): number {
+  if (viewportWidth === null) {
+    return frozenCount
+  }
+  const limit = viewportWidth - MIN_SCROLL_ROOM
+  let right = rowNumberWidth
+  for (let count = 0; count < frozenCount; count += 1) {
+    right += fixedWidthOf(columns[count], widths)
+    if (right > limit) {
+      return count
+    }
+  }
+  return frozenCount
+}
