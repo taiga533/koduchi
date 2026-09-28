@@ -25,7 +25,7 @@ use crate::db::schema::{
 };
 use crate::db::value::CellKind;
 use oracle::Connection;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `ALL_OBJECTS` から取る種別（ADR 0014）。
 ///
@@ -208,28 +208,41 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
     }
 
     let types = listed_object_types(&filter.kinds);
+    // 無効なオブジェクトの印（ADR 0045）。本体の行は印のためだけに取る。
+    let mut invalid = BTreeSet::new();
     if !types.is_empty() {
+        let types = with_body_types(types);
         let sql = format!(
-            "select owner, object_name, object_type from all_objects
+            "select owner, object_name, object_type, status from all_objects
              where object_type in ({types}) and owner <> 'PUBLIC'
              order by owner, object_name"
         );
 
         let objects = connection
-            .query_as::<(String, String, String)>(&sql, &[])
+            .query_as::<(String, String, String, String)>(&sql, &[])
             .map_err(|error| {
                 errors::map_execute_error("オブジェクトを取得できませんでした", &error)
             })?;
 
         for object in objects {
-            let (owner, object_name, object_type) = object.map_err(|error| {
+            let (owner, object_name, object_type, status) = object.map_err(|error| {
                 errors::map_execute_error("オブジェクトを取得できませんでした", &error)
             })?;
+
+            if let Some(kind) = body_owner_kind(&object_type) {
+                if status == "INVALID" {
+                    invalid.insert((owner, object_name, kind));
+                }
+                continue;
+            }
 
             let Some(kind) = ObjectKind::from_object_type(&object_type) else {
                 continue;
             };
 
+            if status == "INVALID" {
+                invalid.insert((owner.clone(), object_name.clone(), kind));
+            }
             push_object(&mut schemas, owner, object_name, kind);
         }
     }
@@ -273,6 +286,7 @@ pub fn load_overview(connection: &Connection, filter: &SchemaFilter) -> DbResult
     for node in &mut nodes {
         sort_objects(&mut node.objects);
     }
+    mark_invalid(&mut nodes, &invalid);
 
     Ok(apply_filter(nodes, filter))
 }
@@ -301,7 +315,11 @@ fn push_object(
     });
 
     schema.object_count += 1;
-    schema.objects.push(SchemaObject { name, kind });
+    schema.objects.push(SchemaObject {
+        name,
+        kind,
+        invalid: false,
+    });
 }
 
 /// スキーマ 1 つぶんのオブジェクトを名前順に並べ直す。
@@ -331,6 +349,60 @@ pub fn listed_object_types(kinds: &ObjectKindFilter) -> String {
         .map(|kind| format!("'{}'", kind.object_type()))
         .collect::<Vec<String>>()
         .join(",")
+}
+
+/// `in (...)` の並びへ、載せる種別の本体（`PACKAGE BODY` / `TYPE BODY`）を足す
+/// （ADR 0045）。
+///
+/// 本体はツリーに行として出さない（`ObjectKind::from_object_type`）が、無効かどうかは
+/// 本体にしか現れないことが多い。仕様が有効のまま本体だけが壊れるのが、PL/SQL を
+/// 書いている最中のいちばんよくある形である。別の問い合わせにせず同じ往復で取る。
+///
+/// # 引数
+///
+/// * `types` - `listed_object_types` が組み立てた並び
+fn with_body_types(types: String) -> String {
+    let mut types = types;
+    for (spec, body) in [("'PACKAGE'", "'PACKAGE BODY'"), ("'TYPE'", "'TYPE BODY'")] {
+        if types.split(',').any(|listed| listed == spec) {
+            types.push(',');
+            types.push_str(body);
+        }
+    }
+    types
+}
+
+/// 本体の種別名なら、印を付ける先（仕様）の種別を返す（ADR 0045）。
+///
+/// # 引数
+///
+/// * `raw` - `ALL_OBJECTS.OBJECT_TYPE` の値
+fn body_owner_kind(raw: &str) -> Option<ObjectKind> {
+    match raw {
+        "PACKAGE BODY" => Some(ObjectKind::Package),
+        "TYPE BODY" => Some(ObjectKind::Type),
+        _ => None,
+    }
+}
+
+/// 無効と分かったオブジェクトに印を立てる（ADR 0045）。
+///
+/// 本体の行は仕様の行より後に届くとは限らないため、読み終えてからまとめて当てる。
+///
+/// # 引数
+///
+/// * `nodes` - 組み立て終えたスキーマ
+/// * `invalid` - 無効なオブジェクトの `(所有者, 名前, 種別)`
+pub fn mark_invalid(nodes: &mut [SchemaNode], invalid: &BTreeSet<(String, String, ObjectKind)>) {
+    if invalid.is_empty() {
+        return;
+    }
+    for node in nodes {
+        for object in &mut node.objects {
+            object.invalid =
+                invalid.contains(&(node.name.clone(), object.name.clone(), object.kind));
+        }
+    }
 }
 
 /// 段階 2。スキーマ 1 つぶんの列情報を取る。
@@ -575,14 +647,17 @@ mod tests {
             SchemaObject {
                 name: String::from("ORDERS"),
                 kind: ObjectKind::Index,
+                invalid: false,
             },
             SchemaObject {
                 name: String::from("EVENTS"),
                 kind: ObjectKind::Table,
+                invalid: false,
             },
             SchemaObject {
                 name: String::from("ORDERS"),
                 kind: ObjectKind::Table,
+                invalid: false,
             },
         ];
 
@@ -658,5 +733,95 @@ mod tests {
             CellKind::Datetime
         );
         assert_eq!(kind_of_type_name("BLOB"), CellKind::Binary);
+    }
+
+    #[test]
+    fn パッケージと型を載せるときは本体も取りにいく() {
+        // Arrange
+        let types = String::from("'TABLE','TYPE','PACKAGE'");
+
+        // Act
+        let types = with_body_types(types);
+
+        // Assert
+        assert_eq!(types, "'TABLE','TYPE','PACKAGE','PACKAGE BODY','TYPE BODY'");
+    }
+
+    #[test]
+    fn パッケージを落としたときは本体も取りにいかない() {
+        // Arrange: 落とした種別は問い合わせにも行かない（ADR 0014）
+        let types = String::from("'TABLE','PROCEDURE'");
+
+        // Act
+        let types = with_body_types(types);
+
+        // Assert
+        assert_eq!(types, "'TABLE','PROCEDURE'");
+    }
+
+    #[test]
+    fn 本体の種別は仕様の種別へ写る() {
+        // Arrange & Act & Assert
+        assert_eq!(body_owner_kind("PACKAGE BODY"), Some(ObjectKind::Package));
+        assert_eq!(body_owner_kind("TYPE BODY"), Some(ObjectKind::Type));
+        assert_eq!(body_owner_kind("PACKAGE"), None);
+    }
+
+    #[test]
+    fn 無効なオブジェクトにだけ印が立つ() {
+        // Arrange: 同名でも種別が違えば別のオブジェクトである
+        let mut nodes = vec![SchemaNode {
+            name: String::from("KODUCHI"),
+            object_count: 2,
+            objects: vec![
+                SchemaObject {
+                    name: String::from("BILLING"),
+                    kind: ObjectKind::Package,
+                    invalid: false,
+                },
+                SchemaObject {
+                    name: String::from("BILLING"),
+                    kind: ObjectKind::Table,
+                    invalid: false,
+                },
+            ],
+        }];
+        let invalid = BTreeSet::from([(
+            String::from("KODUCHI"),
+            String::from("BILLING"),
+            ObjectKind::Package,
+        )]);
+
+        // Act
+        mark_invalid(&mut nodes, &invalid);
+
+        // Assert
+        let 印: Vec<bool> = nodes[0].objects.iter().map(|o| o.invalid).collect();
+        assert_eq!(印, vec![true, false]);
+    }
+
+    #[test]
+    fn 別のスキーマの同名オブジェクトには印が立たない() {
+        // Arrange
+        let mut nodes = vec![SchemaNode {
+            name: String::from("ANALYTICS"),
+            object_count: 1,
+            objects: vec![SchemaObject {
+                name: String::from("BILLING"),
+                kind: ObjectKind::Package,
+                invalid: false,
+            }],
+        }];
+        let invalid = BTreeSet::from([(
+            String::from("KODUCHI"),
+            String::from("BILLING"),
+            ObjectKind::Package,
+        )]);
+
+        // Act
+        mark_invalid(&mut nodes, &invalid);
+
+        // Assert
+        assert!(!nodes[0].objects[0].invalid);
     }
 }

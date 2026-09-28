@@ -8,6 +8,7 @@
 //! 実装が 1 つしかない段階で広い trait を定義すると境界を必ず外すため、
 //! 実装済みの操作だけを載せている。
 
+use crate::db::compilation::CompilationReport;
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::error::DbResult;
 use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
@@ -208,6 +209,11 @@ pub enum ExecuteOutcome {
         notices: Vec<String>,
         /// 未コミットのトランザクションが残っているか（ADR 0012）。
         in_transaction: bool,
+        /// コンパイルの警告（`ORA-24344`）を受けたときの報告（ADR 0045）。
+        ///
+        /// 警告の無い文では `None`。Oracle は警告付きの成功として返すため、
+        /// エラーにはせず結果に添え、成功か失敗かはフロントエンドが決める。
+        compilation: Option<CompilationReport>,
     },
 }
 
@@ -589,6 +595,7 @@ mod tests {
             elapsed_ms: 12,
             notices: notices.clone(),
             in_transaction: true,
+            compilation: None,
         };
 
         // Assert
@@ -615,6 +622,7 @@ mod tests {
             elapsed_ms: 12,
             notices: Vec::new(),
             in_transaction: false,
+            compilation: None,
         };
 
         // Act
@@ -623,7 +631,7 @@ mod tests {
         // Assert
         assert_eq!(
             json,
-            r#"{"kind":"statement","affectedRows":3,"elapsedMs":12,"notices":[],"inTransaction":false}"#
+            r#"{"kind":"statement","affectedRows":3,"elapsedMs":12,"notices":[],"inTransaction":false,"compilation":null}"#
         );
     }
 
@@ -635,6 +643,7 @@ mod tests {
             elapsed_ms: 12,
             notices: Vec::new(),
             in_transaction: false,
+            compilation: None,
         };
 
         // Act
@@ -643,7 +652,7 @@ mod tests {
         // Assert
         assert_eq!(
             json,
-            r#"{"kind":"statement","affectedRows":null,"elapsedMs":12,"notices":[],"inTransaction":false}"#
+            r#"{"kind":"statement","affectedRows":null,"elapsedMs":12,"notices":[],"inTransaction":false,"compilation":null}"#
         );
     }
 }
