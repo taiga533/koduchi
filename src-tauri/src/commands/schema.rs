@@ -6,7 +6,7 @@
 
 use crate::commands::{run_blocking, AppState, ConnectionId};
 use crate::db::error::DbResult;
-use crate::db::schema::{SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{SchemaColumns, SchemaFilter, SchemaNode};
 use tauri::State;
 
 /// スキーマツリーの段階 1 を取る。
@@ -32,13 +32,15 @@ pub async fn schema_overview(
 ///
 /// * `id` - 接続の識別子
 /// * `owner` - 対象のスキーマ名
+/// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
 #[tauri::command]
 pub async fn schema_columns(
     state: State<'_, AppState>,
     id: ConnectionId,
     owner: String,
-) -> DbResult<Vec<TableColumn>> {
+    with_comments: bool,
+) -> DbResult<SchemaColumns> {
     let pool = state.require(&id)?;
 
-    run_blocking(move || pool.schema_columns(&owner)).await
+    run_blocking(move || pool.schema_columns(&owner, with_comments)).await
 }

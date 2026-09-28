@@ -468,6 +468,52 @@ serviceName = "FREEPDB1"
     }
 
     #[test]
+    fn 型とコメントの表示を持たない古いフィルタはどちらも出す設定として読める() {
+        // Arrange: ADR 0043 より前に書かれた schemaFilter を模す
+        let text = r#"
+[[connection]]
+id = "id-1"
+name = "開発"
+username = "koduchi"
+
+[connection.schemaFilter]
+excludeSystem = true
+hideEmpty = false
+
+[connection.target]
+method = "ezConnect"
+host = "localhost"
+port = 1521
+serviceName = "FREEPDB1"
+"#;
+
+        // Act
+        let file = ConnectionsFile::from_toml(text);
+
+        // Assert
+        let filter = file.connections[0].schema_filter;
+        assert!(!filter.hide_empty);
+        assert!(filter.show_types);
+        assert!(filter.show_comments);
+    }
+
+    #[test]
+    fn コメントを隠す設定は書き出して読み戻しても保たれる() {
+        // Arrange
+        let mut connection = 接続を作る("id-comments");
+        connection.schema_filter.show_comments = false;
+        let mut file = ConnectionsFile::default();
+        file.upsert(connection);
+
+        // Act
+        let restored = ConnectionsFile::from_toml(&file.to_toml());
+
+        // Assert
+        assert!(!restored.connections[0].schema_filter.show_comments);
+        assert!(restored.connections[0].schema_filter.show_types);
+    }
+
+    #[test]
     fn 読み取り専用とフィルタは省略しても既定値で読める() {
         // Arrange
         let text = r#"

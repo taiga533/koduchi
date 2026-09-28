@@ -22,6 +22,7 @@ import type {
   NewHistoryEntry,
   NewSavedQuery,
   ObjectDdl,
+  ObjectComment,
   ObjectDefinition,
   ObjectKind,
   ObjectStats,
@@ -64,7 +65,7 @@ export interface FakeCalls {
   deleteSavedQuery: number[]
   saveSession: { windowLabel: string; state: SessionState }[]
   schemaOverview: { id: string; filter: SchemaFilter }[]
-  schemaColumns: { id: string; owner: string }[]
+  schemaColumns: { id: string; owner: string; withComments: boolean }[]
   objectDefinition: { id: string; owner: string; name: string; kind: ObjectKind }[]
   objectDdl: { id: string; owner: string; name: string; kind: ObjectKind }[]
   objectStats: { id: string; owner: string; name: string; kind: ObjectKind }[]
@@ -124,6 +125,8 @@ export interface FakeDbApiOptions {
   onSchemaOverview?: () => SchemaNode[] | Promise<SchemaNode[]>
   /** スキーマごとの列情報。 */
   columns?: Record<string, TableColumn[]>
+  /** スキーマ名ごとのオブジェクトのコメント（段階 2 の `objectComments`）。 */
+  objectComments?: Record<string, ObjectComment[]>
   /** テーブル定義ビューの応答（ADR 0019）。 */
   definition?: ObjectDefinition
   /** 定義の取得で投げるエラー。権限不足の表示を確かめるのに使う。 */
@@ -529,9 +532,12 @@ export function createFakeDbApi(options: FakeDbApiOptions = {}): {
       return options.onSchemaOverview ? options.onSchemaOverview() : (options.schemas ?? [])
     },
 
-    schemaColumns: async (id, owner) => {
-      calls.schemaColumns.push({ id, owner })
-      return options.columns?.[owner] ?? []
+    schemaColumns: async (id, owner, withComments) => {
+      calls.schemaColumns.push({ id, owner, withComments })
+      return {
+        columns: options.columns?.[owner] ?? [],
+        objectComments: options.objectComments?.[owner] ?? [],
+      }
     },
 
     objectDefinition: async (id, owner, name, kind) => {
