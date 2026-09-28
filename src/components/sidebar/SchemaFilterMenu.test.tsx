@@ -123,6 +123,47 @@ describe('SchemaFilterMenu', () => {
     expect(calls.saveConnection[0].connection.schemaFilter.kinds.trigger).toBe(false)
   })
 
+  it('型とコメントは既定でどちらも出す', async () => {
+    // Arrange
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
+
+    // Act
+    await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
+
+    // Assert
+    expect(screen.getByLabelText('列の型')).toBeChecked()
+    expect(screen.getByLabelText('コメント')).toBeChecked()
+  })
+
+  it('型を隠しても取得し直さずに接続のエントリへ書き戻す', async () => {
+    // Arrange
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
+    await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
+
+    // Act
+    await userEvent.click(screen.getByLabelText('列の型'))
+
+    // Assert
+    await waitFor(() => expect(calls.saveConnection).toHaveLength(1))
+    expect(calls.saveConnection[0].connection.schemaFilter.showTypes).toBe(false)
+    expect(calls.schemaOverview).toHaveLength(0)
+    expect(useSchemaStore.getState().filter.showTypes).toBe(false)
+  })
+
+  it('コメントを出す側へ戻すと取得し直す', async () => {
+    // Arrange
+    useSchemaStore.setState({ filter: { ...defaultSchemaFilter, showComments: false } })
+    render(<SchemaFilterMenu connectionId="c1" savedConnectionId="saved-1" />)
+    await userEvent.click(screen.getByRole('button', { name: 'スキーマの絞り込み' }))
+
+    // Act
+    await userEvent.click(screen.getByLabelText('コメント'))
+
+    // Assert
+    await waitFor(() => expect(calls.schemaOverview).toHaveLength(1))
+    expect(calls.schemaOverview[0].filter.showComments).toBe(true)
+  })
+
   it('保存していない接続では書き戻さない', async () => {
     // Arrange
     render(<SchemaFilterMenu connectionId="c1" savedConnectionId={null} />)

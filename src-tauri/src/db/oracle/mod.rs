@@ -19,7 +19,7 @@ use crate::db::driver::{
     Bind, Canceller, Chunk, Column, ConnectionParams, Driver, ExecuteOutcome, Liveness, Prober,
 };
 use crate::db::error::{DbError, DbResult};
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaColumns, SchemaFilter, SchemaNode};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use oracle::sql_type::OracleType;
@@ -460,8 +460,8 @@ impl Driver for OracleDriver {
         schema::load_overview(&self.connection, filter)
     }
 
-    fn schema_columns(&mut self, owner: &str) -> DbResult<Vec<TableColumn>> {
-        schema::load_columns(&self.connection, owner)
+    fn schema_columns(&mut self, owner: &str, with_comments: bool) -> DbResult<SchemaColumns> {
+        schema::load_columns(&self.connection, owner, with_comments)
     }
 
     fn commit(&mut self) -> DbResult<()> {

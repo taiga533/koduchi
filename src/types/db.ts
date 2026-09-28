@@ -270,6 +270,10 @@ export interface SchemaFilter {
   hideEmpty: boolean
   /** ツリーに載せるオブジェクトの種別。既定はすべて真（ADR 0014）。 */
   kinds: ObjectKindFilter
+  /** 列の行に型名を出す。見た目だけの設定で、取得し直さない。既定は真（ADR 0043）。 */
+  showTypes: boolean
+  /** 表・ビュー・列のコメントを出す。偽なら段階 2 で読みにいかない。既定は真（ADR 0043）。 */
+  showComments: boolean
 }
 
 /**
@@ -357,6 +361,8 @@ export const defaultSchemaFilter: SchemaFilter = {
   excludeSystem: true,
   hideEmpty: true,
   kinds: defaultObjectKindFilter,
+  showTypes: true,
+  showComments: true,
 }
 
 /** スキーマ内のオブジェクト 1 件。 */
@@ -391,15 +397,27 @@ export interface TableColumn {
   nullable: boolean
   kind: CellKind
   /**
-   * 列に付いたコメント（`ALL_COL_COMMENTS`。ADR 0033）。
+   * 列に付いたコメント（`ALL_COL_COMMENTS`。ADR 0033・0043）。
    *
-   * **埋まるのは定義タブ（`objectDefinition`）から届いた列だけである。**
-   * 段階 2（ADR 0007）はスキーマ 1 つぶんの列をまとめて読むため、ここへ
-   * コメントを載せると数万行ぶんの `VARCHAR2(4000)` が IPC に乗る。ツリーも
-   * 補完もコメントを出さない以上、払う値打ちが無い。コメントが無いときと
-   * 段階 2 から来たときのどちらも `undefined` である。
+   * 定義タブ（`objectDefinition`）から届いた列では常に埋まる。段階 2
+   * （ADR 0007）から届いた列では、ツリーにコメントを出す設定
+   * （`SchemaFilter.showComments`）で読んだときだけ埋まる。コメントが無いときは
+   * `undefined` である。
    */
   comment?: string
+}
+
+/** 表・ビュー・マテリアライズドビューのコメント 1 件（ADR 0043）。 */
+export interface ObjectComment {
+  objectName: string
+  comment: string
+}
+
+/** 段階 2 でスキーマ 1 つぶんに返るもの（ADR 0007・0043）。 */
+export interface SchemaColumns {
+  columns: TableColumn[]
+  /** コメントの付いたオブジェクトだけ。コメントを出さない設定では空。 */
+  objectComments: ObjectComment[]
 }
 
 /**

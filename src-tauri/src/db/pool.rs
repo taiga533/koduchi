@@ -19,7 +19,7 @@ use crate::db::actor::ConnectionHandle;
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{Bind, Chunk, ConnectionParams, Driver, ExecuteOutcome, Liveness};
 use crate::db::error::{DbError, DbErrorKind, DbResult};
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaColumns, SchemaFilter, SchemaNode};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use serde::Serialize;
@@ -731,8 +731,12 @@ impl ConnectionPool {
     /// # 引数
     ///
     /// * `owner` - 対象のスキーマ名
-    pub fn schema_columns(&self, owner: &str) -> DbResult<Vec<TableColumn>> {
-        self.見張る(|| self.background_handle()?.schema_columns(owner))
+    /// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
+    pub fn schema_columns(&self, owner: &str, with_comments: bool) -> DbResult<SchemaColumns> {
+        self.見張る(|| {
+            self.background_handle()?
+                .schema_columns(owner, with_comments)
+        })
     }
 
     /// 見積りだけの実行計画を取る（`⌘E`）。
@@ -960,7 +964,11 @@ mod tests {
             Err(断のエラー())
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
             Err(断のエラー())
         }
 
@@ -1117,8 +1125,12 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
-            Ok(Vec::new())
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
+            Ok(SchemaColumns::default())
         }
 
         fn commit(&mut self) -> DbResult<()> {
@@ -1580,7 +1592,11 @@ mod tests {
             unimplemented!("カーソルの順序のテストでは使わない")
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
             unimplemented!("カーソルの順序のテストでは使わない")
         }
 
@@ -1950,7 +1966,11 @@ mod tests {
             unimplemented!("中止のテストでは使わない")
         }
 
-        fn schema_columns(&mut self, _owner: &str) -> DbResult<Vec<TableColumn>> {
+        fn schema_columns(
+            &mut self,
+            _owner: &str,
+            _with_comments: bool,
+        ) -> DbResult<SchemaColumns> {
             unimplemented!("中止のテストでは使わない")
         }
 

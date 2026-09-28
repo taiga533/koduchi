@@ -11,7 +11,7 @@
 use crate::db::definition::{ObjectDdl, ObjectDefinition};
 use crate::db::driver::{Bind, Canceller, Chunk, Driver, ExecuteOutcome, Liveness, Prober};
 use crate::db::error::{DbError, DbResult};
-use crate::db::schema::{ObjectKind, SchemaFilter, SchemaNode, TableColumn};
+use crate::db::schema::{ObjectKind, SchemaColumns, SchemaFilter, SchemaNode};
 use crate::db::sessions::SessionOverview;
 use crate::db::source::{SourceLine, SourceSearchRequest, SourceSearchResult, SourceTarget};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -41,7 +41,8 @@ enum Command {
     /// スキーマ 1 つぶんの列情報を取る（ADR 0007 の段階 2）。
     SchemaColumns {
         owner: String,
-        respond: Sender<DbResult<Vec<TableColumn>>>,
+        with_comments: bool,
+        respond: Sender<DbResult<SchemaColumns>>,
     },
     /// 見積りだけの実行計画を取る（`⌘E`）。
     ExplainPlan {
@@ -319,12 +320,14 @@ impl ConnectionHandle {
     /// # 引数
     ///
     /// * `owner` - 対象のスキーマ名
-    pub fn schema_columns(&self, owner: &str) -> DbResult<Vec<TableColumn>> {
+    /// * `with_comments` - 表・ビュー・列のコメントも取るか（ADR 0043）
+    pub fn schema_columns(&self, owner: &str, with_comments: bool) -> DbResult<SchemaColumns> {
         let (respond, response) = mpsc::channel();
 
         self.commands
             .send(Command::SchemaColumns {
                 owner: owner.to_string(),
+                with_comments,
                 respond,
             })
             .map_err(|_| DbError::closed())?;
@@ -590,8 +593,12 @@ where
             Command::SchemaOverview { filter, respond } => {
                 let _ = respond.send(driver.schema_overview(&filter));
             }
-            Command::SchemaColumns { owner, respond } => {
-                let _ = respond.send(driver.schema_columns(&owner));
+            Command::SchemaColumns {
+                owner,
+                with_comments,
+                respond,
+            } => {
+                let _ = respond.send(driver.schema_columns(&owner, with_comments));
             }
             Command::ExplainPlan {
                 sql,
@@ -789,15 +796,18 @@ mod tests {
             }])
         }
 
-        fn schema_columns(&mut self, owner: &str) -> DbResult<Vec<crate::db::schema::TableColumn>> {
-            Ok(vec![crate::db::schema::TableColumn {
-                object_name: format!("{owner}.USERS"),
-                name: String::from("ID"),
-                type_name: String::from("NUMBER(10)"),
-                nullable: false,
-                kind: CellKind::Number,
-                comment: None,
-            }])
+        fn schema_columns(&mut self, owner: &str, _with_comments: bool) -> DbResult<SchemaColumns> {
+            Ok(SchemaColumns {
+                columns: vec![crate::db::schema::TableColumn {
+                    object_name: format!("{owner}.USERS"),
+                    name: String::from("ID"),
+                    type_name: String::from("NUMBER(10)"),
+                    nullable: false,
+                    kind: CellKind::Number,
+                    comment: None,
+                }],
+                object_comments: Vec::new(),
+            })
         }
 
         fn commit(&mut self) -> DbResult<()> {
