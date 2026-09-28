@@ -755,6 +755,23 @@ fn 種別の名前(
 
 #[test]
 #[serial]
+fn ネストした表の格納表はツリーに並ばない() {
+    // Arrange: 格納表は ALL_OBJECTS に TABLE として載るが、単独では列も DDL も引けない
+    let Some(pool) = 接続を開く() else {
+        return;
+    };
+
+    // Act
+    let schemas = pool.schema_overview(&SchemaFilter::default()).unwrap();
+
+    // Assert: 親の表は残り、格納表だけが落ちる
+    let tables = 種別の名前(&schemas, "KODUCHI", ObjectKind::Table);
+    assert!(tables.contains(&String::from("STATS_NESTED")));
+    assert!(!tables.contains(&String::from("STATS_NESTED_TAGS")));
+}
+
+#[test]
+#[serial]
 fn 索引とトリガーとシノニムと型がツリーに並ぶ() {
     // Arrange
     let Some(pool) = 接続を開く() else {
