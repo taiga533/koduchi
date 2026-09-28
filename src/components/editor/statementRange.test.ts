@@ -361,9 +361,32 @@ describe('長い本文', () => {
   /** 打鍵のたびには切り出さない長さの本文。 */
   const 長い本文 = 'select 1 from dual;\n'.repeat(Math.ceil(SYNC_SPLIT_LIMIT / 20) + 1)
 
+  it('開いた時点では切り出さず、待ってから縦線を引く', () => {
+    // Arrange
+    const view = エディタ(長い本文)
+    const 開いた直後 = 縦線(view)
+
+    // Act
+    vi.advanceTimersByTime(DEFERRED_SPLIT_DELAY_MS)
+
+    // Assert
+    expect(開いた直後).toEqual([])
+    expect(currentStatement(view.state)?.text).toBe('select 1 from dual')
+    expect(縦線(view)).toEqual(['only'])
+  })
+
+  it('開いた時点で長い本文を状態として作っても切り出さない', () => {
+    // Arrange & Act
+    const state = EditorState.create({ doc: 長い本文, extensions: statementRange })
+
+    // Assert
+    expect(currentStatement(state)).toBeNull()
+  })
+
   it('打鍵の間は縦線を消し、打鍵が止んでから引き直す', () => {
     // Arrange
     const view = エディタ(長い本文)
+    vi.advanceTimersByTime(DEFERRED_SPLIT_DELAY_MS)
     const 打つ前 = 縦線(view)
 
     // Act

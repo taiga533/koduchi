@@ -78,6 +78,15 @@ export function targetRanges(
     .filter((range) => range.from <= range.to)
 }
 
+/**
+ * 本文が短ければその場で切り出す。長ければ `null`（後で `deferredSplit` が切り出す）。
+ *
+ * @param doc 文書
+ */
+function splitIfShort(doc: Text): SqlStatement[] | null {
+  return doc.length <= SYNC_SPLIT_LIMIT ? splitStatements(doc.toString()) : null
+}
+
 /** 打鍵が止んだ後に切り出した結果を届ける。 */
 const setStatements = StateEffect.define<SqlStatement[]>()
 
@@ -93,12 +102,11 @@ const setStatements = StateEffect.define<SqlStatement[]>()
  * 範囲を示せない間は、嘘の範囲を示すより何も示さないほうがよい。
  */
 const statementsField = StateField.define<SqlStatement[] | null>({
-  create: (state) => splitStatements(state.doc.toString()),
+  // 開いた時点でも同じ上限を当てる。数 MB の .sql を開いた瞬間に止まらないためである。
+  create: (state) => splitIfShort(state.doc),
   update: (statements, transaction) => {
     if (transaction.docChanged) {
-      return transaction.state.doc.length <= SYNC_SPLIT_LIMIT
-        ? splitStatements(transaction.state.doc.toString())
-        : null
+      return splitIfShort(transaction.state.doc)
     }
     const delivered = transaction.effects.find((effect) => effect.is(setStatements))
     return delivered ? delivered.value : statements
@@ -106,7 +114,7 @@ const statementsField = StateField.define<SqlStatement[] | null>({
 })
 
 /**
- * 長い本文を、打鍵が止んでから切り出し直す。
+ * 長い本文を、打鍵が止んでから切り出し直す。開いた時点で長いときも同じく待つ。
  *
  * 時計はエディタと寿命を共にさせる。打鍵が続く間は時計を掛け直し、止んだ時点の
  * 本文を切り出す。
@@ -115,12 +123,19 @@ const deferredSplit = ViewPlugin.fromClass(
   class implements PluginValue {
     private timer: ReturnType<typeof setTimeout> | null = null
 
-    constructor(private readonly view: EditorView) {}
+    constructor(private readonly view: EditorView) {
+      if (view.state.field(statementsField) === null) {
+        this.schedule()
+      }
+    }
 
     update(update: ViewUpdate) {
-      if (!update.docChanged || update.state.field(statementsField) !== null) {
-        return
+      if (update.docChanged && update.state.field(statementsField) === null) {
+        this.schedule()
       }
+    }
+
+    private schedule() {
       this.clear()
       this.timer = setTimeout(() => {
         this.timer = null
