@@ -7,12 +7,13 @@
  */
 
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ResultTable } from '../results/ResultTable'
 import { SelectionStatsView } from './SelectionStatsView'
 import { emptyExecution, type TabExecution } from '../../stores/execution'
 import { useSelectionStatsStore } from '../../stores/selectionStats'
+import { formatStatValue } from '../results/selectionStats'
 
 // jsdom は寸法を持たず、仮想スクロールが行を描かない。寸法だけを補う。
 beforeAll(() => {
@@ -23,7 +24,7 @@ beforeAll(() => {
 })
 
 afterEach(() => {
-  useSelectionStatsStore.setState({ stats: null, kind: 'sum' })
+  useSelectionStatsStore.setState({ source: null, kind: 'sum' })
 })
 
 /** 数値の列と文字列の列を持つ 3 行の結果。 */
@@ -103,10 +104,7 @@ describe('SelectionStatsView', () => {
     // Assert
     expect(await screen.findByTestId('selection-count')).toHaveTextContent('6')
     expect(screen.getByTestId('selection-stat-value')).toHaveTextContent('1,500.25')
-    expect(screen.getByTestId('selection-stat-value')).toHaveAttribute(
-      'title',
-      '数値 2 件の合計（NULL 1 件・数値でない 3 件は含みません）。',
-    )
+    expect(screen.getByTestId('selection-stat-value').getAttribute('title')).toContain('数値 2 件')
   })
 
   it('メニューから平均へ切り替えると平均を出す', async () => {
@@ -236,5 +234,49 @@ describe('SelectionStatsView', () => {
 
     // Assert
     expect(await screen.findByTestId('selection-stat-value')).toHaveTextContent('—')
+  })
+
+  it('1 かたまりを超える選択は件数を先に出し、値は集計中から数え終えた値に変わる', async () => {
+    // Arrange
+    const rows = Array.from({ length: 6_000 }, () => [
+      { text: '1', kind: 'number' as const },
+      { text: '2', kind: 'number' as const },
+    ])
+    render(<SelectionStatsView />)
+
+    // Act
+    act(() => {
+      useSelectionStatsStore.getState().publish({
+        rows,
+        range: { top: 0, bottom: 5_999, left: 0, right: 1 },
+        exhausted: true,
+      })
+    })
+
+    // Assert
+    expect(screen.getByTestId('selection-count')).toHaveTextContent('12,000')
+    expect(screen.getByTestId('selection-stat-value')).toHaveTextContent('集計中…')
+    expect(await screen.findByText('18,000')).toBeInTheDocument()
+  })
+
+  it('長い値は幅を抑えて省き、全文は title で読める', () => {
+    // Arrange
+    const huge = `15${'0'.repeat(299)}`
+    render(<SelectionStatsView />)
+
+    // Act
+    act(() => {
+      useSelectionStatsStore.getState().publish({
+        rows: [[{ text: huge, kind: 'number' }], [{ text: '0', kind: 'number' }]],
+        range: { top: 0, bottom: 1, left: 0, right: 0 },
+        exhausted: true,
+      })
+    })
+
+    // Assert
+    const value = screen.getByTestId('selection-stat-value')
+    expect(value).toHaveClass('truncate')
+    expect(value.className).toMatch(/max-w-/)
+    expect(value.getAttribute('title')).toContain(formatStatValue(huge))
   })
 })

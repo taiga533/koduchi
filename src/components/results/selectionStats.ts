@@ -2,7 +2,8 @@
  * 結果テーブルで選んだセルの件数・合計・平均・最小・最大（ADR 0049）。
  *
  * 描画から切り離した純粋な関数だけを置く。選択の状態は `ResultTable` の中に閉じて
- * おり、ステータスバーへ届けるのはここで作った集計の結果だけである。
+ * おり、ステータスバーへは集計の材料（行と範囲）だけを届ける。数えるのはステータス
+ * バーの側で、大きな選択では `accumulateRows` を細切れに呼ぶ。
  *
  * 数値は `Cell.text` の 10 進の文字列から `bigint` で勘定する。`NUMBER` は最大 38 桁
  * であり、`number`（倍精度）へ通すと 16 桁目より先が化ける（`Cell` の型の註釈と同じ
@@ -311,13 +312,178 @@ function sumOf(total: Decimal, seen: { posInf: boolean; negInf: boolean; nan: bo
 }
 
 /**
- * 選んだセルを集計する。
+ * 集計の途中の状態。
+ *
+ * 大きな選択を一度に数えると描画が止まるため、行のかたまりごとに `accumulateRows` で
+ * 足し込み、最後に `finishStats` で結果にする（ADR 0049）。途中で選択が変われば
+ * 捨てて作り直す。
+ */
+export interface StatsAccumulator {
+  cellCount: number
+  numericCount: number
+  nullCount: number
+  otherCount: number
+  datetimeCount: number
+  total: Decimal
+  seen: { posInf: boolean; negInf: boolean; nan: boolean }
+  numbers: Extrema<NumericValue>
+  datetimes: Extrema<DatetimeKey>
+  datetimeComparable: boolean
+  zoned: boolean | null
+}
+
+/** 空の集計を作る。 */
+export function createAccumulator(): StatsAccumulator {
+  return {
+    cellCount: 0,
+    numericCount: 0,
+    nullCount: 0,
+    otherCount: 0,
+    datetimeCount: 0,
+    total: { int: 0n, scale: 0 },
+    seen: { posInf: false, negInf: false, nan: false },
+    numbers: { min: null, max: null },
+    datetimes: { min: null, max: null },
+    datetimeComparable: true,
+    zoned: null,
+  }
+}
+
+/**
+ * 選択の最後の行（読み込み済みの行で切ったもの）。
+ *
+ * @param rows 読み込み済みの行
+ * @param range 選択範囲
+ */
+export function lastSelectedRow(rows: Cell[][], range: SelectionRange): number {
+  return Math.min(range.bottom, rows.length - 1)
+}
+
+/**
+ * 選択の `from` 行目から `to` 行目の手前までを集計へ足し込む。
+ *
+ * @param acc 足し込む先
+ * @param rows 読み込み済みの行
+ * @param range 選択範囲（列の範囲だけを見る）
+ * @param from 始めの行
+ * @param to 終わりの行（含まない）
+ */
+export function accumulateRows(
+  acc: StatsAccumulator,
+  rows: Cell[][],
+  range: SelectionRange,
+  from: number,
+  to: number,
+): void {
+  for (let row = from; row < to; row++) {
+    const cells = rows[row]
+    for (let column = range.left; column <= range.right; column++) {
+      const cell = cells[column]
+      if (cell === undefined) {
+        continue
+      }
+      acc.cellCount++
+      if (cell.kind === 'null') {
+        acc.nullCount++
+        continue
+      }
+      if (cell.kind === 'number') {
+        const value = parseNumeric(cell.text)
+        if (value !== null) {
+          acc.numericCount++
+          track(acc.numbers, value, cell.text, compareNumeric)
+          if (value.kind === 'finite') {
+            const [x, y, scale] = align(acc.total, value.value)
+            acc.total = { int: x + y, scale }
+          } else {
+            acc.seen[value.kind] = true
+          }
+          continue
+        }
+      }
+      acc.otherCount++
+      if (cell.kind === 'datetime') {
+        acc.datetimeCount++
+        const key = parseDatetime(cell.text)
+        // 時間帯の有る値と無い値は、どちらが先かを決められない（無いほうの時間帯を
+        // 小槌は知らない）。比べられない値が 1 つでも混ざれば、日時の最小・最大は出さない。
+        if (key === null || (acc.zoned !== null && acc.zoned !== key.zoned)) {
+          acc.datetimeComparable = false
+        } else {
+          acc.zoned = key.zoned
+          track(acc.datetimes, key, cell.text, compareDatetime)
+        }
+      }
+    }
+  }
+}
+
+/**
+ * まだ読み込んでいない行へ選択が続いているかもしれないか。
  *
  * 選択は読み込み済みの行の中にしか無い（`⌘A` も見出しからの列選択も、読み込み済みの
  * 行数で範囲を作る）。そのため、選択が最後の行に届いていてカーソルが尽きていない
- * ときは、利用者の意図した範囲がまだ読み込んでいない行へ続いている。そのときだけ
- * `partial` を立てる。最後の行に届いていない選択は、利用者が選んだセルそのもので
- * あり、集計に欠けは無い。
+ * ときは、利用者の意図した範囲がまだ読み込んでいない行へ続いている。最後の行に
+ * 届いていない選択は、利用者が選んだセルそのものであり、集計に欠けは無い。
+ *
+ * @param rows 読み込み済みの行
+ * @param range 選択範囲
+ * @param exhausted カーソルが尽きたか
+ */
+export function isPartialSelection(
+  rows: Cell[][],
+  range: SelectionRange,
+  exhausted: boolean,
+): boolean {
+  return !exhausted && rows.length > 0 && range.bottom >= rows.length - 1
+}
+
+/**
+ * 足し込み終えた集計を結果にする。
+ *
+ * @param acc 足し込み終えた集計
+ * @param rows 読み込み済みの行
+ * @param range 選択範囲
+ * @param exhausted カーソルが尽きたか
+ */
+export function finishStats(
+  acc: StatsAccumulator,
+  rows: Cell[][],
+  range: SelectionRange,
+  exhausted: boolean,
+): SelectionStats {
+  const hasNumbers = acc.numericCount > 0
+  const hasDatetimes = !hasNumbers && acc.datetimeCount > 0 && acc.datetimeComparable
+  const extrema = hasNumbers ? acc.numbers : hasDatetimes ? acc.datetimes : { min: null, max: null }
+  const nonFinite = acc.seen.nan || acc.seen.posInf || acc.seen.negInf
+
+  return {
+    cellCount: acc.cellCount,
+    numericCount: acc.numericCount,
+    nullCount: acc.nullCount,
+    otherCount: acc.otherCount,
+    datetimeCount: acc.datetimeCount,
+    extremaOf: hasNumbers ? 'number' : hasDatetimes ? 'datetime' : null,
+    sum: hasNumbers ? sumOf(acc.total, acc.seen) : null,
+    average: hasNumbers
+      ? nonFinite
+        ? sumOf(acc.total, acc.seen)
+        : decimalToString(
+            divide(acc.total, BigInt(acc.numericCount), acc.total.scale + AVERAGE_EXTRA_SCALE),
+          )
+      : null,
+    min: extrema.min?.text ?? null,
+    max: extrema.max?.text ?? null,
+    partial: isPartialSelection(rows, range, exhausted),
+    loadedRows: rows.length,
+  }
+}
+
+/**
+ * 選んだセルを一度に集計する。
+ *
+ * 小さな選択と単体テストのための入口であり、大きな選択は `accumulateRows` を
+ * 細切れに呼ぶ（`useSelectionStats`）。
  *
  * @param rows 読み込み済みの行
  * @param range 正規化した選択範囲
@@ -328,85 +494,24 @@ export function computeSelectionStats(
   range: SelectionRange,
   exhausted: boolean,
 ): SelectionStats {
-  const bottom = Math.min(range.bottom, rows.length - 1)
-  let cellCount = 0
-  let numericCount = 0
-  let nullCount = 0
-  let otherCount = 0
-  let total: Decimal = { int: 0n, scale: 0 }
-  const seen = { posInf: false, negInf: false, nan: false }
-  const numbers: Extrema<NumericValue> = { min: null, max: null }
-  const datetimes: Extrema<DatetimeKey> = { min: null, max: null }
-  let datetimeCount = 0
-  let datetimeComparable = true
-  let zoned: boolean | null = null
+  const acc = createAccumulator()
+  accumulateRows(acc, rows, range, range.top, lastSelectedRow(rows, range) + 1)
+  return finishStats(acc, rows, range, exhausted)
+}
 
-  for (let row = range.top; row <= bottom; row++) {
-    const cells = rows[row]
-    for (let column = range.left; column <= range.right; column++) {
-      const cell = cells[column]
-      if (cell === undefined) {
-        continue
-      }
-      cellCount++
-      if (cell.kind === 'null') {
-        nullCount++
-        continue
-      }
-      if (cell.kind === 'number') {
-        const value = parseNumeric(cell.text)
-        if (value !== null) {
-          numericCount++
-          track(numbers, value, cell.text, compareNumeric)
-          if (value.kind === 'finite') {
-            const [x, y, scale] = align(total, value.value)
-            total = { int: x + y, scale }
-          } else {
-            seen[value.kind] = true
-          }
-          continue
-        }
-      }
-      otherCount++
-      if (cell.kind === 'datetime') {
-        datetimeCount++
-        const key = parseDatetime(cell.text)
-        // 時間帯の有る値と無い値は、どちらが先かを決められない（無いほうの時間帯を
-        // 小槌は知らない）。比べられない値が 1 つでも混ざれば、日時の最小・最大は出さない。
-        if (key === null || (zoned !== null && zoned !== key.zoned)) {
-          datetimeComparable = false
-        } else {
-          zoned = key.zoned
-          track(datetimes, key, cell.text, compareDatetime)
-        }
-      }
-    }
-  }
-
-  const hasNumbers = numericCount > 0
-  const hasDatetimes = !hasNumbers && datetimeCount > 0 && datetimeComparable
-  const extrema = hasNumbers ? numbers : hasDatetimes ? datetimes : { min: null, max: null }
-  const averageScale = total.scale + AVERAGE_EXTRA_SCALE
-  const finiteCount = BigInt(numericCount)
-
-  return {
-    cellCount,
-    numericCount,
-    nullCount,
-    otherCount,
-    datetimeCount,
-    extremaOf: hasNumbers ? 'number' : hasDatetimes ? 'datetime' : null,
-    sum: hasNumbers ? sumOf(total, seen) : null,
-    average: hasNumbers
-      ? seen.nan || seen.posInf || seen.negInf
-        ? sumOf(total, seen)
-        : decimalToString(divide(total, finiteCount, averageScale))
-      : null,
-    min: extrema.min?.text ?? null,
-    max: extrema.max?.text ?? null,
-    partial: !exhausted && rows.length > 0 && range.bottom >= rows.length - 1,
-    loadedRows: rows.length,
-  }
+/**
+ * 選んだセルの数。値を読まずに範囲の広さから出す。
+ *
+ * 件数は集計を待たずに出したいため、1 つずつ数えずに求める。行はどれも同じ列の
+ * 数を持つ（結果セットの 1 行である）。
+ *
+ * @param rows 読み込み済みの行
+ * @param range 選択範囲
+ */
+export function selectedCellCount(rows: Cell[][], range: SelectionRange): number {
+  const height = lastSelectedRow(rows, range) - range.top + 1
+  const width = Math.min(range.right, (rows[0]?.length ?? 0) - 1) - range.left + 1
+  return height > 0 && width > 0 ? height * width : 0
 }
 
 /**
@@ -438,6 +543,18 @@ export function formatStatValue(text: string): string {
 }
 
 /**
+ * まだ読み込んでいない行へ選択が続いているときの注意文言。
+ *
+ * 集計を待たずに出せるよう、集計の結果からではなく行数から組み立てる。
+ *
+ * @param loadedRows 読み込み済みの行数
+ * @param kind 注意する集計の種類
+ */
+export function partialNote(loadedRows: number, kind: StatKind): string {
+  return `読み込み済みの ${loadedRows.toLocaleString('ja-JP')} 行だけの${STAT_LABELS[kind]}です。まだ読み込んでいない行は含みません。`
+}
+
+/**
  * 集計の値に添える説明（`title`）を組み立てる。
  *
  * 何を足し上げたか、何を外したかを言う。まだ読み込んでいない行へ選択が続いて
@@ -449,9 +566,7 @@ export function formatStatValue(text: string): string {
 export function describeStat(stats: SelectionStats, kind: StatKind): string {
   const lines: string[] = []
   if (stats.partial) {
-    lines.push(
-      `読み込み済みの ${stats.loadedRows.toLocaleString('ja-JP')} 行だけの${STAT_LABELS[kind]}です。まだ読み込んでいない行は含みません。`,
-    )
+    lines.push(partialNote(stats.loadedRows, kind))
   }
   if (statValue(stats, kind) === null) {
     lines.push(

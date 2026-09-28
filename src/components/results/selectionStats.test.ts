@@ -8,8 +8,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Cell } from '../../types/db'
 import {
+  accumulateRows,
   computeSelectionStats,
+  createAccumulator,
   describeStat,
+  finishStats,
+  partialNote,
+  selectedCellCount,
   formatStatValue,
   parseDatetime,
   parseNumeric,
@@ -337,19 +342,35 @@ describe('formatStatValue', () => {
 })
 
 describe('describeStat', () => {
-  it('外したセルの内訳を添える', () => {
+  it('合計の説明は足した数値の件数と、外した NULL と数値でないセルの件数を言う', () => {
     // Arrange
-    const rows = [[数('1'), 字('a'), 空]]
+    const rows = [[数('1'), 数('2'), 字('a'), 空, 空]]
     const stats = computeSelectionStats(rows, 全体(rows), true)
 
     // Act
     const text = describeStat(stats, 'sum')
 
     // Assert
-    expect(text).toBe('数値 1 件の合計（NULL 1 件・数値でない 1 件は含みません）。')
+    expect(text).toContain('数値 2 件')
+    expect(text).toContain('NULL 2 件')
+    expect(text).toContain('数値でない 1 件')
+    expect(text).not.toContain('読み込み済み')
   })
 
-  it('まだ読み込んでいない行へ続くときは先にそれを言う', () => {
+  it('外したセルが無ければ除外の断りを付けない', () => {
+    // Arrange
+    const rows = 列(数('1'), 数('2'))
+    const stats = computeSelectionStats(rows, 全体(rows), true)
+
+    // Act
+    const text = describeStat(stats, 'sum')
+
+    // Assert
+    expect(text).toContain('数値 2 件')
+    expect(text).not.toContain('含みません')
+  })
+
+  it('まだ読み込んでいない行へ続くときは読み込み済みの行数を先頭で言う', () => {
     // Arrange
     const rows = 列(数('1'), 数('2'))
     const stats = computeSelectionStats(rows, 全体(rows), false)
@@ -358,12 +379,13 @@ describe('describeStat', () => {
     const text = describeStat(stats, 'average')
 
     // Assert
-    expect(text).toBe(
-      '読み込み済みの 2 行だけの平均です。まだ読み込んでいない行は含みません。\n数値 2 件の平均。',
-    )
+    const [first] = text.split('\n')
+    expect(first).toBe(partialNote(2, 'average'))
+    expect(first).toContain('2 行')
+    expect(text).toContain('数値 2 件')
   })
 
-  it('日時の最小では日時の件数を言う', () => {
+  it('日時の最小では日時の件数を言い、日時でないセルを外したと言う', () => {
     // Arrange
     const rows = [[時('2024-01-02 00:00:00'), 字('a')]]
     const stats = computeSelectionStats(rows, 全体(rows), true)
@@ -372,18 +394,62 @@ describe('describeStat', () => {
     const text = describeStat(stats, 'min')
 
     // Assert
-    expect(text).toBe('日時 1 件の最小（日時でない 1 件は含みません）。')
+    expect(text).toContain('日時 1 件')
+    expect(text).toContain('日時でない 1 件')
+    expect(text).not.toContain('数値')
   })
 
-  it('値が無いときはその理由を言う', () => {
+  it('値が無いときは件数ではなく値が無いことを言う', () => {
     // Arrange
     const rows = 列(字('a'), 字('b'))
     const stats = computeSelectionStats(rows, 全体(rows), true)
 
     // Act
-    const text = describeStat(stats, 'max')
+    const sum = describeStat(stats, 'sum')
+    const max = describeStat(stats, 'max')
 
     // Assert
-    expect(text).toBe('比べられる数値か日時のセルがありません。')
+    expect(sum).toContain('ありません')
+    expect(max).toContain('ありません')
+    expect(max).not.toContain('件')
+  })
+})
+
+describe('selectedCellCount', () => {
+  it('値を読まずに範囲の広さから数え、読み込み済みの行と列で切る', () => {
+    // Arrange
+    const rows = [
+      [数('1'), 数('2')],
+      [数('3'), 数('4')],
+    ]
+
+    // Act
+    const inside = selectedCellCount(rows, { top: 0, bottom: 1, left: 0, right: 1 })
+    const beyond = selectedCellCount(rows, { top: 1, bottom: 9, left: 1, right: 5 })
+
+    // Assert
+    expect(inside).toBe(4)
+    expect(beyond).toBe(1)
+  })
+})
+
+describe('accumulateRows', () => {
+  it('行を分けて足し込んでも一度に数えたときと同じ結果になる', () => {
+    // Arrange
+    const rows = [
+      [数('1.5'), 時('2024-01-01 00:00:00')],
+      [数('inf'), 空],
+      [数('-3'), 字('x')],
+    ]
+    const range = 全体(rows)
+    const acc = createAccumulator()
+
+    // Act
+    accumulateRows(acc, rows, range, 0, 1)
+    accumulateRows(acc, rows, range, 1, 3)
+    const sliced = finishStats(acc, rows, range, true)
+
+    // Assert
+    expect(sliced).toEqual(computeSelectionStats(rows, range, true))
   })
 })
