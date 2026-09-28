@@ -97,6 +97,7 @@ import {
   selectionAt,
   truncationNote,
 } from './resultSearch'
+import { useSelectionStatsPublisher } from './useSelectionStatsPublisher'
 
 /** 行番号を出す先頭列の幅（ピクセル）。 */
 const ROW_NUMBER_WIDTH = 44
@@ -199,6 +200,9 @@ export function ResultTable({ tabId, execution, onRequestMore }: ResultTableProp
   const columnCount = execution.columns.length
   const columns = execution.columns
   const rows = execution.rows
+
+  // 選択の件数・合計などはステータスバーが出す（ADR 0049）。選択そのものは外へ出さない。
+  useSelectionStatsPublisher(selection, rows, execution.exhausted)
 
   const virtualizer = useVirtualizer({
     count: rowCount,
